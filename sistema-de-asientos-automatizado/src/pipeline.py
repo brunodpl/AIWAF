@@ -14,11 +14,13 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.logging_config import setup_logging
@@ -55,6 +57,7 @@ def process_document(
     gemini_model,
     libro: str,
     output_base_path: str,
+    status_file: str | None = None,
 ) -> tuple[str | None, list[PhaseResult]]:
     """Ejecuta OCR → Identidad → Ensamblador para un documento."""
     results: list[PhaseResult] = []
@@ -142,10 +145,17 @@ def process_document(
     if not ok_ensamblado:
         logger.error(f"[pipeline] Ensamblador fallo para {doc_id}", exc_info=True)
 
+    if status_file:
+        _update_status_file(
+            status_file,
+            doc_id=doc_id,
+            phases=[{"fase": r.fase, "ok": r.ok, "motivo": r.motivo} for r in results],
+        )
+
     return doc_id, results
 
 
-def run_pipeline(folder_path: str, libro: str) -> dict:
+def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -> dict:
     """
     Procesa todos los archivos de una carpeta.
 
@@ -165,66 +175,117 @@ def run_pipeline(folder_path: str, libro: str) -> dict:
         files = scan_folder(folder_path)
     except Exception as e:
         logger.error(f"[pipeline] No se pudo escanear la carpeta: {e}", exc_info=True)
+        if status_file:
+            _update_status_file(
+                status_file,
+                status="error",
+                error_message=str(e),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
         return summary
 
     summary["total"] = len(files)
     if not files:
         logger.warning("[pipeline] No se encontraron archivos para procesar")
+        if status_file:
+            _update_status_file(
+                status_file,
+                status="completed",
+                total=0,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
         return summary
+
+    if status_file:
+        _update_status_file(
+            status_file,
+            status="running",
+            total=len(files),
+            processed=0,
+            current_file=None,
+            started_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=None,
+            error_message=None,
+        )
 
     vision_client = VisionOcrClient()
     gemini_model = _init_gemini_model()
     folder_name = os.path.basename(os.path.normpath(folder_path))
 
-    for file_path in files:
-        doc_id, results = process_document(
-            file_path, folder_name, vision_client, gemini_model, libro, cfg.output_path
-        )
+    try:
+        for file_path in files:
+            if status_file:
+                _update_status_file(status_file, current_file=os.path.basename(file_path))
 
-        # Determinar decisión final desde resultado_validacion.json
-        decision = _leer_decision_global(doc_id, cfg.output_path) if doc_id else "error"
+            doc_id, results = process_document(
+                file_path, folder_name, vision_client, gemini_model, libro, cfg.output_path,
+                status_file=status_file,
+            )
 
-        # Registrar en auditoría de negocio (nunca interrumpe el pipeline)
-        audit.write(
-            doc_id=doc_id,
-            file_path=file_path,
-            results=results,
-            decision=decision,
-            output_base_path=cfg.output_path,
-        )
+            # Determinar decisión final desde resultado_validacion.json
+            decision = _leer_decision_global(doc_id, cfg.output_path) if doc_id else "error"
 
-        if decision == "auto":
-            try:
-                move_file(file_path, cfg.get_folder_path(cfg.folder_procesadas))
-            except Exception as e:
-                logger.error(
-                    "[pipeline] Fallo moviendo archivo %s -> %s: %s",
-                    file_path, cfg.get_folder_path(cfg.folder_procesadas), e, exc_info=True,
-                )
-            summary["ok"] += 1
-        elif decision in ("warn", "pendiente"):
-            try:
-                move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
-            except Exception as e:
-                logger.error(
-                    "[pipeline] Fallo moviendo archivo %s -> %s: %s",
-                    file_path, cfg.get_folder_path(cfg.folder_incidencias), e, exc_info=True,
-                )
-            summary["warn"] += 1
-        else:  # block o error
-            try:
-                move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
-            except Exception as e:
-                logger.error(
-                    "[pipeline] Fallo moviendo archivo %s -> %s: %s",
-                    file_path, cfg.get_folder_path(cfg.folder_incidencias), e, exc_info=True,
-                )
-            summary["error"] += 1
+            # Registrar en auditoría de negocio (nunca interrumpe el pipeline)
+            audit.write(
+                doc_id=doc_id,
+                file_path=file_path,
+                results=results,
+                decision=decision,
+                output_base_path=cfg.output_path,
+            )
 
-        _log_resumen_documento(doc_id, results, decision)
+            if decision == "auto":
+                try:
+                    move_file(file_path, cfg.get_folder_path(cfg.folder_procesadas))
+                except Exception as e:
+                    logger.error(
+                        "[pipeline] Fallo moviendo archivo %s -> %s: %s",
+                        file_path, cfg.get_folder_path(cfg.folder_procesadas), e, exc_info=True,
+                    )
+                summary["ok"] += 1
+            elif decision in ("warn", "pendiente"):
+                try:
+                    move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
+                except Exception as e:
+                    logger.error(
+                        "[pipeline] Fallo moviendo archivo %s -> %s: %s",
+                        file_path, cfg.get_folder_path(cfg.folder_incidencias), e, exc_info=True,
+                    )
+                summary["warn"] += 1
+            else:  # block o error
+                try:
+                    move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
+                except Exception as e:
+                    logger.error(
+                        "[pipeline] Fallo moviendo archivo %s -> %s: %s",
+                        file_path, cfg.get_folder_path(cfg.folder_incidencias), e, exc_info=True,
+                    )
+                summary["error"] += 1
 
-    _print_summary(folder_path, summary)
-    return summary
+            _log_resumen_documento(doc_id, results, decision)
+
+            if status_file:
+                _update_status_file(status_file, processed=summary["ok"] + summary["warn"] + summary["error"])
+
+        _print_summary(folder_path, summary)
+
+        if status_file:
+            _update_status_file(
+                status_file,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                summary=summary,
+            )
+    except Exception as e:
+        logger.error(f"[pipeline] Error en run_pipeline: {e}", exc_info=True)
+        if status_file:
+            _update_status_file(
+                status_file,
+                status="error",
+                error_message=str(e),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+        raise
 
 
 def _leer_decision_global(doc_id: str, output_base: str) -> str:
@@ -254,6 +315,22 @@ def _print_summary(folder: str, summary: dict) -> None:
     print(f"Revisión: {summary['warn']}")
     print(f"Error:    {summary['error']}")
     print("=" * 60)
+
+
+def _update_status_file(status_file: str, **kwargs) -> None:
+    """Write/update a JSON status file atomically. Never raises; logs errors."""
+    try:
+        data = {}
+        if os.path.exists(status_file):
+            with open(status_file, encoding="utf-8") as f:
+                data = json.load(f)
+        data.update(kwargs)
+        tmp_path = status_file + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, status_file)
+    except Exception:
+        logger.debug(f"[pipeline] Failed to update status file {status_file}", exc_info=True)
 
 
 def main() -> None:

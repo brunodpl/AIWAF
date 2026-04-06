@@ -2,7 +2,7 @@
  * API client for communicating with the pipeline backend.
  */
 
-import type { InvoiceDocument, FieldDecision } from "./types";
+import type { InvoiceDocument, FieldDecision, Book, PipelineStatus, Client } from "./types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -269,6 +269,135 @@ export async function fetchStats(): Promise<{
       throw new Error(`Failed to fetch stats: ${response.statusText}`);
     }
 
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Request timed out. The server may still be processing.");
+    }
+    throw error;
+  }
+}
+
+/** Types for new API functions */
+export interface BooksResponse {
+  books: Book[];
+}
+
+export interface UploadResponse {
+  uploaded: string[];
+  errors: Array<{ file: string; error: string }>;
+}
+
+export interface PipelineRunResponse {
+  status: string;
+  total: number;
+}
+
+export interface ClientsResponse {
+  clients: Client[];
+}
+
+/**
+ * Fetch the list of accounting books with pending files.
+ */
+export async function fetchBooks(): Promise<BooksResponse> {
+  try {
+    const response = await fetchWithTimeout(`${API_URL}/api/books`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch books: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Request timed out. The server may still be processing.");
+    }
+    throw error;
+  }
+}
+
+/**
+ * Upload files to a specific accounting book.
+ */
+export async function uploadFiles(
+  bookId: "gastos" | "ingresos" | "bienes",
+  files: File[]
+): Promise<UploadResponse> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+
+  try {
+    const response = await fetchWithTimeout(`${API_URL}/api/books/${bookId}/upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to upload files: ${error}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Request timed out. The server may still be processing.");
+    }
+    throw error;
+  }
+}
+
+/**
+ * Fetch current pipeline processing status.
+ */
+export async function fetchPipelineStatus(): Promise<PipelineStatus> {
+  try {
+    const response = await fetchWithTimeout(`${API_URL}/api/pipeline/status`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch pipeline status: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Request timed out. The server may still be processing.");
+    }
+    throw error;
+  }
+}
+
+/**
+ * Trigger pipeline processing.
+ */
+export async function runPipeline(): Promise<PipelineRunResponse> {
+  try {
+    const response = await fetchWithTimeout(`${API_URL}/api/pipeline/run`, {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (response.status === 409) {
+        throw new Error("PIPELINE_ALREADY_RUNNING");
+      }
+      throw new Error(`Failed to run pipeline: ${errorText}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Request timed out. The server may still be processing.");
+    }
+    throw error;
+  }
+}
+
+/**
+ * Fetch registered clients from the gestoria.
+ */
+export async function fetchClients(): Promise<ClientsResponse> {
+  try {
+    const response = await fetchWithTimeout(`${API_URL}/api/clients`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch clients: ${response.statusText}`);
+    }
     return response.json();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,7 +13,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import { Check, X, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { FiscalLine, InvoiceDocument } from "@/lib/types";
 import {
   fetchInvoices,
@@ -33,123 +33,277 @@ interface InvoiceSummary {
   total_euros: number;
 }
 
-export function InvoiceReviewer() {
+interface InvoiceReviewerProps {
+  approvedInvoices: Set<string>;
+  onApprove: (id: string, data: { formData: Record<string, string>; fiscalLines: FiscalLine[] }) => void;
+  onExport: () => void;
+}
+
+export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: InvoiceReviewerProps) {
   const [invoiceSummaries, setInvoiceSummaries] = useState<InvoiceSummary[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Cache de detalles: se cargan on-demand al navegar
+  // Details cache — stored in state but accessed via ref inside effects to avoid re-triggering
   const [detailsCache, setDetailsCache] = useState<Map<string, InvoiceDocument>>(new Map());
-  const [loadingDetail, setLoadingDetail] = useState(false);
+  const cacheRef = useRef<Map<string, InvoiceDocument>>(new Map());
 
-  // Cargar aprobaciones previas desde localStorage
-  const [approvedInvoices, setApprovedInvoices] = useState<Set<string>>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("approved_invoices");
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          return new Set(parsed);
-        } catch {
-          return new Set();
-        }
-      }
-    }
-    return new Set();
-  });
+  // Refs for latest values (avoids stale closures in setTimeout/callbacks)
+  const currentIdxRef = useRef(0);
+  const invoiceSummariesRef = useRef<InvoiceSummary[]>([]);
 
-  // Form data states — must be before conditional returns
+  // Keep refs in sync
+  useEffect(() => {
+    currentIdxRef.current = currentIdx;
+  }, [currentIdx]);
+
+  useEffect(() => {
+    invoiceSummariesRef.current = invoiceSummaries;
+  }, [invoiceSummaries]);
+
+  // Keep cacheRef in sync with state
+  useEffect(() => {
+    cacheRef.current = detailsCache;
+  }, [detailsCache]);
+
+  // Form data states
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [fiscalLines, setFiscalLines] = useState<FiscalLine[]>([]);
 
-  // Load invoice list (solo resumen, sin detalles)
-  useEffect(() => {
-    const loadInvoices = async () => {
-      try {
-        setLoading(true);
-        setError(null);
+  // File type cache to avoid guessing
+  const [fileType, setFileType] = useState<"pdf" | "image">("image");
+  const fileTypeCache = useRef<Map<string, "pdf" | "image">>(new Map());
 
-        const response = await fetchInvoices();
+  // Loading detail state (must be before the detail useEffect)
+  const [loadingDetail, setLoadingDetailState] = useState(false);
+  const loadingDetailRef = useRef(false);
+  const setLoadingDetail = (v: boolean) => {
+    loadingDetailRef.current = v;
+    setLoadingDetailState(v);
+  };
 
-        if (response.invoices.length === 0) {
-          setError("No hay facturas procesadas. Ejecuta el pipeline primero.");
-          setInvoiceSummaries([]);
-          return;
-        }
+  // Current file URL (computed from summary, not from detail)
+  const [fileUrl, setFileUrl] = useState("");
 
-        setInvoiceSummaries(response.invoices);
-      } catch (err) {
-        console.error("Error loading invoices:", err);
-        setError("Error cargando facturas. Verifica que el pipeline está funcionando.");
-        toast.error("Error cargando facturas");
-      } finally {
-        setLoading(false);
+  // ── Load invoice list ──────────────────────────────────────────────────
+  const loadInvoices = useCallback(async (isRefresh = false) => {
+    try {
+      if (isRefresh) setRefreshing(true);
+      else { setLoading(true); setError(null); }
+
+      const response = await fetchInvoices();
+
+      if (response.invoices.length === 0) {
+        setError("No hay facturas procesadas. Ejecuta el pipeline primero.");
+        setInvoiceSummaries([]);
+        return;
       }
-    };
 
-    loadInvoices();
+      setInvoiceSummaries(response.invoices);
+
+      // Reset index if out of bounds
+      if (currentIdxRef.current >= response.invoices.length) {
+        setCurrentIdx(0);
+      }
+    } catch (err) {
+      console.error("Error loading invoices:", err);
+      if (!isRefresh) {
+        setError("Error cargando facturas. Verifica que el pipeline está funcionando.");
+      }
+      toast.error("Error cargando facturas");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
 
-  // Cargar detalle on-demand cuando cambia el índice
+  useEffect(() => {
+    loadInvoices();
+  }, [loadInvoices]);
+
+  // ── Load detail on-demand when index changes ───────────────────────────
   useEffect(() => {
     const summary = invoiceSummaries[currentIdx];
     if (!summary) return;
-    if (detailsCache.has(summary.id)) {
-      const cached = detailsCache.get(summary.id)!;
+
+    // Check cache via ref (avoid stale state)
+    const cached = cacheRef.current.get(summary.id);
+    if (cached) {
       const nextData: Record<string, string> = {};
       cached.fields.forEach(f => { nextData[f.id] = f.value; });
       setFormData(nextData);
       setFiscalLines(cached.fiscalLines);
+      setFileUrl(cached.imageUrl);
+      setFileType(cached.fileType);
       return;
     }
 
+    // Not cached — fetch with AbortController
+    const controller = new AbortController();
     let cancelled = false;
+
     const loadDetail = async () => {
       setLoadingDetail(true);
       try {
         const detail = await fetchInvoiceDetail(summary.id);
+        if (cancelled) return;
+
         const invoice = transformToInvoice(detail);
-        if (!cancelled) {
-          setDetailsCache(prev => new Map(prev).set(summary.id, invoice));
-          const nextData: Record<string, string> = {};
-          invoice.fields.forEach(f => { nextData[f.id] = f.value; });
-          setFormData(nextData);
-          setFiscalLines(invoice.fiscalLines);
-        }
+
+        // Also resolve file type from the detail
+        const resolvedFileType = invoice.fileType;
+
+        // Update cache
+        setDetailsCache(prev => {
+          const next = new Map(prev);
+          next.set(summary.id, invoice);
+          return next;
+        });
+
+        // Update form state
+        const nextData: Record<string, string> = {};
+        invoice.fields.forEach(f => { nextData[f.id] = f.value; });
+        setFormData(nextData);
+        setFiscalLines(invoice.fiscalLines);
+        setFileUrl(invoice.imageUrl);
+        setFileType(resolvedFileType);
       } catch (err) {
+        if (cancelled) return;
         console.error(`Error loading detail for ${summary.id}:`, err);
-        if (!cancelled) {
-          toast.error(`Error cargando factura ${summary.id}`);
-          setFormData({});
-          setFiscalLines([]);
-        }
+        toast.error(`Error cargando factura ${summary.id}`);
+        setFormData({});
+        setFiscalLines([]);
       } finally {
         if (!cancelled) setLoadingDetail(false);
       }
     };
 
     loadDetail();
-    return () => { cancelled = true; };
-  }, [currentIdx, invoiceSummaries, detailsCache]);
 
-  // Persist approved invoices to localStorage
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(
-        "approved_invoices",
-        JSON.stringify(Array.from(approvedInvoices))
-      );
-    }
-  }, [approvedInvoices]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [currentIdx, invoiceSummaries]);
 
-  const invoice = detailsCache.get(invoiceSummaries[currentIdx]?.id);
-  
-  // Construct file URL from summary (available immediately, no need to wait for detail)
+  // ── Determine file URL for display (before detail loads) ───────────────
   const currentSummary = invoiceSummaries[currentIdx];
-  const fileUrl = currentSummary ? `${API_URL}/api/invoices/${currentSummary.id}/file` : "";
+  const displayFileUrl = currentSummary
+    ? `${API_URL}/api/invoices/${currentSummary.id}/file`
+    : "";
 
-  // Show loading state
+  // The file URL to show in ImageViewer:
+  // Use cached fileUrl if we have the detail, otherwise use the direct endpoint
+  const activeFileUrl = fileUrl || displayFileUrl;
+
+  // ── Handlers (MUST be before conditional returns — Rules of Hooks) ─────
+  const handleInputChange = (id: string, value: string) => {
+    setFormData(prev => ({ ...prev, [id]: value }));
+  };
+
+  const handleLineChange = (id: string, field: keyof FiscalLine, value: string) => {
+    setFiscalLines(prev => prev.map(line =>
+      line.id === id
+        ? { ...line, [field]: value === "" ? 0 : (field === "id" ? value : parseFloat(value) || 0) }
+        : line
+    ));
+  };
+
+  const goToPrev = useCallback(() => {
+    if (currentIdxRef.current > 0) {
+      setCurrentIdx(currentIdxRef.current - 1);
+    }
+  }, []);
+
+  const goToNext = useCallback(() => {
+    const summaries = invoiceSummariesRef.current;
+    if (currentIdxRef.current < summaries.length - 1) {
+      setCurrentIdx(currentIdxRef.current + 1);
+    }
+  }, []);
+
+  const handleApprove = async () => {
+    const currentInvoice = detailsCache.get(invoiceSummariesRef.current[currentIdxRef.current]?.id);
+    if (!currentInvoice) return;
+
+    const confirmed = window.confirm(
+      `¿Confirmar aprobación de la factura ${currentInvoice.id}?\n\nSe registrará esta acción en el log de auditoría.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await sendInvoiceAction(currentInvoice.id, "approve", {
+        fields: formData,
+        fiscalLines: fiscalLines.map(l => ({
+          base: Number(l.base),
+          tipo_iva: l.vatRate !== null ? Number(l.vatRate) : null,
+          cuota: Number(l.vatAmount),
+          total: Number(l.total),
+        })),
+      });
+
+      onApprove(currentInvoice.id, { formData, fiscalLines });
+      toast.success("Factura aprobada correctamente");
+
+      // Auto-advance using ref-based navigation (no stale closure)
+      if (currentIdxRef.current < invoiceSummariesRef.current.length - 1) {
+        setTimeout(() => {
+          const summaries = invoiceSummariesRef.current;
+          const idx = currentIdxRef.current;
+          if (idx < summaries.length - 1) {
+            setCurrentIdx(idx + 1);
+          }
+        }, 500);
+      }
+    } catch (err) {
+      console.error("Error approving invoice:", err);
+      toast.error("Error al aprobar la factura");
+    }
+  };
+
+  const handleReject = async () => {
+    const currentInvoice = detailsCache.get(invoiceSummariesRef.current[currentIdxRef.current]?.id);
+    if (!currentInvoice) return;
+
+    const confirmed = window.confirm(
+      `¿Confirmar rechazo de la factura ${currentInvoice.id}?\n\nSe moverá a INCIDENCIAS para revisión.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await sendInvoiceAction(currentInvoice.id, "reject", {
+        fields: formData,
+        fiscalLines: fiscalLines.map(l => ({
+          base: Number(l.base),
+          tipo_iva: l.vatRate !== null ? Number(l.vatRate) : null,
+          cuota: Number(l.vatAmount),
+          total: Number(l.total),
+        })),
+      });
+      toast.error("Factura rechazada");
+
+      if (currentIdxRef.current < invoiceSummariesRef.current.length - 1) {
+        setTimeout(() => {
+          const summaries = invoiceSummariesRef.current;
+          const idx = currentIdxRef.current;
+          if (idx < summaries.length - 1) {
+            setCurrentIdx(idx + 1);
+          }
+        }, 500);
+      }
+    } catch (err) {
+      console.error("Error rejecting invoice:", err);
+      toast.error("Error al rechazar la factura");
+    }
+  };
+
+  const handleRefresh = () => {
+    loadInvoices(true);
+  };
+
+  // ── Loading / Error states (AFTER all hooks) ──────────────────────────
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50">
@@ -161,17 +315,12 @@ export function InvoiceReviewer() {
     );
   }
 
-  // Show error state
   if (error || invoiceSummaries.length === 0) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50">
         <div className="text-center max-w-md p-8">
           <p className="text-sm text-slate-600 mb-4">{error || "No hay facturas disponibles"}</p>
-          <Button
-            onClick={() => window.location.reload()}
-            variant="outline"
-            className="text-xs"
-          >
+          <Button onClick={() => loadInvoices()} variant="outline" className="text-xs">
             Reintentar
           </Button>
         </div>
@@ -179,92 +328,18 @@ export function InvoiceReviewer() {
     );
   }
 
+  // Computed values (after early returns — not hooks, safe here)
+  const invoice = detailsCache.get(invoiceSummaries[currentIdx]?.id);
   const isApproved = invoice ? approvedInvoices.has(invoice.id) : false;
-
-  const handleInputChange = (id: string, value: string) => {
-    setFormData(prev => ({ ...prev, [id]: value }));
-  };
-
-  const handleLineChange = (id: string, field: keyof FiscalLine, value: string) => {
-    setFiscalLines(prev => prev.map(line =>
-      line.id === id ? { ...line, [field]: value === "" ? 0 : (field === "id" ? value : parseFloat(value) || 0) } : line
-    ));
-  };
-
-  const handleApprove = async () => {
-    if (!invoice) return;
-
-    const confirmed = window.confirm(
-      `¿Confirmar aprobación de la factura ${invoice.id}?\n\nSe registrará esta acción en el log de auditoría.`
-    );
-    if (!confirmed) return;
-
-    try {
-      await sendInvoiceAction(invoice.id, "approve", {
-        fields: formData,
-        fiscalLines: fiscalLines.map(l => ({
-          base: Number(l.base),
-          tipo_iva: l.vatRate !== null ? Number(l.vatRate) : null,
-          cuota: Number(l.vatAmount),
-          total: Number(l.total),
-        })),
-      });
-
-      const newApproved = new Set(approvedInvoices);
-      newApproved.add(invoice.id);
-      setApprovedInvoices(newApproved);
-      toast.success("Factura aprobada correctamente");
-
-      if (currentIdx < invoiceSummaries.length - 1) {
-         setTimeout(() => goToNext(), 500);
-      }
-    } catch (err) {
-      console.error("Error approving invoice:", err);
-      toast.error("Error al aprobar la factura");
-    }
-  };
-
-  const handleReject = async () => {
-    if (!invoice) return;
-
-    const confirmed = window.confirm(
-      `¿Confirmar rechazo de la factura ${invoice.id}?\n\nSe moverá a INCIDENCIAS para revisión.`
-    );
-    if (!confirmed) return;
-
-    try {
-      await sendInvoiceAction(invoice.id, "reject", {
-        fields: formData,
-        fiscalLines: fiscalLines.map(l => ({
-          base: Number(l.base),
-          tipo_iva: l.vatRate !== null ? Number(l.vatRate) : null,
-          cuota: Number(l.vatAmount),
-          total: Number(l.total),
-        })),
-      });
-      toast.error("Factura rechazada");
-      if (currentIdx < invoiceSummaries.length - 1) {
-        setTimeout(() => goToNext(), 500);
-      }
-    } catch (err) {
-      console.error("Error rejecting invoice:", err);
-      toast.error("Error al rechazar la factura");
-    }
-  };
-
-  const goToPrev = () => {
-    if (currentIdx > 0) setCurrentIdx(currentIdx - 1);
-  };
-
-  const goToNext = () => {
-    if (currentIdx < invoiceSummaries.length - 1) setCurrentIdx(currentIdx + 1);
-  };
+  const totalInvoices = invoiceSummaries.length;
+  const approvedCount = invoiceSummaries.filter(inv => approvedInvoices.has(inv.id)).length;
 
   return (
-    <div 
+    <div
       className="flex flex-col h-screen bg-white text-slate-900 overflow-hidden text-sm group"
       data-approved={isApproved}
     >
+      {/* Header */}
       <header className="h-14 border-b bg-slate-50/50 flex items-center justify-between px-6 flex-shrink-0 z-10 transition-colors group-data-[approved=true]:bg-green-50/20">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
@@ -276,11 +351,17 @@ export function InvoiceReviewer() {
             )}
           </div>
           <div className="h-4 w-[1px] bg-slate-200" />
-          <span className="text-[10px] font-bold text-slate-400 font-mono tracking-tighter uppercase underline decoration-slate-200 underline-offset-4">Extract Lote: 2026-Q2</span>
+          <span className="text-[10px] font-bold text-slate-400 font-mono">
+            {currentIdx + 1} / {totalInvoices}
+            {approvedCount > 0 && (
+              <span className="ml-2 text-emerald-500">({approvedCount} aprobadas)</span>
+            )}
+          </span>
         </div>
 
+        {/* Navigation */}
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1 bg-white border p-1 rounded-sm shadow-sm scale-95">
+          <div className="flex items-center gap-1 bg-white border p-1 rounded-sm shadow-sm">
             <Button
                variant="ghost"
                size="icon"
@@ -291,7 +372,7 @@ export function InvoiceReviewer() {
             >
                <ChevronLeft className="h-4 w-4 text-slate-400" />
             </Button>
-            
+
             <div className="flex items-center gap-1.5 px-3">
                {invoiceSummaries.map((inv, idx) => {
                   const done = approvedInvoices.has(inv.id);
@@ -306,6 +387,7 @@ export function InvoiceReviewer() {
                         done && !active && "text-green-500 bg-green-50/50",
                         done && active && "bg-green-600"
                       )}
+                      aria-label={`Ir a factura ${inv.id}`}
                     >
                       {done && !active ? <Check className="h-2.5 w-2.5 stroke-[4]" /> : idx + 1}
                     </button>
@@ -324,8 +406,22 @@ export function InvoiceReviewer() {
                <ChevronRight className="h-4 w-4 text-slate-400" />
             </Button>
           </div>
+
+          {/* Refresh button */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="text-xs rounded-none"
+            aria-label="Actualizar lista de facturas"
+          >
+            <RefreshCw className={cn("h-3 w-3 mr-1", refreshing && "animate-spin")} />
+            Actualizar
+          </Button>
         </div>
 
+        {/* Right side */}
         <div className="flex items-center gap-3">
            <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest font-mono">
              #{invoiceSummaries[currentIdx]?.id}
@@ -344,9 +440,20 @@ export function InvoiceReviewer() {
                {invoice.decision_global?.toUpperCase()}
              </span>
            )}
+           {approvedInvoices.size > 0 && (
+             <Button
+               variant="outline"
+               size="sm"
+               onClick={onExport}
+               className="text-[10px] uppercase tracking-[0.15em] rounded-none border-teal-200 text-teal-700 hover:bg-teal-50"
+             >
+               Generar Asientos →
+             </Button>
+           )}
         </div>
       </header>
 
+      {/* Main content */}
       <div className="flex flex-grow overflow-hidden border-b transition-opacity group-data-[approved=true]:opacity-90">
         <ResizablePanelGroup direction="horizontal">
           <ResizablePanel defaultSize={45} minSize={30}>
@@ -386,7 +493,7 @@ export function InvoiceReviewer() {
                       </div>
                     ))}
                   </div>
-                  
+
                   {fiscalLines.length > 0 && (
                      <div className="pt-10 border-t">
                         <Label className="text-[11px] font-black uppercase text-slate-900 block mb-6 tracking-[0.1em] pl-1">Desglose de Líneas</Label>
@@ -401,12 +508,12 @@ export function InvoiceReviewer() {
                                  </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-50">
-                                 {fiscalLines.map((line) => (
-                                    <tr key={line.id} className="hover:bg-slate-50/30 transition-colors">
+                                 {fiscalLines.map((line, idx) => (
+                                    <tr key={`${invoice.id}_line_${idx}`} className="hover:bg-slate-50/30 transition-colors">
                                        <td className="p-1 px-2">
                                           <div className="flex items-center">
-                                             <Input 
-                                               value={line.base} 
+                                             <Input
+                                               value={line.base}
                                                onChange={(e) => handleLineChange(line.id, 'base', e.target.value)}
                                                className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs bg-transparent"
                                              />
@@ -432,8 +539,8 @@ export function InvoiceReviewer() {
                                        </td>
                                        <td className="p-1 px-2">
                                           <div className="flex items-center justify-end">
-                                             <Input 
-                                               value={line.total} 
+                                             <Input
+                                               value={line.total}
                                                onChange={(e) => handleLineChange(line.id, 'total', e.target.value)}
                                                className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-right font-bold bg-transparent"
                                              />
@@ -465,14 +572,15 @@ export function InvoiceReviewer() {
 
           <ResizablePanel defaultSize={55} minSize={30}>
              <ImageViewer
-               src={invoice?.imageUrl || fileUrl}
+               src={activeFileUrl}
                isLoading={!invoice}
-               fileType={invoice?.fileType || "image"}
+               fileType={fileType}
              />
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
 
+      {/* Footer */}
       <footer className="h-24 flex items-center justify-center gap-6 px-8 bg-white flex-shrink-0">
         <Button
           variant="outline"

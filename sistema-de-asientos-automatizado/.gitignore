@@ -41,6 +41,7 @@ venv.bak/
 !maestro_clientes.json
 !catalogo_conceptos.json
 !plan_contable.json
+!data/clients.json
 !.mcp.json
 service-account-key.json
 credentials.json

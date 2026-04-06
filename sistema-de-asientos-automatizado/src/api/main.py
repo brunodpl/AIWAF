@@ -8,16 +8,20 @@ Provides endpoints for:
 - Triggering pipeline processing
 """
 
+import asyncio
 import json
 import logging
 import os
+import pathlib
+import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from urllib.parse import quote
 
@@ -69,6 +73,8 @@ class InvoiceAction(BaseModel):
     action: str  # "approve" | "reject"
     document_id: str
     notes: Optional[str] = None
+    corrections_fields: Optional[dict] = None
+    corrections_fiscal_lines: Optional[list] = None
 
 
 # ──────────────────────────────────────────────────────────
@@ -90,6 +96,34 @@ ALLOWED_ARTIFACTS = {
 ALLOWED_INVOICE_EXTENSIONS = {
     ".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp", ".bmp"
 }
+
+# Book ID to sandbox folder mapping
+BOOK_CONFIGS = {
+    "gastos": {
+        "label": "Libro de Gastos y Compras",
+        "pendientes_subdir": "PENDIENTES/gastos",
+        "sandbox_folder": "20_COMPRAS_GASTOS",
+    },
+    "ingresos": {
+        "label": "Libro de Ingresos y Ventas",
+        "pendientes_subdir": "PENDIENTES/ingresos",
+        "sandbox_folder": "21_VENTAS_INGRESOS",
+    },
+    "bienes": {
+        "label": "Libro de Bienes de Inversión",
+        "pendientes_subdir": "PENDIENTES/bienes",
+        "sandbox_folder": "22_BIENES_INVERSION",
+    },
+}
+
+
+# ──────────────────────────────────────────────────────────
+# Simple in-memory cache for list endpoints
+# ──────────────────────────────────────────────────────────
+
+_stats_cache: dict = {}
+_invoices_cache: dict = {}
+_CACHE_TTL = 5  # seconds
 
 
 def validate_doc_id(doc_id: str) -> None:
@@ -242,12 +276,16 @@ def find_invoice_file(doc_id: str) -> Optional[Tuple[Path, str]]:
 def list_invoices():
     """
     Listar todas las facturas procesadas con su estado.
-    
+
     Returns una lista de documentos con su decisión global y metadata básica.
     """
+    now = time.time()
+    if _invoices_cache and (now - _invoices_cache.get("ts", 0)) < _CACHE_TTL:
+        return _invoices_cache["data"]
+
     doc_ids = list_document_ids()
     invoices = []
-    
+
     for doc_id in doc_ids:
         validation = get_validation_result(doc_id)
         if validation:
@@ -261,8 +299,11 @@ def list_invoices():
                 "numero_factura": campos.get("numero_factura", {}).get("valor_final", ""),
                 "total_euros": campos.get("total_euros", {}).get("valor_final", 0),
             })
-    
-    return {"invoices": invoices, "total": len(invoices)}
+
+    result = {"invoices": invoices, "total": len(invoices)}
+    _invoices_cache["data"] = result
+    _invoices_cache["ts"] = now
+    return result
 
 
 @app.get("/api/invoices/{doc_id}")
@@ -379,6 +420,8 @@ def process_invoice_action(doc_id: str, action: InvoiceAction):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "notes": action.notes,
         "decision_global_original": validation.get("decision_global"),
+        "corrections_fields": action.corrections_fields,
+        "corrections_fiscal_lines": action.corrections_fiscal_lines,
     }
     
     # Guardar log de acción
@@ -413,6 +456,10 @@ def get_stats():
     - by_decision: pipeline automatic decisions (auto/warn/pendiente/block)
     - by_user_action: human review actions (approved/rejected)
     """
+    now = time.time()
+    if _stats_cache and (now - _stats_cache.get("ts", 0)) < _CACHE_TTL:
+        return _stats_cache["data"]
+
     doc_ids = list_document_ids()
 
     stats = {
@@ -450,6 +497,8 @@ def get_stats():
             except Exception:
                 pass
 
+    _stats_cache["data"] = stats
+    _stats_cache["ts"] = now
     return stats
 
 
@@ -497,3 +546,236 @@ def get_invoice_file(doc_id: str):
             "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}"
         }
     )
+
+
+# ──────────────────────────────────────────────────────────
+# Pipeline lock (module-level)
+# ──────────────────────────────────────────────────────────
+
+_pipeline_lock = False
+
+
+# ──────────────────────────────────────────────────────────
+# New endpoints: books, upload, pipeline, clients
+# ──────────────────────────────────────────────────────────
+
+@app.get("/api/books")
+def list_books():
+    """List accounting books with pending files."""
+    cfg = settings()
+    sandbox_base = cfg.sandbox_base_path
+    books = []
+    for book_id, config in BOOK_CONFIGS.items():
+        folder_path = os.path.join(sandbox_base, config["pendientes_subdir"])
+        files = []
+        if os.path.isdir(folder_path):
+            for entry in os.scandir(folder_path):
+                if entry.is_file():
+                    stat = entry.stat()
+                    files.append({
+                        "name": entry.name,
+                        "size_kb": round(stat.st_size / 1024, 1),
+                        "added": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                    })
+        books.append({
+            "id": book_id,
+            "label": config["label"],
+            "folder": folder_path,
+            "files": sorted(files, key=lambda f: f["added"]),
+        })
+    return {"books": books}
+
+
+@app.post("/api/books/{book_id}/upload")
+async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
+    """Upload invoice files to a book's pending folder."""
+    if book_id not in BOOK_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}. Valid: {list(BOOK_CONFIGS.keys())}")
+
+    cfg = settings()
+    upload_dir = os.path.join(cfg.sandbox_base_path, BOOK_CONFIGS[book_id]["pendientes_subdir"])
+    os.makedirs(upload_dir, exist_ok=True)
+
+    uploaded = []
+    errors = []
+
+    for file in files:
+        if not file.filename:
+            errors.append({"file": "unknown", "error": "No filename"})
+            continue
+
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in ALLOWED_INVOICE_EXTENSIONS:
+            errors.append({"file": file.filename, "error": f"Extension not allowed: {ext}"})
+            continue
+
+        # Fix #1: Sanitize filename to prevent path traversal
+        safe_name = pathlib.PurePosixPath(file.filename).name
+        if not safe_name or safe_name.startswith(".") or ".." in safe_name:
+            errors.append({"file": file.filename, "error": "Invalid filename"})
+            continue
+
+        dest = os.path.join(upload_dir, safe_name)
+
+        # Fix #11: Avoid silent overwrite if file already exists
+        if os.path.exists(dest):
+            base, ext_part = os.path.splitext(safe_name)
+            ts = int(datetime.now(timezone.utc).timestamp())
+            safe_name = f"{base}_{ts}{ext_part}"
+            dest = os.path.join(upload_dir, safe_name)
+
+        try:
+            with open(dest, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            uploaded.append(safe_name)
+        except Exception as e:
+            errors.append({"file": file.filename, "error": str(e)})
+
+    return {"uploaded": uploaded, "errors": errors}
+
+
+@app.get("/api/pipeline/status")
+def pipeline_status():
+    """Read pipeline processing status."""
+    cfg = settings()
+    status_path = os.path.join(cfg.output_path, "pipeline_status.json")
+    if not os.path.exists(status_path):
+        return {
+            "status": "idle",
+            "processed": 0,
+            "total": 0,
+            "current_file": None,
+            "started_at": None,
+            "completed_at": None,
+            "error_message": None,
+        }
+    try:
+        with open(status_path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error reading pipeline status: {e}", exc_info=True)
+        return {"status": "error", "error_message": str(e)}
+
+
+@app.post("/api/pipeline/run")
+async def run_pipeline_endpoint():
+    """Launch pipeline processing in background."""
+    global _pipeline_lock
+    if _pipeline_lock:
+        raise HTTPException(status_code=409, detail="Pipeline already running")
+
+    cfg = settings()
+    sandbox_base = cfg.sandbox_base_path
+
+    # Count files across all PENDIENTES subfolders
+    total_files = 0
+    book_file_map = {}  # book_id -> list of file paths
+
+    for book_id, config in BOOK_CONFIGS.items():
+        pendientes_path = os.path.join(sandbox_base, config["pendientes_subdir"])
+        if not os.path.isdir(pendientes_path):
+            continue
+
+        files = [os.path.join(pendientes_path, f) for f in os.listdir(pendientes_path) if os.path.isfile(os.path.join(pendientes_path, f))]
+        if files:
+            book_file_map[book_id] = files
+            total_files += len(files)
+
+    if total_files == 0:
+        return {"status": "started", "total": 0}
+
+    # Write initial status
+    status_path = os.path.join(cfg.output_path, "pipeline_status.json")
+    os.makedirs(cfg.output_path, exist_ok=True)
+    initial_status = {
+        "status": "running",
+        "processed": 0,
+        "total": total_files,
+        "current_file": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
+        "error_message": None,
+    }
+    try:
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump(initial_status, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error writing pipeline status: {e}", exc_info=True)
+
+    # Launch in background — use run_in_executor to isolate from event loop
+    _pipeline_lock = True
+
+    def _run_pipeline_sync():
+        global _pipeline_lock
+        try:
+            # Import pipeline module
+            from src.pipeline import run_pipeline
+
+            for book_id, file_paths in book_file_map.items():
+                sandbox_folder = os.path.join(sandbox_base, BOOK_CONFIGS[book_id]["sandbox_folder"])
+                os.makedirs(sandbox_folder, exist_ok=True)
+
+                # Copy files from PENDIENTES to sandbox
+                for fp in file_paths:
+                    shutil.copy2(fp, sandbox_folder)
+
+                # Run pipeline for this book
+                run_pipeline(sandbox_folder, BOOK_CONFIGS[book_id]["sandbox_folder"], status_file=status_path)
+
+                # Clean up: remove processed files from PENDIENTES
+                for fp in file_paths:
+                    try:
+                        os.remove(fp)
+                    except OSError:
+                        pass
+
+            # Update status on completion
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    status = json.load(f)
+                status["status"] = "completed"
+                status["completed_at"] = datetime.now(timezone.utc).isoformat()
+                with open(status_path, "w", encoding="utf-8") as f:
+                    json.dump(status, f, indent=2)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Pipeline background task failed: {e}", exc_info=True)
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    status = json.load(f)
+                status["status"] = "error"
+                status["error_message"] = str(e)
+                status["completed_at"] = datetime.now(timezone.utc).isoformat()
+                with open(status_path, "w", encoding="utf-8") as f:
+                    json.dump(status, f, indent=2)
+            except Exception:
+                pass
+        finally:
+            _pipeline_lock = False
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, _run_pipeline_sync)
+
+    return {"status": "started", "total": total_files}
+
+
+@app.get("/api/clients")
+def list_clients():
+    """List registered clients from clients.json."""
+    cfg = settings()
+    # clients.json is in data/ relative to project root (parent of output_path's parent)
+    project_root = Path(cfg.output_path).parent
+    clients_path = project_root / "data" / "clients.json"
+
+    if not clients_path.exists():
+        return {"clients": []}
+
+    try:
+        with open(clients_path, encoding="utf-8") as f:
+            clients = json.load(f)
+        return {"clients": clients}
+    except Exception as e:
+        logger.error(f"Error reading clients file: {e}", exc_info=True)
+        return {"clients": []}

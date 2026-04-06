@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(python *)",
-      "Bash(pnpm *)"
+      "Bash(pnpm *)",
+      "Bash(docker-compose *)",
+      "Bash(npx *)",
+      "Bash(echo *)",
+      "Bash(curl *)",
+      "Bash(powershell *)",
+      "Bash(taskkill *)",
+      "Bash(findstr *)"
     ]
   },
   "$version": 3
