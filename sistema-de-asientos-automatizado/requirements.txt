@@ -1,0 +1,24 @@
+# Python dependencies para Sistema de Asientos Automatizado
+
+# Google Cloud
+google-cloud-vision>=3.5.0
+google-cloud-storage>=2.10.0
+google-cloud-aiplatform>=1.90.0
+google-genai>=1.0.0
+
+# Excel generation
+openpyxl>=3.1.0
+
+# Data validation & manipulation
+pydantic>=2.5.0
+python-dateutil>=2.8.2
+PyYAML>=6.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Logging
+structlog>=23.2.0
+
+# Image processing for multimodal LLM
+Pillow>=10.0.0

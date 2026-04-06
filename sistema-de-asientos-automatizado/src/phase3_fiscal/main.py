@@ -1,0 +1,129 @@
+"""
+Entry point de la fase 3.2: Verificación fiscal determinista.
+
+Lee:     {doc_output_dir}/documento_extraido.json
+Escribe: {doc_output_dir}/resultado_fiscal.json
+
+Uso standalone:
+    python -m src.phase3_fiscal.main --doc-id factura_001 --output-dir data/output/factura_001
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+
+from src.logging_config import setup_logging
+from src.config import settings as get_settings
+
+logger = logging.getLogger("pipeline.fiscal")
+
+
+class _DecimalEncoder(json.JSONEncoder):
+    """Serializa Decimal a float para JSON."""
+
+    def default(self, o):
+        if isinstance(o, Decimal):
+            # Preservar como número en JSON (no string)
+            return float(o)
+        return super().default(o)
+
+
+def run_fiscal(
+    documento_id: str,
+    doc_output_dir: str,
+) -> bool:
+    """
+    Ejecutar fase 3.2 de verificación fiscal para un documento.
+
+    Lee documento_extraido.json, verifica aritméticamente el desglose
+    de IVA y escribe resultado_fiscal.json en el mismo directorio.
+
+    Args:
+        documento_id: ID del documento (basename del archivo original)
+        doc_output_dir: Ruta al directorio de salida del documento
+
+    Returns:
+        True si la fase completó (aunque con decisión warn/block)
+        False si hubo error técnico que impide generar el artefacto
+    """
+    from .verificador import verificar_fiscal
+
+    doc_dir = Path(doc_output_dir)
+    input_path = doc_dir / "documento_extraido.json"
+    output_path = doc_dir / "resultado_fiscal.json"
+
+    logger.info(f"[fiscal] Iniciando doc_id={documento_id}")
+
+    if not input_path.exists():
+        logger.error(f"[fiscal] documento_extraido.json no encontrado: {input_path}", exc_info=True)
+        return False
+
+    try:
+        with open(input_path, encoding="utf-8") as f:
+            documento_extraido = json.load(f)
+    except Exception as e:
+        logger.error(f"[fiscal] Error leyendo documento_extraido.json: {e}", exc_info=True)
+        return False
+
+    fiscal_data = documento_extraido.get("fiscal")
+    if fiscal_data is None:
+        logger.error("[fiscal] Sección 'fiscal' no encontrada en documento_extraido.json", exc_info=True)
+        return False
+
+    try:
+        resultado = verificar_fiscal(fiscal_data)
+    except Exception as e:
+        logger.error(f"[fiscal] Error en verificar_fiscal: {e}", exc_info=True)
+        return False
+
+    # Añadir metadatos del documento
+    resultado["documento_id"] = documento_id
+    resultado["fase"] = "3_fiscal"
+    resultado["version_politica"] = "v1"
+    resultado["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        doc_dir.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(resultado, f, ensure_ascii=False, indent=2, cls=_DecimalEncoder)
+        logger.info(
+            f"[fiscal] Artefacto escrito: {output_path} "
+            f"decision_global={resultado['decision_global']}"
+        )
+    except Exception as e:
+        logger.error(f"[fiscal] Error escribiendo resultado: {e}", exc_info=True)
+        return False
+
+    return True
+
+
+def main() -> None:
+    """Entry point CLI standalone."""
+    cfg = get_settings()
+    setup_logging(logs_path=cfg.logs_path, level=logging.INFO)
+
+    parser = argparse.ArgumentParser(
+        description="Fase 3.2: Verificación fiscal determinista"
+    )
+    parser.add_argument("--doc-id", required=True, help="ID del documento (basename)")
+    parser.add_argument(
+        "--output-dir", required=True,
+        help="Directorio con documento_extraido.json y donde se escribirá el resultado"
+    )
+    args = parser.parse_args()
+
+    ok = run_fiscal(
+        documento_id=args.doc_id,
+        doc_output_dir=args.output_dir,
+    )
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()
