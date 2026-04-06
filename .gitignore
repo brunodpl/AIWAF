@@ -1,0 +1,30 @@
+# Docker
+.docker-compose/
+*.pid
+
+# Environment
+*.env
+!.env.example
+
+# Credentials
+**/credentials/*.json
+
+# Node modules
+node_modules/
+
+# Build outputs
+.next/
+dist/
+build/
+
+# Logs
+*.log
+logs/
+
+# Data
+data/output/*/
+!data/output/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db

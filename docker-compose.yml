@@ -1,0 +1,60 @@
+services:
+  # Pipeline API - Python backend
+  pipeline-api:
+    build:
+      context: ./sistema-de-asientos-automatizado
+      dockerfile: Dockerfile
+    container_name: pipeline-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Montar credenciales de Google Cloud
+      - ./sistema-de-asientos-automatizado/credentials:/app/credentials:ro
+      # Persistir datos de salida
+      - pipeline-data:/app/data
+      # Sandbox para procesamiento de facturas
+      - ./sistema-de-asientos-automatizado/horeca_sandbox:/app/horeca_sandbox
+      # Logs
+      - pipeline-logs:/app/logs
+    env_file:
+      - ./sistema-de-asientos-automatizado/.env
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service_account.json
+      - ALLOWED_ORIGINS=http://localhost:3000,http://interfaz-asientos:3000
+    networks:
+      - asientos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Interfaz - Next.js frontend
+  interfaz:
+    build:
+      context: ./interfaz-asientos-automatizados
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://pipeline-api:8000
+    container_name: interfaz-asientos
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://pipeline-api:8000
+    depends_on:
+      - pipeline-api
+    networks:
+      - asientos-network
+    restart: unless-stopped
+
+networks:
+  asientos-network:
+    driver: bridge
+
+volumes:
+  pipeline-data:
+    driver: local
+  pipeline-logs:
+    driver: local
