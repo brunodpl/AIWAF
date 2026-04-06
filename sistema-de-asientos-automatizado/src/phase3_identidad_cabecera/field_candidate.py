@@ -155,8 +155,8 @@ class CabeceraResult:
 
     def __post_init__(self):
         if not self.timestamp:
-            from datetime import datetime
-            self.timestamp = datetime.now().isoformat()
+            from datetime import datetime, timezone
+            self.timestamp = datetime.now(timezone.utc).isoformat()
 
     def _decision_global(self) -> DecisionCampo:
         """

@@ -8,7 +8,7 @@ el cliente de la gestoría para esta factura.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("pipeline.cliente_destino")
 
@@ -60,7 +60,7 @@ def resolver_cliente(
     Returns:
         dict compatible con el formato de artefacto del ensamblador
     """
-    timestamp = datetime.now().isoformat(timespec="seconds")
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     # Libro desconocido → block
     if libro not in LIBRO_A_ROL_CLIENTE:

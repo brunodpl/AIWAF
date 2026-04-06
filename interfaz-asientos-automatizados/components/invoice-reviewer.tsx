@@ -121,6 +121,8 @@ export function InvoiceReviewer() {
         console.error(`Error loading detail for ${summary.id}:`, err);
         if (!cancelled) {
           toast.error(`Error cargando factura ${summary.id}`);
+          setFormData({});
+          setFiscalLines([]);
         }
       } finally {
         if (!cancelled) setLoadingDetail(false);
@@ -191,13 +193,27 @@ export function InvoiceReviewer() {
 
   const handleApprove = async () => {
     if (!invoice) return;
+
+    const confirmed = window.confirm(
+      `¿Confirmar aprobación de la factura ${invoice.id}?\n\nSe registrará esta acción en el log de auditoría.`
+    );
+    if (!confirmed) return;
+
     try {
-      await sendInvoiceAction(invoice.id, "approve");
+      await sendInvoiceAction(invoice.id, "approve", {
+        fields: formData,
+        fiscalLines: fiscalLines.map(l => ({
+          base: Number(l.base),
+          tipo_iva: l.vatRate !== null ? Number(l.vatRate) : null,
+          cuota: Number(l.vatAmount),
+          total: Number(l.total),
+        })),
+      });
 
       const newApproved = new Set(approvedInvoices);
       newApproved.add(invoice.id);
       setApprovedInvoices(newApproved);
-      toast.success("Factura aprobada y guardada");
+      toast.success("Factura aprobada correctamente");
 
       if (currentIdx < invoiceSummaries.length - 1) {
          setTimeout(() => goToNext(), 500);
@@ -210,8 +226,22 @@ export function InvoiceReviewer() {
 
   const handleReject = async () => {
     if (!invoice) return;
+
+    const confirmed = window.confirm(
+      `¿Confirmar rechazo de la factura ${invoice.id}?\n\nSe moverá a INCIDENCIAS para revisión.`
+    );
+    if (!confirmed) return;
+
     try {
-      await sendInvoiceAction(invoice.id, "reject");
+      await sendInvoiceAction(invoice.id, "reject", {
+        fields: formData,
+        fiscalLines: fiscalLines.map(l => ({
+          base: Number(l.base),
+          tipo_iva: l.vatRate !== null ? Number(l.vatRate) : null,
+          cuota: Number(l.vatAmount),
+          total: Number(l.total),
+        })),
+      });
       toast.error("Factura rechazada");
       if (currentIdx < invoiceSummaries.length - 1) {
         setTimeout(() => goToNext(), 500);
@@ -251,12 +281,13 @@ export function InvoiceReviewer() {
 
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1 bg-white border p-1 rounded-sm shadow-sm scale-95">
-            <Button 
-               variant="ghost" 
-               size="icon" 
+            <Button
+               variant="ghost"
+               size="icon"
                className="h-7 w-7 hover:bg-slate-100 rounded-none"
                onClick={goToPrev}
                disabled={currentIdx === 0}
+               aria-label="Factura anterior"
             >
                <ChevronLeft className="h-4 w-4 text-slate-400" />
             </Button>
@@ -288,6 +319,7 @@ export function InvoiceReviewer() {
                className="h-7 w-7 hover:bg-slate-100 rounded-none"
                onClick={goToNext}
                disabled={currentIdx === invoiceSummaries.length - 1}
+               aria-label="Factura siguiente"
             >
                <ChevronRight className="h-4 w-4 text-slate-400" />
             </Button>
@@ -301,6 +333,17 @@ export function InvoiceReviewer() {
                <Loader2 className="h-3 w-3 animate-spin inline ml-1 text-slate-400" />
              )}
            </span>
+           {invoice && (
+             <span className={cn(
+               "text-[10px] font-bold px-2 py-1 rounded-full",
+               invoice.decision_global === "auto" && "bg-emerald-100 text-emerald-700",
+               invoice.decision_global === "warn" && "bg-amber-100 text-amber-700",
+               invoice.decision_global === "block" && "bg-red-100 text-red-700",
+               invoice.decision_global === "pendiente" && "bg-slate-100 text-slate-600",
+             )}>
+               {invoice.decision_global?.toUpperCase()}
+             </span>
+           )}
         </div>
       </header>
 
@@ -317,14 +360,28 @@ export function InvoiceReviewer() {
                   <div className="grid grid-cols-2 gap-x-8 gap-y-6">
                     {invoice.fields.map((field) => (
                       <div key={field.id} className="space-y-2">
-                        <Label htmlFor={field.id} className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] pl-1">
-                          {field.label}
-                        </Label>
+                        <div className="flex items-center gap-2">
+                          <Label htmlFor={field.id} className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] pl-1">
+                            {field.label}
+                          </Label>
+                          <span className={cn(
+                            "text-[9px] font-bold px-1.5 py-0.5 rounded",
+                            field.status === "auto" && "bg-emerald-50 text-emerald-600",
+                            field.status === "warn" && "bg-amber-50 text-amber-600",
+                            field.status === "block" && "bg-red-50 text-red-600",
+                          )}>
+                            {field.status.toUpperCase()} {field.confidence}%
+                          </span>
+                        </div>
                         <Input
                           id={field.id}
                           value={formData[field.id] || ""}
                           onChange={(e) => handleInputChange(field.id, e.target.value)}
-                          className="border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm"
+                          className={cn(
+                            "border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm",
+                            field.status === "block" && "border-red-200 bg-red-50/30",
+                            field.status === "warn" && "border-amber-200",
+                          )}
                         />
                       </div>
                     ))}
@@ -357,14 +414,18 @@ export function InvoiceReviewer() {
                                           </div>
                                        </td>
                                        <td className="p-1 px-2">
-                                          <div className="flex items-center justify-center">
-                                             <Input 
-                                               value={line.vatRate} 
-                                               onChange={(e) => handleLineChange(line.id, 'vatRate', e.target.value)}
-                                               className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-center bg-transparent w-16"
-                                             />
-                                             <span className="text-slate-200">%</span>
-                                          </div>
+                                          {line.vatRate === null || line.vatRate === 0 ? (
+                                            <span className="text-[10px] font-bold text-amber-600 px-2 py-1">EXENTA</span>
+                                          ) : (
+                                            <div className="flex items-center justify-center">
+                                               <Input
+                                                 value={line.vatRate}
+                                                 onChange={(e) => handleLineChange(line.id, 'vatRate', e.target.value)}
+                                                 className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-center bg-transparent w-16"
+                                               />
+                                               <span className="text-slate-200">%</span>
+                                            </div>
+                                          )}
                                        </td>
                                        <td className="p-1 px-4 text-right text-slate-400 font-medium tracking-tighter">
                                           {line.vatAmount.toFixed(2)}€
@@ -425,10 +486,23 @@ export function InvoiceReviewer() {
         <Button
           size="lg"
           onClick={handleApprove}
-          disabled={!invoice || loadingDetail}
-          className="w-52 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all disabled:opacity-50"
+          disabled={!invoice || loadingDetail || isApproved}
+          className={cn(
+            "w-52 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
+            isApproved && "opacity-50 cursor-not-allowed"
+          )}
         >
-          Confirmar y Aprobar
+          {isApproved ? (
+            <>
+              <Check className="h-4 w-4 mr-2" />
+              Aprobada
+            </>
+          ) : (
+            <>
+              <Check className="h-4 w-4 mr-2" />
+              Confirmar y Aprobar
+            </>
+          )}
         </Button>
       </footer>
     </div>

@@ -1,10 +1,10 @@
-export type FieldStatus = "auto" | "warn" | "block";
+export type FieldDecision = "auto" | "warn" | "block";
 
 export interface InvoiceField {
   id: string;
   label: string;
   value: string;
-  status: FieldStatus;
+  status: FieldDecision;
   confidence: number; // 0-100
   reason?: string;
   group: number;
@@ -26,6 +26,7 @@ export interface InvoiceDocument {
   status: "pending" | "approved" | "rejected";
   imageUrl: string;
   fileType: "pdf" | "image";
+  decision_global?: "auto" | "warn" | "block" | "pendiente";
   fields: InvoiceField[];
   fiscalLines: FiscalLine[];
 }

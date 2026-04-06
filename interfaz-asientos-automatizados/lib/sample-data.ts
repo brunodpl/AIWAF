@@ -5,6 +5,8 @@ export const SAMPLE_INVOICES: InvoiceDocument[] = [
     id: "AS-500",
     status: "pending",
     imageUrl: "https://www.facturas.net/wp-content/uploads/2016/06/ejemplo-factura-completa-1-724x1024.jpg",
+    fileType: "image",
+    decision_global: "warn",
     fields: [
       // Grupo 1: Identificación del Emisor
       {
@@ -109,6 +111,8 @@ export const SAMPLE_INVOICES: InvoiceDocument[] = [
     id: "AS-501",
     status: "pending",
     imageUrl: "https://facturaoficial.com/wp-content/uploads/2021/04/Ejemplo-Factura-Completa.png",
+    fileType: "image",
+    decision_global: "auto",
     fields: [
       {
         id: "nif_entidad",

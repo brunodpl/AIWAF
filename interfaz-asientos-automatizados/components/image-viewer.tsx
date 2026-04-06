@@ -15,10 +15,18 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [pdfError, setPdfError] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const startRef = useRef({ x: 0, y: 0 });
 
   const isPdf = fileType === "pdf";
+
+  // Reset error states when source changes
+  React.useEffect(() => {
+    setImageError(false);
+    setPdfError(false);
+  }, [src]);
 
   const handleWheel = (e: React.WheelEvent) => {
     if (isPdf) return; // Don't handle wheel for PDFs (browser handles it)
@@ -91,15 +99,15 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
         <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Documento Original</span>
         {!isPdf && (
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={handleZoomOut} className="h-8 w-8 hover:bg-slate-100">
+            <Button variant="ghost" size="icon" onClick={handleZoomOut} aria-label="Alejar" className="h-8 w-8 hover:bg-slate-100">
               <ZoomOut className="h-4 w-4" />
             </Button>
             <span className="text-[10px] font-mono w-10 text-center font-bold text-slate-500">{Math.round(scale * 100)}%</span>
-            <Button variant="ghost" size="icon" onClick={handleZoomIn} className="h-8 w-8 hover:bg-slate-100">
+            <Button variant="ghost" size="icon" onClick={handleZoomIn} aria-label="Acercar" className="h-8 w-8 hover:bg-slate-100">
               <ZoomIn className="h-4 w-4" />
             </Button>
             <div className="w-[1px] h-3 bg-slate-200 mx-1" />
-            <Button variant="ghost" size="icon" onClick={handleReset} className="h-8 w-8 hover:bg-slate-100 text-slate-400">
+            <Button variant="ghost" size="icon" onClick={handleReset} aria-label="Restablecer zoom" className="h-8 w-8 hover:bg-slate-100 text-slate-400">
               <RotateCcw className="h-3 w-3" />
             </Button>
           </div>
@@ -114,6 +122,11 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
             className="w-full h-full border-0"
             title="Invoice PDF"
           />
+          <div className="absolute bottom-2 right-2">
+            <Button variant="outline" size="sm" className="text-[10px] bg-white/80 hover:bg-white" onClick={() => window.open(src, '_blank')}>
+              Abrir en nueva pestaña
+            </Button>
+          </div>
         </div>
       ) : (
         // Image Viewer with zoom and pan
@@ -136,11 +149,23 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
               transformOrigin: "center center"
             }}
           >
-            <img
-              src={src}
-              alt="Invoice preview"
-              className="max-w-[70%] h-auto shadow-sm bg-white m-12 pointer-events-none"
-            />
+            {imageError ? (
+              <div className="flex items-center justify-center w-full h-full">
+                <div className="text-center">
+                  <p className="text-sm text-slate-500 mb-2">No se pudo cargar el documento</p>
+                  <Button variant="outline" size="sm" onClick={() => { setImageError(false); }}>
+                    Reintentar
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <img
+                src={src}
+                alt="Invoice preview"
+                onError={() => setImageError(true)}
+                className="max-w-[70%] h-auto shadow-sm bg-white m-12 pointer-events-none"
+              />
+            )}
           </div>
         </div>
       )}
