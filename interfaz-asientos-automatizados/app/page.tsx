@@ -15,62 +15,58 @@ const STORAGE_KEY_INVOICES = "horeca_approved_invoices";
 const STORAGE_KEY_STAGE = "horeca_current_stage";
 
 export default function Home() {
-  // Restore stage from localStorage (only if there are approved invoices to review)
-  const [stage, setStage] = useState<Stage>(() => {
-    if (typeof window !== "undefined") {
+  // Hydration guard: start with default values, restore from localStorage after mount
+  const [hydrated, setHydrated] = useState(false);
+  const [stage, setStage] = useState<Stage>("books");
+  const [approvedInvoices, setApprovedInvoices] = useState<Map<string, ApprovedInvoiceData>>(new Map());
+
+  // Restore state from localStorage after hydration (client-only)
+  useEffect(() => {
+    try {
       const savedInvoices = localStorage.getItem(STORAGE_KEY_INVOICES);
       if (savedInvoices) {
-        try {
-          const entries = JSON.parse(savedInvoices) as [string, ApprovedInvoiceData][];
-          if (entries.length > 0) {
-            const savedStage = localStorage.getItem(STORAGE_KEY_STAGE);
-            if (savedStage && ["review", "export"].includes(savedStage)) {
-              return savedStage as Stage;
-            }
-            return "review";
+        const entries = JSON.parse(savedInvoices) as [string, ApprovedInvoiceData][];
+        if (entries.length > 0) {
+          setApprovedInvoices(new Map(entries));
+          const savedStage = localStorage.getItem(STORAGE_KEY_STAGE);
+          if (savedStage && ["review", "export"].includes(savedStage)) {
+            setStage(savedStage as Stage);
+          } else {
+            setStage("review");
           }
-        } catch { /* ignore corrupt data */ }
+        }
       }
+    } catch {
+      // ignore corrupt data
     }
-    return "books";
-  });
+    setHydrated(true);
+  }, []);
 
-  // Restore approved invoices from localStorage
-  const [approvedInvoices, setApprovedInvoices] = useState<
-    Map<string, ApprovedInvoiceData>
-  >(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem(STORAGE_KEY_INVOICES);
-      if (saved) {
-        try {
-          const entries = JSON.parse(saved) as [string, ApprovedInvoiceData][];
-          return new Map(entries);
-        } catch { /* ignore corrupt data */ }
-      }
-    }
-    return new Map();
-  });
-
-  // Persist approvedInvoices to localStorage with debounce
+  // Persist approvedInvoices to localStorage with debounce (only after hydration)
   useEffect(() => {
+    if (!hydrated) return;
     const timer = setTimeout(() => {
-      if (typeof window !== "undefined") {
-        localStorage.setItem(
-          STORAGE_KEY_INVOICES,
-          JSON.stringify(Array.from(approvedInvoices.entries()))
-        );
-      }
+      localStorage.setItem(
+        STORAGE_KEY_INVOICES,
+        JSON.stringify(Array.from(approvedInvoices.entries()))
+      );
     }, 500);
-
     return () => clearTimeout(timer);
-  }, [approvedInvoices]);
+  }, [approvedInvoices, hydrated]);
 
-  // Persist stage to localStorage on every change
+  // Persist stage to localStorage on every change (only after hydration)
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(STORAGE_KEY_STAGE, stage);
-    }
-  }, [stage]);
+    if (!hydrated) return;
+    localStorage.setItem(STORAGE_KEY_STAGE, stage);
+  }, [stage, hydrated]);
+
+  // Reset: clear all state and localStorage, go back to books
+  const handleReset = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY_INVOICES);
+    localStorage.removeItem(STORAGE_KEY_STAGE);
+    setApprovedInvoices(new Map());
+    setStage("books");
+  }, []);
 
   const handleApprove = useCallback(
     (id: string, data: { formData: Record<string, string>; fiscalLines: FiscalLine[] }) => {
@@ -105,11 +101,26 @@ export default function Home() {
 
   const approvedIds = new Set(approvedInvoices.keys());
 
+  // Show nothing until hydration to avoid mismatch
+  if (!hydrated) {
+    return <div className="w-full h-screen bg-slate-50" />;
+  }
+
   return (
     <div className="w-full h-screen bg-slate-50 overflow-hidden flex flex-col">
-      {/* Stage indicator bar — positioned at top */}
+      {/* Stage indicator bar */}
       <div className="flex-shrink-0 px-6 py-2 bg-white border-b border-slate-100">
-        <StageIndicator stage={stage} />
+        <StageIndicator
+          stage={stage}
+          onStageClick={(s) => {
+            // Only allow navigating to completed stages
+            const order: Stage[] = ["books", "processing", "review", "export"];
+            const currentIdx = order.indexOf(stage);
+            const targetIdx = order.indexOf(s);
+            if (targetIdx < currentIdx) setStage(s);
+          }}
+          onReset={handleReset}
+        />
       </div>
 
       {/* Stage content */}

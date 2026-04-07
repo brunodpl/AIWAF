@@ -1,9 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { fetchPipelineStatus } from "@/lib/api";
@@ -19,7 +29,14 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Poll with recursive setTimeout (only one request in flight at a time)
+  // Use ref to always access latest status inside the polling closure (avoids stale closure bug)
+  const statusRef = useRef<PipelineStatus | null>(null);
+  const onCompleteRef = useRef(onComplete);
+  const onBackRef = useRef(onBack);
+
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
+  useEffect(() => { onBackRef.current = onBack; }, [onBack]);
+
   useEffect(() => {
     let cancelled = false;
     let completionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -29,55 +46,58 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
       try {
         const result = await fetchPipelineStatus();
         if (cancelled) return;
+
+        statusRef.current = result;
         setStatus(result);
         setError(null);
+        setLoading(false);
 
         if (result.status === "completed") {
           completionTimer = setTimeout(() => {
-            if (!cancelled) onComplete();
+            if (!cancelled) onCompleteRef.current();
           }, 800);
-          return; // Stop polling
-        } else if (result.status === "error") {
+          return;
+        }
+
+        if (result.status === "error") {
           setError(result.error_message || "Error desconocido en el pipeline");
-          return; // Stop polling on error
-        } else if (result.status === "idle") {
-          // Only transition to review if we previously saw "running"
-          if (status?.status === "running" || status?.started_at) {
-            onComplete();
+          return;
+        }
+
+        if (result.status === "idle") {
+          // Only transition if we have seen a previous running/started state
+          const prev = statusRef.current;
+          if (prev?.status === "running" || prev?.started_at) {
+            if (!cancelled) onCompleteRef.current();
           }
           return;
         }
 
-        // Schedule next poll
         if (!cancelled) {
           setTimeout(poll, 2000);
         }
-      } catch (err) {
-        console.error("Error polling pipeline status:", err);
+      } catch {
         if (!cancelled) {
           setTimeout(poll, 2000);
         }
       }
     };
 
-    // Initial poll
-    poll().then(() => {
-      if (!cancelled) setLoading(false);
-    }).catch(() => {
-      if (!cancelled) setLoading(false);
-    });
+    poll();
 
     return () => {
       cancelled = true;
       if (completionTimer) clearTimeout(completionTimer);
     };
-  }, [onComplete, onBack]);
+  }, []); // stable: uses refs for callbacks, no deps needed
 
-  const progress = status && status.total > 0
-    ? Math.round((status.processed / status.total) * 100)
-    : 0;
+  const progress =
+    status && status.total > 0
+      ? Math.round((status.processed / status.total) * 100)
+      : 0;
 
-  // Loading state
+  const isRunning = status?.status === "running";
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center bg-slate-50">
@@ -89,7 +109,6 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
     );
   }
 
-  // Error state (pipeline error, not network error)
   if (error) {
     return (
       <div className="flex h-full items-center justify-center bg-slate-50">
@@ -112,14 +131,12 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
   return (
     <div className="flex h-full items-center justify-center bg-slate-50">
       <div className="text-center max-w-md w-full px-8">
-        {/* Title */}
         <h2 className="text-xs font-black uppercase tracking-[0.15em] text-slate-800 mb-8">
           Asientos Automatizados
         </h2>
 
-        {/* Status badge */}
         <div className="flex justify-center mb-6">
-          {status?.status === "running" && (
+          {isRunning && (
             <span className="inline-flex items-center gap-2 text-xs font-bold text-teal-600 bg-teal-50 px-3 py-1 rounded-full">
               <Loader2 className="h-3 w-3 animate-spin" />
               Procesando...
@@ -134,26 +151,19 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
         </div>
 
         {/* Progress bar */}
-        <div className="mb-4">
-          {status?.total === 0 ? (
-            /* Indeterminate progress — animate bar */
-            <div className="relative">
-              <Progress value={0} className="h-2 bg-slate-100" />
+        <div className="mb-4 relative overflow-hidden rounded">
+          {status?.total === 0 || !status?.total ? (
+            <div className="relative h-2 bg-slate-100 overflow-hidden rounded">
+              <div
+                className="absolute inset-y-0 w-1/3 bg-teal-500/60 rounded"
+                style={{
+                  animation: "indeterminate-slide 1.5s ease-in-out infinite",
+                }}
+              />
               <style>{`
-                @keyframes indeterminate {
-                  0% { transform: translateX(-100%); }
-                  50% { transform: translateX(100%); }
-                  100% { transform: translateX(-100%); }
-                }
-                .animate-indeterminate::after {
-                  content: '';
-                  position: absolute;
-                  top: 0;
-                  left: 0;
-                  right: 0;
-                  bottom: 0;
-                  background: linear-gradient(90deg, transparent, hsl(173 80% 40%), transparent);
-                  animation: indeterminate 1.5s ease-in-out infinite;
+                @keyframes indeterminate-slide {
+                  0% { left: -33%; }
+                  100% { left: 100%; }
                 }
               `}</style>
             </div>
@@ -162,29 +172,55 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
           )}
         </div>
 
-        {/* Progress text */}
         {status && (
           <div className="space-y-2">
             <p className="text-sm text-slate-500">
-              Procesando {status.current_file || "facturas"}... ({status.processed}/{status.total})
+              {status.current_file
+                ? `Procesando ${status.current_file}...`
+                : "Procesando facturas..."}
+              {status.total > 0 && ` (${status.processed}/${status.total})`}
             </p>
             {status.total > 0 && (
-              <p className="text-xs font-mono text-slate-300">
-                {progress}% completado
-              </p>
+              <p className="text-xs font-mono text-slate-300">{progress}% completado</p>
             )}
           </div>
         )}
 
-        {/* Back button (always available) */}
+        {/* Back button: warn if pipeline is still running */}
         <div className="mt-8">
-          <Button
-            onClick={onBack}
-            variant="ghost"
-            className="text-[10px] uppercase tracking-[0.15em] text-slate-400 hover:text-slate-600"
-          >
-            Volver a Gestión
-          </Button>
+          {isRunning ? (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="text-[10px] uppercase tracking-[0.15em] text-slate-400 hover:text-slate-600"
+                >
+                  Volver a Gestión
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Pipeline en ejecución</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    El pipeline sigue procesando facturas en segundo plano. Si vuelves ahora,
+                    podrás retomar la revisión cuando termine. ¿Confirmas que quieres salir?
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction onClick={onBack}>Volver de todas formas</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          ) : (
+            <Button
+              onClick={onBack}
+              variant="ghost"
+              className="text-[10px] uppercase tracking-[0.15em] text-slate-400 hover:text-slate-600"
+            >
+              Volver a Gestión
+            </Button>
+          )}
         </div>
       </div>
     </div>
