@@ -19,15 +19,12 @@ COPY src/ ./src/
 COPY data/ ./data/
 
 # Crear directorios necesarios y usuario no-root
-RUN mkdir -p data/output logs/audit horeca_sandbox \
+RUN mkdir -p data/output logs/audit horeca_sandbox credentials \
     && groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app \
     && chown -R app:app /app
 
 # Exponer puerto para la API
 EXPOSE 8000
-
-# Variable de entorno para las credenciales (se montará via volume)
-ENV GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service_account.json
 
 # Ejecutar como usuario no-root
 USER app

@@ -8,8 +8,9 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Montar credenciales de Google Cloud
-      - ./sistema-de-asientos-automatizado/credentials:/app/credentials:ro
+      # Ruta al archivo de credenciales definida en .env (CREDENTIALS_PATH)
+      # Ejemplo en .env: CREDENTIALS_PATH=/home/usuario/.secrets/sa.json
+      - ${CREDENTIALS_PATH}:/app/credentials/service_account.json:ro
       # Persistir datos de salida
       - pipeline-data:/app/data
       # Sandbox para procesamiento de facturas
@@ -19,8 +20,10 @@ services:
     env_file:
       - ./sistema-de-asientos-automatizado/.env.docker
     environment:
+      # Credenciales: ruta fija dentro del contenedor, el archivo viene del volumen
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service_account.json
-      - ALLOWED_ORIGINS=http://localhost:3000,http://interfaz-asientos:3000
+      # CORS: configurar en .env raíz
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://interfaz-asientos:3000}
     networks:
       - asientos-network
     restart: unless-stopped

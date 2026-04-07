@@ -31,12 +31,14 @@ env.bak/
 venv.bak/
 .venv/
 
-# Environment variables
+# Environment variables — NUNCA subir al repo
 .env
 .env.local
 .env.*.local
+.env.docker
 
-# Google Cloud credentials
+# Credenciales Google Cloud — NUNCA subir al repo
+credentials/
 *.json
 !maestro_clientes.json
 !catalogo_conceptos.json
