@@ -17,7 +17,7 @@ services:
       # Logs
       - pipeline-logs:/app/logs
     env_file:
-      - ./sistema-de-asientos-automatizado/.env
+      - ./sistema-de-asientos-automatizado/.env.docker
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service_account.json
       - ALLOWED_ORIGINS=http://localhost:3000,http://interfaz-asientos:3000
@@ -25,11 +25,11 @@ services:
       - asientos-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 40s
 
   # Interfaz - Next.js frontend
   interfaz:
@@ -37,12 +37,10 @@ services:
       context: ./interfaz-asientos-automatizados
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://pipeline-api:8000
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     container_name: interfaz-asientos
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://pipeline-api:8000
     depends_on:
       pipeline-api:
         condition: service_healthy
