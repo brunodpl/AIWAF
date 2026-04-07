@@ -85,6 +85,7 @@ def process_document(
     }
 
     fase3_resultados = {}
+    FASE3_TIMEOUT = 300  # 5 minutos por módulo
     with ThreadPoolExecutor(max_workers=len(fase3_modulos)) as executor:
         futuros = {
             executor.submit(fn): nombre
@@ -93,7 +94,12 @@ def process_document(
         for futuro in as_completed(futuros):
             nombre = futuros[futuro]
             try:
-                fase3_resultados[nombre] = futuro.result()
+                fase3_resultados[nombre] = futuro.result(timeout=FASE3_TIMEOUT)
+            except TimeoutError:
+                logger.error(
+                    f"[pipeline] Fase 3 '{nombre}' excedió timeout ({FASE3_TIMEOUT}s) para {doc_id}"
+                )
+                fase3_resultados[nombre] = False
             except Exception as e:
                 logger.error(
                     f"[pipeline] Fase 3 '{nombre}' lanzó excepción para {doc_id}: {e}",
@@ -237,21 +243,23 @@ def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -
             if decision == "auto":
                 try:
                     move_file(file_path, cfg.get_folder_path(cfg.folder_procesadas))
+                    summary["ok"] += 1
                 except Exception as e:
                     logger.error(
                         "[pipeline] Fallo moviendo archivo %s -> %s: %s",
                         file_path, cfg.get_folder_path(cfg.folder_procesadas), e, exc_info=True,
                     )
-                summary["ok"] += 1
+                    summary["error"] += 1
             elif decision in ("warn", "pendiente"):
                 try:
                     move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
+                    summary["warn"] += 1
                 except Exception as e:
                     logger.error(
                         "[pipeline] Fallo moviendo archivo %s -> %s: %s",
                         file_path, cfg.get_folder_path(cfg.folder_incidencias), e, exc_info=True,
                     )
-                summary["warn"] += 1
+                    summary["error"] += 1
             else:  # block o error
                 try:
                     move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))

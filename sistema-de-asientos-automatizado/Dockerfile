@@ -18,14 +18,19 @@ RUN pip install --no-cache-dir fastapi[standard] uvicorn
 COPY src/ ./src/
 COPY data/ ./data/
 
-# Crear directorios necesarios
-RUN mkdir -p data/output logs/audit horeca_sandbox
+# Crear directorios necesarios y usuario no-root
+RUN mkdir -p data/output logs/audit horeca_sandbox \
+    && groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app \
+    && chown -R app:app /app
 
 # Exponer puerto para la API
 EXPOSE 8000
 
 # Variable de entorno para las credenciales (se montará via volume)
 ENV GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service_account.json
+
+# Ejecutar como usuario no-root
+USER app
 
 # Comando por defecto: iniciar API server
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

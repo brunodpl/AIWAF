@@ -176,16 +176,24 @@ class Settings(BaseSettings):
         """
         Validar que las rutas críticas existen o pueden crearse.
 
-        Crea automáticamente directorios de output y logs si no existen.
+        Crea automáticamente directorios de output, logs y sandbox si no existen.
         """
         os.makedirs(self.output_path, exist_ok=True)
         os.makedirs(self.logs_path, exist_ok=True)
 
-        if not os.path.isdir(self.sandbox_base_path):
-            raise ValueError(
-                f"Sandbox base path does not exist: {self.sandbox_base_path}\n"
-                f"Please create it or update SANDBOX_BASE_PATH in .env"
-            )
+        # Auto-crear sandbox y subdirectorios de libros para plug & play
+        os.makedirs(self.sandbox_base_path, exist_ok=True)
+        for folder in [
+            self.folder_compras_gastos,
+            self.folder_ventas_ingresos,
+            self.folder_bienes_inversion,
+            self.folder_procesadas,
+            self.folder_incidencias,
+        ]:
+            os.makedirs(self.get_folder_path(folder), exist_ok=True)
+        # Crear subdirectorios PENDIENTES para la interfaz de upload
+        for subdir in ["PENDIENTES/gastos", "PENDIENTES/ingresos", "PENDIENTES/bienes"]:
+            os.makedirs(os.path.join(self.sandbox_base_path, subdir), exist_ok=True)
 
     def __repr__(self) -> str:
         """Representación segura sin exponer credenciales."""

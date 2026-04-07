@@ -44,10 +44,17 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=http://pipeline-api:8000
     depends_on:
-      - pipeline-api
+      pipeline-api:
+        condition: service_healthy
     networks:
       - asientos-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 networks:
   asientos-network:

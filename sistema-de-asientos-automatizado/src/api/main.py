@@ -437,13 +437,29 @@ def process_invoice_action(doc_id: str, action: InvoiceAction):
         logger.error(f"Error saving action log: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error saving action: {str(e)}")
     
-    # TODO: Implementar movimiento de carpetas según acción
-    # Por ahora, solo registramos la acción
-    
+    # Mover archivo de factura según acción del usuario
+    file_moved = False
+    if action.action == "approve":
+        # Mover de 99_INCIDENCIAS a 90_PROCESADAS
+        cfg = settings()
+        result = find_invoice_file(doc_id)
+        if result:
+            invoice_file, filename = result
+            dest_folder = cfg.get_folder_path(cfg.folder_procesadas)
+            os.makedirs(dest_folder, exist_ok=True)
+            dest_path = os.path.join(dest_folder, filename)
+            try:
+                shutil.move(str(invoice_file), dest_path)
+                file_moved = True
+                logger.info(f"Invoice {doc_id} moved to {dest_folder}")
+            except OSError as e:
+                logger.error(f"Error moving invoice file for {doc_id}: {e}", exc_info=True)
+
     return {
         "status": "success",
         "message": f"Action '{action.action}' recorded for invoice {doc_id}",
         "action": action_record,
+        "file_moved": file_moved,
     }
 
 

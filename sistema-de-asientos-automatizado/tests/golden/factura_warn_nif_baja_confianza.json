@@ -1,0 +1,35 @@
+{
+  "description": "Factura WARN: NIF del emisor con confianza baja (LLM árbitro usado)",
+  "input": {
+    "libro": "20_COMPRAS_GASTOS",
+    "documento_extraido": {
+      "identificacion": {
+        "nif_entidad": {"valor": "B87654321", "confianza": 0.75},
+        "nombre_entidad": {"valor": "Suministros Galicia S.L.", "confianza": 0.95},
+        "numero_factura": {"valor": "2026/0045", "confianza": 0.95},
+        "fecha_expedicion": {"valor": "2026-02-28", "confianza": 0.95},
+        "fecha_operacion": {"valor": "2026-03-01", "confianza": 1.0}
+      },
+      "cliente_destino": {
+        "nif_receptor": {"valor": "B20091754", "confianza": 0.95},
+        "nombre_receptor": {"valor": "Restaurante Pepe S.L.", "confianza": 0.95}
+      },
+      "fiscal": {
+        "total_euros": {"valor": 242.0, "confianza": 0.95},
+        "lineas_fiscales": [
+          {
+            "base_euros": {"valor": 200.0, "confianza": 0.95},
+            "tipo_porcentaje": {"valor": 21.0, "confianza": 0.95},
+            "cuota": {"valor": 42.0, "confianza": 0.95},
+            "total_linea": {"valor": 242.0, "confianza": 0.95}
+          }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "decision_global": "warn",
+    "autocargable": false,
+    "motivos_revision_contains": "nif_entidad"
+  }
+}

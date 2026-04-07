@@ -24,6 +24,8 @@ from src.config import settings as get_settings
 
 logger = logging.getLogger("pipeline.semantica")
 
+VALID_LIBROS = {"20_COMPRAS_GASTOS", "21_VENTAS_INGRESOS", "22_BIENES_INVERSION"}
+
 
 def run_semantica(
     documento_id: str,
@@ -49,6 +51,10 @@ def run_semantica(
 
     doc_dir = Path(doc_output_dir)
     output_path = doc_dir / "resultado_semantica.json"
+
+    if libro not in VALID_LIBROS:
+        logger.error(f"[semantica] Libro no válido: {libro}. Válidos: {VALID_LIBROS}")
+        return False
 
     logger.info(f"[semantica] Iniciando doc_id={documento_id} libro={libro}")
 
