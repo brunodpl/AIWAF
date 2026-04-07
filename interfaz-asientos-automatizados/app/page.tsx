@@ -15,12 +15,13 @@ const STORAGE_KEY_INVOICES = "horeca_approved_invoices";
 const STORAGE_KEY_STAGE = "horeca_current_stage";
 
 export default function Home() {
-  // Hydration guard: start with default values, restore from localStorage after mount
+  // FIX #1: No leer localStorage en el inicializador de useState (crash SSR/hidratación).
+  // Usamos estado "hydrated" y restauramos en useEffect post-mount.
   const [hydrated, setHydrated] = useState(false);
   const [stage, setStage] = useState<Stage>("books");
   const [approvedInvoices, setApprovedInvoices] = useState<Map<string, ApprovedInvoiceData>>(new Map());
 
-  // Restore state from localStorage after hydration (client-only)
+  // Restore from localStorage only after mount (client-side)
   useEffect(() => {
     try {
       const savedInvoices = localStorage.getItem(STORAGE_KEY_INVOICES);
@@ -36,13 +37,11 @@ export default function Home() {
           }
         }
       }
-    } catch {
-      // ignore corrupt data
-    }
+    } catch { /* ignore corrupt data */ }
     setHydrated(true);
   }, []);
 
-  // Persist approvedInvoices to localStorage with debounce (only after hydration)
+  // Persist approvedInvoices to localStorage (debounced)
   useEffect(() => {
     if (!hydrated) return;
     const timer = setTimeout(() => {
@@ -54,18 +53,18 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [approvedInvoices, hydrated]);
 
-  // Persist stage to localStorage on every change (only after hydration)
+  // Persist stage to localStorage
   useEffect(() => {
     if (!hydrated) return;
     localStorage.setItem(STORAGE_KEY_STAGE, stage);
   }, [stage, hydrated]);
 
-  // Reset: clear all state and localStorage, go back to books
+  // FIX #6: Reset global — limpia todo el estado y vuelve al inicio
   const handleReset = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY_INVOICES);
-    localStorage.removeItem(STORAGE_KEY_STAGE);
     setApprovedInvoices(new Map());
     setStage("books");
+    localStorage.removeItem(STORAGE_KEY_INVOICES);
+    localStorage.removeItem(STORAGE_KEY_STAGE);
   }, []);
 
   const handleApprove = useCallback(
@@ -101,24 +100,17 @@ export default function Home() {
 
   const approvedIds = new Set(approvedInvoices.keys());
 
-  // Show nothing until hydration to avoid mismatch
-  if (!hydrated) {
-    return <div className="w-full h-screen bg-slate-50" />;
-  }
+  // No renderizar hasta que la restauración de localStorage haya ocurrido
+  // (evita flash de contenido incorrecto)
+  if (!hydrated) return null;
 
   return (
     <div className="w-full h-screen bg-slate-50 overflow-hidden flex flex-col">
-      {/* Stage indicator bar */}
+      {/* Stage indicator bar — positioned at top */}
       <div className="flex-shrink-0 px-6 py-2 bg-white border-b border-slate-100">
         <StageIndicator
           stage={stage}
-          onStageClick={(s) => {
-            // Only allow navigating to completed stages
-            const order: Stage[] = ["books", "processing", "review", "export"];
-            const currentIdx = order.indexOf(stage);
-            const targetIdx = order.indexOf(s);
-            if (targetIdx < currentIdx) setStage(s);
-          }}
+          onStageClick={(s) => setStage(s)}
           onReset={handleReset}
         />
       </div>

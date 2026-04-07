@@ -29,11 +29,20 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Use ref to always access latest status inside the polling closure (avoids stale closure bug)
+  // FIX #2: usar ref para capturar el status más reciente y evitar stale closure
   const statusRef = useRef<PipelineStatus | null>(null);
+  const hasSeenRunning = useRef(false);
+
+  useEffect(() => {
+    statusRef.current = status;
+    if (status?.status === "running") {
+      hasSeenRunning.current = true;
+    }
+  }, [status]);
+
+  // FIX #2: onComplete y onBack via refs para no disparar re-mount del efecto de polling
   const onCompleteRef = useRef(onComplete);
   const onBackRef = useRef(onBack);
-
   useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
 
@@ -46,29 +55,21 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
       try {
         const result = await fetchPipelineStatus();
         if (cancelled) return;
-
-        statusRef.current = result;
         setStatus(result);
         setError(null);
-        setLoading(false);
 
         if (result.status === "completed") {
           completionTimer = setTimeout(() => {
             if (!cancelled) onCompleteRef.current();
           }, 800);
           return;
-        }
-
-        if (result.status === "error") {
+        } else if (result.status === "error") {
           setError(result.error_message || "Error desconocido en el pipeline");
           return;
-        }
-
-        if (result.status === "idle") {
-          // Only transition if we have seen a previous running/started state
-          const prev = statusRef.current;
-          if (prev?.status === "running" || prev?.started_at) {
-            if (!cancelled) onCompleteRef.current();
+        } else if (result.status === "idle") {
+          // FIX #2: usar ref para detectar si habíamos visto "running" — sin stale closure
+          if (hasSeenRunning.current || result.started_at) {
+            onCompleteRef.current();
           }
           return;
         }
@@ -76,27 +77,31 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
         if (!cancelled) {
           setTimeout(poll, 2000);
         }
-      } catch {
+      } catch (err) {
+        console.error("Error polling pipeline status:", err);
         if (!cancelled) {
           setTimeout(poll, 2000);
         }
       }
     };
 
-    poll();
+    poll().then(() => {
+      if (!cancelled) setLoading(false);
+    }).catch(() => {
+      if (!cancelled) setLoading(false);
+    });
 
     return () => {
       cancelled = true;
       if (completionTimer) clearTimeout(completionTimer);
     };
-  }, []); // stable: uses refs for callbacks, no deps needed
-
-  const progress =
-    status && status.total > 0
-      ? Math.round((status.processed / status.total) * 100)
-      : 0;
+  // FIX #2: array de deps vacío — las funciones de callback se leen via ref
+  }, []);
 
   const isRunning = status?.status === "running";
+  const progress = status && status.total > 0
+    ? Math.round((status.processed / status.total) * 100)
+    : 0;
 
   if (loading) {
     return (
@@ -136,7 +141,7 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
         </h2>
 
         <div className="flex justify-center mb-6">
-          {isRunning && (
+          {status?.status === "running" && (
             <span className="inline-flex items-center gap-2 text-xs font-bold text-teal-600 bg-teal-50 px-3 py-1 rounded-full">
               <Loader2 className="h-3 w-3 animate-spin" />
               Procesando...
@@ -150,22 +155,24 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
           )}
         </div>
 
-        {/* Progress bar */}
-        <div className="mb-4 relative overflow-hidden rounded">
-          {status?.total === 0 || !status?.total ? (
-            <div className="relative h-2 bg-slate-100 overflow-hidden rounded">
-              <div
-                className="absolute inset-y-0 w-1/3 bg-teal-500/60 rounded"
-                style={{
-                  animation: "indeterminate-slide 1.5s ease-in-out infinite",
-                }}
-              />
+        {/* FIX #8: progress bar indeterminada — wrapper con overflow-hidden y position relative */}
+        <div className="mb-4">
+          {status?.total === 0 ? (
+            <div className="relative h-2 w-full bg-slate-100 overflow-hidden rounded-full">
               <style>{`
-                @keyframes indeterminate-slide {
-                  0% { left: -33%; }
-                  100% { left: 100%; }
+                @keyframes indeterminate {
+                  0%   { transform: translateX(-100%); }
+                  50%  { transform: translateX(100%); }
+                  100% { transform: translateX(-100%); }
+                }
+                .bar-indeterminate {
+                  position: absolute;
+                  top: 0; left: 0; right: 0; bottom: 0;
+                  background: linear-gradient(90deg, transparent, hsl(173 80% 40%), transparent);
+                  animation: indeterminate 1.5s ease-in-out infinite;
                 }
               `}</style>
+              <div className="bar-indeterminate" />
             </div>
           ) : (
             <Progress value={progress} className="h-2 bg-slate-100" />
@@ -175,18 +182,17 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
         {status && (
           <div className="space-y-2">
             <p className="text-sm text-slate-500">
-              {status.current_file
-                ? `Procesando ${status.current_file}...`
-                : "Procesando facturas..."}
-              {status.total > 0 && ` (${status.processed}/${status.total})`}
+              Procesando {status.current_file || "facturas"}... ({status.processed}/{status.total})
             </p>
             {status.total > 0 && (
-              <p className="text-xs font-mono text-slate-300">{progress}% completado</p>
+              <p className="text-xs font-mono text-slate-300">
+                {progress}% completado
+              </p>
             )}
           </div>
         )}
 
-        {/* Back button: warn if pipeline is still running */}
+        {/* FIX #11: AlertDialog de confirmación al volver si el pipeline está running */}
         <div className="mt-8">
           {isRunning ? (
             <AlertDialog>
@@ -202,13 +208,14 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
                 <AlertDialogHeader>
                   <AlertDialogTitle>Pipeline en ejecución</AlertDialogTitle>
                   <AlertDialogDescription>
-                    El pipeline sigue procesando facturas en segundo plano. Si vuelves ahora,
-                    podrás retomar la revisión cuando termine. ¿Confirmas que quieres salir?
+                    El pipeline está procesando facturas en segundo plano. Si vuelves ahora,
+                    el procesamiento continuará pero no verás el progreso en tiempo real.
+                    ¿Seguro que quieres volver?
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
-                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                  <AlertDialogAction onClick={onBack}>Volver de todas formas</AlertDialogAction>
+                  <AlertDialogCancel>Seguir esperando</AlertDialogCancel>
+                  <AlertDialogAction onClick={onBack}>Volver igualmente</AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
