@@ -1,6 +1,6 @@
 # =============================================================
-# INSTALADOR PLUG-AND-PLAY — Sistema de Asientos Automatizado
-# Ejecutar en PowerShell como administrador desde la raiz del proyecto:
+# INSTALADOR PLUG-AND-PLAY - Sistema de Asientos Automatizado
+# Ejecutar en PowerShell desde la raiz del proyecto:
 #   .\setup.ps1
 # =============================================================
 
@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  Sistema de Asientos Automatizado — Instalacion inicial" -ForegroundColor Cyan
+Write-Host "  Sistema de Asientos Automatizado - Instalacion inicial" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -35,7 +35,7 @@ try {
 Write-Host ""
 Write-Host "[2/4] Configurando credenciales de Google Cloud..." -ForegroundColor Yellow
 
-$credentialsDir = "sistema-de-asientos-automatizado\credentials"
+$credentialsDir  = "sistema-de-asientos-automatizado\credentials"
 $credentialsFile = "$credentialsDir\service_account.json"
 
 if (-not (Test-Path $credentialsFile)) {
@@ -47,58 +47,55 @@ if (-not (Test-Path $credentialsFile)) {
     Write-Host "      en la siguiente carpeta y vuelve a ejecutar este script:" -ForegroundColor Yellow
     Write-Host "      $((Get-Location).Path)\$credentialsDir\" -ForegroundColor White
     Write-Host ""
-    # Crear la carpeta para que el usuario solo tenga que pegar el archivo
     New-Item -ItemType Directory -Force -Path $credentialsDir | Out-Null
     Write-Host "      (La carpeta ya ha sido creada, solo pega el archivo ahi)" -ForegroundColor Green
     exit 1
 }
 
-$absoluteCredentials = (Resolve-Path $credentialsFile).Path
+$absoluteCredentials    = (Resolve-Path $credentialsFile).Path
+$credentialsForDocker   = $absoluteCredentials -replace '\\', '/'
+
 Write-Host "      OK: Credenciales encontradas" -ForegroundColor Green
 Write-Host "      Ruta: $absoluteCredentials" -ForegroundColor Gray
 
-# 3. Generar .env raiz si no existe
+# 3. Generar archivos de configuracion
 Write-Host ""
 Write-Host "[3/4] Generando archivos de configuracion..." -ForegroundColor Yellow
 
-$credentialsForDocker = $absoluteCredentials -replace '\\', '/'
-
-$envContent = @"
-# Generado automaticamente por setup.ps1
-# Puedes editar este archivo si cambias la ubicacion de los archivos
-
-# Ruta al archivo de credenciales de Google Cloud
-CREDENTIALS_PATH=$credentialsForDocker
-
-# URL de la API accesible desde el navegador
-# - Uso local: http://localhost:8000
-# - Red local: http://192.168.x.x:8000 (cambia la IP por la del servidor)
-NEXT_PUBLIC_API_URL=http://localhost:8000
-
-# Origenes CORS permitidos (separados por coma)
-ALLOWED_ORIGINS=http://localhost:3000,http://interfaz-asientos:3000
-"@
-
+# --- .env raiz ---
 if (-not (Test-Path ".env")) {
-    $envContent | Out-File -FilePath ".env" -Encoding UTF8
+    Add-Content ".env" "# Generado automaticamente por setup.ps1"
+    Add-Content ".env" ""
+    Add-Content ".env" "# Ruta al archivo de credenciales de Google Cloud"
+    Add-Content ".env" "CREDENTIALS_PATH=$credentialsForDocker"
+    Add-Content ".env" ""
+    Add-Content ".env" "# URL de la API accesible desde el navegador"
+    Add-Content ".env" "# - Uso local:    http://localhost:8000"
+    Add-Content ".env" "# - Red local:    http://192.168.x.x:8000  (cambia la IP por la del servidor)"
+    Add-Content ".env" "NEXT_PUBLIC_API_URL=http://localhost:8000"
+    Add-Content ".env" ""
+    Add-Content ".env" "# Origenes CORS permitidos (separados por coma)"
+    Add-Content ".env" "ALLOWED_ORIGINS=http://localhost:3000,http://interfaz-asientos:3000"
     Write-Host "      OK: .env creado" -ForegroundColor Green
 } else {
     Write-Host "      OK: .env ya existe, no se sobreescribe" -ForegroundColor Green
 }
 
-# Generar .env.docker si no existe
+# --- .env.docker ---
 $envDockerSrc = "sistema-de-asientos-automatizado\.env.docker.example"
 $envDockerDst = "sistema-de-asientos-automatizado\.env.docker"
 
 if (-not (Test-Path $envDockerDst)) {
-    Copy-Item $envDockerSrc $envDockerDst
-    Write-Host "      OK: .env.docker creado desde plantilla" -ForegroundColor Green
+    if (Test-Path $envDockerSrc) {
+        Copy-Item $envDockerSrc $envDockerDst
+        Write-Host "      OK: .env.docker creado desde plantilla" -ForegroundColor Green
+    } else {
+        Write-Host "      AVISO: no se encontro .env.docker.example, creando minimo" -ForegroundColor Yellow
+        Add-Content $envDockerDst "GOOGLE_CLOUD_PROJECT_ID=tu-project-id-de-gcp"
+    }
+
     Write-Host ""
-    Write-Host "      ATENCION: Edita el archivo .env.docker y pon tu Google Cloud Project ID:" -ForegroundColor Yellow
-    Write-Host "      $((Get-Location).Path)\$envDockerDst" -ForegroundColor White
-    Write-Host "      Linea a editar: GOOGLE_CLOUD_PROJECT_ID=tu-project-id-de-gcp" -ForegroundColor White
-    Write-Host ""
-    $projectId = Read-Host "      Introduce tu Google Cloud Project ID ahora (o pulsa Enter para hacerlo despues)"
+    $projectId = Read-Host "      Introduce tu Google Cloud Project ID (o pulsa Enter para hacerlo despues)"
     if ($projectId -ne "") {
         (Get-Content $envDockerDst) -replace 'tu-project-id-de-gcp', $projectId | Set-Content $envDockerDst
         Write-Host "      OK: Project ID configurado" -ForegroundColor Green
