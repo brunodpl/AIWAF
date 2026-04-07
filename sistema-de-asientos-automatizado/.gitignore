@@ -43,6 +43,7 @@ venv.bak/
 !plan_contable.json
 !data/clients.json
 !.mcp.json
+!tests/golden/*.json
 service-account-key.json
 credentials.json
 gcloud-key.json

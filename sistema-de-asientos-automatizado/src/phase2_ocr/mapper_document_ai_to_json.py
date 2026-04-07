@@ -141,9 +141,10 @@ def estructurar_factura(texto_plano: str, client: genai.Client) -> Optional[dict
         thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
 
-    for intento in range(2):
+    max_retries = 3
+    for intento in range(max_retries):
         try:
-            logger.info(f"[Gemini] Llamada {intento + 1}/2 a {model_name}")
+            logger.info(f"[Gemini] Llamada {intento + 1}/{max_retries} a {model_name}")
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
@@ -165,11 +166,17 @@ def estructurar_factura(texto_plano: str, client: genai.Client) -> Optional[dict
             return result
 
         except Exception as e:
-            if intento == 1:
-                logger.error(f"[Gemini] Fallo persistente: {e}", exc_info=True)
+            is_quota = "429" in str(e) or "quota" in str(e).lower() or "rate" in str(e).lower()
+            if intento == max_retries - 1:
+                logger.error(f"[Gemini] Fallo persistente tras {max_retries} intentos: {e}", exc_info=True)
                 return None
-            logger.warning(f"[Gemini] Reintento tras error: {e}")
-            time.sleep(2)
+            backoff = 2 ** (intento + 1)  # 2s, 4s
+            if is_quota:
+                backoff = backoff * 5  # 10s, 20s para errores de quota
+                logger.warning(f"[Gemini] Quota/rate limit detectado, backoff={backoff}s: {e}")
+            else:
+                logger.warning(f"[Gemini] Reintento {intento + 1} tras error, backoff={backoff}s: {e}")
+            time.sleep(backoff)
 
     return None
 

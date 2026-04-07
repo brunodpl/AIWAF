@@ -1,0 +1,41 @@
+{
+  "description": "Factura AUTO: todos los campos con alta confianza, libro compras/gastos",
+  "input": {
+    "libro": "20_COMPRAS_GASTOS",
+    "documento_extraido": {
+      "identificacion": {
+        "nif_entidad": {"valor": "B12345678", "confianza": 0.95},
+        "nombre_entidad": {"valor": "Bebidas García S.L.", "confianza": 0.95},
+        "numero_factura": {"valor": "F-2026-001", "confianza": 0.95},
+        "fecha_expedicion": {"valor": "2026-03-15", "confianza": 0.95},
+        "fecha_operacion": {"valor": "2026-03-15", "confianza": 1.0}
+      },
+      "cliente_destino": {
+        "nif_receptor": {"valor": "B20091754", "confianza": 0.95},
+        "nombre_receptor": {"valor": "Restaurante Pepe S.L.", "confianza": 0.95}
+      },
+      "fiscal": {
+        "total_euros": {"valor": 159.04, "confianza": 0.95},
+        "lineas_fiscales": [
+          {
+            "base_euros": {"valor": 24.0, "confianza": 0.95},
+            "tipo_porcentaje": {"valor": 21.0, "confianza": 0.95},
+            "cuota": {"valor": 5.04, "confianza": 0.95},
+            "total_linea": {"valor": 29.04, "confianza": 0.95}
+          },
+          {
+            "base_euros": {"valor": 125.0, "confianza": 0.95},
+            "tipo_porcentaje": {"valor": 4.0, "confianza": 0.95},
+            "cuota": {"valor": 5.0, "confianza": 0.95},
+            "total_linea": {"valor": 130.0, "confianza": 0.95}
+          }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "decision_global": "auto",
+    "autocargable": true,
+    "motivos_revision": []
+  }
+}

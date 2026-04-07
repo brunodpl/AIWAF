@@ -1,0 +1,28 @@
+{
+  "description": "Factura BLOCK: NIF del emisor no extraído (OCR corrupto o ilegible)",
+  "input": {
+    "libro": "20_COMPRAS_GASTOS",
+    "documento_extraido": {
+      "identificacion": {
+        "nif_entidad": {"valor": null, "confianza": 0.0},
+        "nombre_entidad": {"valor": null, "confianza": 0.0},
+        "numero_factura": {"valor": "A/123", "confianza": 0.5},
+        "fecha_expedicion": {"valor": null, "confianza": 0.0},
+        "fecha_operacion": {"valor": "2026-03-15", "confianza": 1.0}
+      },
+      "cliente_destino": {
+        "nif_receptor": {"valor": null, "confianza": 0.0},
+        "nombre_receptor": {"valor": null, "confianza": 0.0}
+      },
+      "fiscal": {
+        "total_euros": {"valor": null, "confianza": 0.0},
+        "lineas_fiscales": []
+      }
+    }
+  },
+  "expected": {
+    "decision_global": "block",
+    "autocargable": false,
+    "motivos_revision_min_count": 3
+  }
+}
