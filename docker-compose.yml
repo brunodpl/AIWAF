@@ -11,12 +11,15 @@ services:
       # Ruta al archivo de credenciales definida en .env (CREDENTIALS_PATH)
       # Ejemplo en .env: CREDENTIALS_PATH=/home/usuario/.secrets/sa.json
       - ${CREDENTIALS_PATH}:/app/credentials/service_account.json:ro
-      # Persistir datos de salida
-      - pipeline-data:/app/data
+      # Persistir datos de salida — bind mount para trazabilidad visible en host
+      - ./sistema-de-asientos-automatizado/data/output:/app/data/output
+      # Maestros y clients.json — datos de referencia
+      - ./sistema-de-asientos-automatizado/data/maestros:/app/data/maestros:ro
+      - ./sistema-de-asientos-automatizado/data/clients.json:/app/data/clients.json:ro
       # Sandbox para procesamiento de facturas
       - ./sistema-de-asientos-automatizado/horeca_sandbox:/app/horeca_sandbox
-      # Logs
-      - pipeline-logs:/app/logs
+      # Logs — bind mount para trazabilidad visible en host
+      - ./sistema-de-asientos-automatizado/logs:/app/logs
     env_file:
       - ./sistema-de-asientos-automatizado/.env.docker
     environment:
@@ -61,8 +64,3 @@ networks:
   asientos-network:
     driver: bridge
 
-volumes:
-  pipeline-data:
-    driver: local
-  pipeline-logs:
-    driver: local
