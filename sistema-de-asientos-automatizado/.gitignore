@@ -31,7 +31,7 @@ env.bak/
 venv.bak/
 .venv/
 
-# Environment variables — NUNCA subir al repo
+# Environment — NUNCA subir al repo
 .env
 .env.local
 .env.*.local
@@ -39,35 +39,32 @@ venv.bak/
 
 # Credenciales Google Cloud — NUNCA subir al repo
 credentials/
-*.json
-!maestro_clientes.json
-!catalogo_conceptos.json
-!plan_contable.json
-!data/clients.json
-!.mcp.json
-!tests/golden/*.json
 service-account-key.json
-credentials.json
-gcloud-key.json
 *-credentials.json
 
-# Data files - temporary and output
+# Pipeline output — contenido generado, no trackear
+# La estructura de directorios SI se preserva via .gitkeep
+data/output/*/
+data/output/pipeline_status.json
+data/temp/
+data/cache/
+benchmark_resultado_detalle.json
+
+# Facturas de entrada (archivos grandes)
 data/input/*.pdf
 data/input/*.jpg
 data/input/*.jpeg
 data/input/*.png
-data/output/*.json
-data/output/*.xlsx
-data/temp/
-data/cache/
 
-# Excel output files
-*.xlsx
-!data/maestros/*.xlsx
+# Sandbox de procesamiento
+horeca_sandbox/**/
+!horeca_sandbox/.gitkeep
 
-# Logs
+# Logs — contenido generado, no trackear
+# La estructura SI se preserva via .gitkeep
+logs/**/*.jsonl
+logs/**/*.jsonl.*
 *.log
-logs/
 *.log.*
 
 # Testing
@@ -87,11 +84,7 @@ pytest_debug.log
 *.swp
 *.swo
 *~
-.DS_Store
 *.code-workspace
-
-# JetBrains
-.idea/
 *.iml
 *.iws
 .idea_modules/
@@ -101,22 +94,15 @@ pytest_debug.log
 Thumbs.db
 Desktop.ini
 
-# Jupyter Notebook
+# Jupyter
 .ipynb_checkpoints
-*.ipynb
 
-# mypy
+# Type checkers
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Pyre type checker
 .pyre/
-
-# pytype static type analyzer
 .pytype/
-
-# Cython debug symbols
 cython_debug/
 
 # [AI assistant] Code

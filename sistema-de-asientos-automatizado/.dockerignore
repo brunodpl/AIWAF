@@ -11,6 +11,8 @@ data/output/*
 !data/output/.gitkeep
 logs/*
 !logs/.gitkeep
+!logs/audit/
+!logs/audit/.gitkeep
 horeca_sandbox/*/
 credentials/
 .git/
