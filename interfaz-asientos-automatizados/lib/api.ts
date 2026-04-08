@@ -332,8 +332,15 @@ export async function uploadFiles(
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Failed to upload files: ${error}`);
+      let errorMessage = `Error subiendo archivos (${response.status})`;
+      try {
+        const errorBody = await response.json();
+        if (errorBody.detail) errorMessage = errorBody.detail;
+      } catch {
+        const errorText = await response.text();
+        if (errorText) errorMessage = errorText;
+      }
+      throw new Error(errorMessage);
     }
 
     return response.json();
@@ -377,13 +384,43 @@ export async function runPipeline(): Promise<PipelineRunResponse> {
       if (response.status === 409) {
         throw new Error("PIPELINE_ALREADY_RUNNING");
       }
-      throw new Error(`Failed to run pipeline: ${errorText}`);
+      if (response.status === 500) {
+        throw new Error("Error interno del servidor. Revisa los logs del backend.");
+      }
+      if (response.status === 422) {
+        throw new Error("Datos de entrada inválidos. Revisa los archivos subidos.");
+      }
+      throw new Error(`Error del pipeline (${response.status}): ${errorText}`);
     }
 
     return response.json();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("Request timed out. The server may still be processing.");
+    }
+    throw error;
+  }
+}
+
+/**
+ * Reset pipeline: devuelve archivos a PENDIENTES, limpia artefactos.
+ */
+export async function resetPipeline(): Promise<{ status: string; files_restored: number; doc_ids_deleted: number }> {
+  try {
+    const response = await fetchWithTimeout(`${API_URL}/api/pipeline/reset`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (response.status === 409) {
+        throw new Error("Pipeline en ejecución. Espera a que termine antes de resetear.");
+      }
+      throw new Error(`Error reseteando pipeline: ${errorText}`);
+    }
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Timeout reseteando pipeline.");
     }
     throw error;
   }

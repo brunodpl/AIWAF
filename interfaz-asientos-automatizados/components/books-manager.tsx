@@ -240,7 +240,20 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                             {uploadProgress.fileName || "Subiendo..."}
                           </span>
                         </div>
-                        <Progress value={progress > 0 && progress < 100 ? 60 : progress} className="h-1.5 bg-slate-100" />
+                        {progress > 0 && progress < 100 ? (
+                          <div className="relative h-1.5 w-full bg-slate-100 overflow-hidden rounded-full">
+                            <div
+                              className="absolute top-0 left-0 right-0 bottom-0"
+                              style={{
+                                background: "linear-gradient(90deg, transparent, hsl(173 80% 40%), transparent)",
+                                animation: "indeterminate 1.5s ease-in-out infinite",
+                              }}
+                            />
+                            <style>{`@keyframes indeterminate { 0% { transform: translateX(-100%); } 50% { transform: translateX(100%); } 100% { transform: translateX(-100%); } }`}</style>
+                          </div>
+                        ) : (
+                          <Progress value={progress} className="h-1.5 bg-slate-100" />
+                        )}
                       </div>
                     )}
 
