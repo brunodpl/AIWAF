@@ -17,10 +17,10 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
   const [isDragging, setIsDragging] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [pdfError, setPdfError] = useState(false);
-  const [iframeReady, setIframeReady] = useState(false);
+  const [pdfReady, setPdfReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const startRef = useRef({ x: 0, y: 0 });
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const pdfTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isPdf = fileType === "pdf";
 
@@ -28,23 +28,18 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
   useEffect(() => {
     setImageError(false);
     setPdfError(false);
-    setIframeReady(false);
-  }, [src]);
+    setPdfReady(false);
 
-  // Listen for iframe load events
-  useEffect(() => {
-    if (!isPdf || !iframeRef.current) return;
-
-    const iframe = iframeRef.current;
-    const handleLoad = () => setIframeReady(true);
-    const handleError = () => setPdfError(true);
-
-    iframe.addEventListener("load", handleLoad);
-    iframe.addEventListener("error", handleError);
+    // Para PDFs: timeout de detección de error (si no carga en 8s, mostrar fallback)
+    if (isPdf && src) {
+      if (pdfTimeoutRef.current) clearTimeout(pdfTimeoutRef.current);
+      pdfTimeoutRef.current = setTimeout(() => {
+        if (!pdfReady) setPdfError(true);
+      }, 8000);
+    }
 
     return () => {
-      iframe.removeEventListener("load", handleLoad);
-      iframe.removeEventListener("error", handleError);
+      if (pdfTimeoutRef.current) clearTimeout(pdfTimeoutRef.current);
     };
   }, [src, isPdf]);
 
@@ -116,36 +111,49 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
     <div className="relative w-full h-full bg-slate-50 flex flex-col grayscale-0 hover:grayscale-0 transition-all">
       <div className="bg-white border-b px-6 py-3 flex items-center justify-between z-10">
         <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Documento Original</span>
-        {!isPdf && (
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={handleZoomOut} aria-label="Alejar" className="h-8 w-8 hover:bg-slate-100">
-              <ZoomOut className="h-4 w-4" />
-            </Button>
-            <span className="text-[10px] font-mono w-10 text-center font-bold text-slate-500">{Math.round(scale * 100)}%</span>
-            <Button variant="ghost" size="icon" onClick={handleZoomIn} aria-label="Acercar" className="h-8 w-8 hover:bg-slate-100">
-              <ZoomIn className="h-4 w-4" />
-            </Button>
-            <div className="w-[1px] h-3 bg-slate-200 mx-1" />
-            <Button variant="ghost" size="icon" onClick={handleReset} aria-label="Restablecer zoom" className="h-8 w-8 hover:bg-slate-100 text-slate-400">
-              <RotateCcw className="h-3 w-3" />
-            </Button>
-          </div>
-        )}
+        <div className="flex items-center gap-1">
+          {!isPdf && (
+            <>
+              <Button variant="ghost" size="icon" onClick={handleZoomOut} aria-label="Alejar" className="h-8 w-8 hover:bg-slate-100">
+                <ZoomOut className="h-4 w-4" />
+              </Button>
+              <span className="text-[10px] font-mono w-10 text-center font-bold text-slate-500">{Math.round(scale * 100)}%</span>
+              <Button variant="ghost" size="icon" onClick={handleZoomIn} aria-label="Acercar" className="h-8 w-8 hover:bg-slate-100">
+                <ZoomIn className="h-4 w-4" />
+              </Button>
+              <div className="w-[1px] h-3 bg-slate-200 mx-1" />
+              <Button variant="ghost" size="icon" onClick={handleReset} aria-label="Restablecer zoom" className="h-8 w-8 hover:bg-slate-100 text-slate-400">
+                <RotateCcw className="h-3 w-3" />
+              </Button>
+            </>
+          )}
+          {/* Botón abrir en nueva pestaña siempre disponible */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 hover:bg-slate-100 text-slate-400"
+            onClick={() => window.open(src, "_blank")}
+            aria-label="Abrir en nueva pestaña"
+            title="Abrir en nueva pestaña"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       {isPdf ? (
         <div className="flex-grow overflow-hidden relative bg-white">
           {pdfError ? (
-            <div className="flex-grow flex items-center justify-center bg-slate-50">
+            <div className="flex-grow flex items-center justify-center bg-slate-50 h-full">
               <div className="text-center">
                 <FileText className="h-12 w-12 mx-auto mb-3 text-slate-300" />
-                <p className="text-sm text-slate-500 mb-1">No se pudo cargar el PDF</p>
-                <p className="text-xs text-slate-400 mb-4">El navegador no pudo renderizar el documento</p>
+                <p className="text-sm text-slate-500 mb-1">No se pudo cargar el PDF inline</p>
+                <p className="text-xs text-slate-400 mb-4">Puedes abrirlo en una nueva pestaña</p>
                 <div className="flex gap-2 justify-center">
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => { setPdfError(false); setIframeReady(false); }}
+                    onClick={() => { setPdfError(false); setPdfReady(false); }}
                   >
                     Reintentar
                   </Button>
@@ -162,14 +170,20 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
             </div>
           ) : (
             <>
-              <iframe
-                ref={iframeRef}
-                src={src}
-                className="w-full h-full border-0"
-                title="Invoice PDF"
-                sandbox="allow-same-origin"
-              />
-              {!iframeReady && !pdfError && (
+              {/* object + embed: renderiza PDFs cross-origin sin sandbox restrictions */}
+              <object
+                data={src}
+                type="application/pdf"
+                className="w-full h-full"
+                onLoad={() => {
+                  setPdfReady(true);
+                  if (pdfTimeoutRef.current) clearTimeout(pdfTimeoutRef.current);
+                }}
+                onError={() => setPdfError(true)}
+              >
+                <embed src={src} type="application/pdf" className="w-full h-full" />
+              </object>
+              {!pdfReady && !pdfError && (
                 <div className="absolute inset-0 flex items-center justify-center bg-slate-50">
                   <div className="text-center">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2 text-slate-400" />
@@ -177,17 +191,6 @@ export function ImageViewer({ src, isLoading = false, fileType = "image" }: Imag
                   </div>
                 </div>
               )}
-              <div className="absolute bottom-2 right-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-[10px] bg-white/80 hover:bg-white"
-                  onClick={() => window.open(src, "_blank")}
-                >
-                  <ExternalLink className="h-3 w-3 mr-1" />
-                  Abrir en nueva pestaña
-                </Button>
-              </div>
             </>
           )}
         </div>

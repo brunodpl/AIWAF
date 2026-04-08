@@ -15,8 +15,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { Loader2, CheckCircle2, XCircle } from "lucide-react";
-import { fetchPipelineStatus } from "@/lib/api";
+import { Loader2, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
+import { fetchPipelineStatus, runPipeline } from "@/lib/api";
+import { toast } from "sonner";
 import type { PipelineStatus } from "@/lib/types";
 
 interface PipelineProgressProps {
@@ -29,9 +30,10 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // FIX #2: usar ref para capturar el status más reciente y evitar stale closure
+  const [retryCount, setRetryCount] = useState(0);
   const statusRef = useRef<PipelineStatus | null>(null);
   const hasSeenRunning = useRef(false);
+  const errorCountRef = useRef(0);
 
   useEffect(() => {
     statusRef.current = status;
@@ -57,6 +59,7 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
         if (cancelled) return;
         setStatus(result);
         setError(null);
+        errorCountRef.current = 0; // Reset backoff on success
 
         if (result.status === "completed") {
           completionTimer = setTimeout(() => {
@@ -67,9 +70,14 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
           setError(result.error_message || "Error desconocido en el pipeline");
           return;
         } else if (result.status === "idle") {
-          // FIX #2: usar ref para detectar si habíamos visto "running" — sin stale closure
-          if (hasSeenRunning.current || result.started_at) {
+          // Solo completar si ya vimos "running" — evita falso positivo con status stale
+          if (hasSeenRunning.current) {
             onCompleteRef.current();
+            return;
+          }
+          // Si no hemos visto running, seguir polling (pipeline puede no haber arrancado aún)
+          if (!cancelled) {
+            setTimeout(poll, 2000);
           }
           return;
         }
@@ -80,7 +88,10 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
       } catch (err) {
         console.error("Error polling pipeline status:", err);
         if (!cancelled) {
-          setTimeout(poll, 2000);
+          // Backoff exponencial: 2s → 3s → 4.5s → ... max 15s
+          errorCountRef.current += 1;
+          const delay = Math.min(2000 * Math.pow(1.5, errorCountRef.current - 1), 15000);
+          setTimeout(poll, delay);
         }
       }
     };
@@ -95,8 +106,8 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
       cancelled = true;
       if (completionTimer) clearTimeout(completionTimer);
     };
-  // FIX #2: array de deps vacío — las funciones de callback se leen via ref
-  }, []);
+  // retryCount en deps permite re-triggerar el polling al reintentar
+  }, [retryCount]);
 
   const isRunning = status?.status === "running";
   const progress = status && status.total > 0
@@ -121,13 +132,36 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
           <XCircle className="h-12 w-12 mx-auto mb-4 text-red-300" />
           <p className="text-sm text-slate-600 mb-2 font-bold">Error en el pipeline</p>
           <p className="text-xs text-slate-400 font-mono mb-6">{error}</p>
-          <Button
-            onClick={onBack}
-            variant="outline"
-            className="text-xs rounded-none uppercase tracking-[0.15em]"
-          >
-            Volver a Gestión
-          </Button>
+          <div className="flex gap-3 justify-center">
+            <Button
+              onClick={async () => {
+                try {
+                  setError(null);
+                  setLoading(true);
+                  await runPipeline();
+                  hasSeenRunning.current = false;
+                  errorCountRef.current = 0;
+                  setRetryCount(c => c + 1);
+                  toast.success("Pipeline reiniciado");
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "Error reiniciando pipeline");
+                  setLoading(false);
+                }
+              }}
+              variant="default"
+              className="text-xs rounded-none uppercase tracking-[0.15em]"
+            >
+              <RotateCcw className="h-3 w-3 mr-1" />
+              Reintentar
+            </Button>
+            <Button
+              onClick={onBack}
+              variant="outline"
+              className="text-xs rounded-none uppercase tracking-[0.15em]"
+            >
+              Volver a Gestión
+            </Button>
+          </div>
         </div>
       </div>
     );

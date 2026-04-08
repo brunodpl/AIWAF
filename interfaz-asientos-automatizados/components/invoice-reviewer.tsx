@@ -56,8 +56,16 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // FIX #4: estado para controlar los AlertDialogs de confirmación (reemplaza window.confirm)
+  // Estado para controlar los AlertDialogs de confirmación
   const [pendingAction, setPendingAction] = useState<"approve" | "reject" | null>(null);
+  // Guard de doble-click: deshabilita botones durante la llamada API
+  const [submitting, setSubmitting] = useState(false);
+  // Dirty flag: detecta cambios sin guardar
+  const dirtyRef = useRef(false);
+  // Navegación pendiente (cuando hay cambios sin guardar)
+  const [pendingNavIdx, setPendingNavIdx] = useState<number | null>(null);
+  // Auto-advance timeout ref para cancelar en navegación manual
+  const autoAdvanceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [detailsCache, setDetailsCache] = useState<Map<string, InvoiceDocument>>(new Map());
   const cacheRef = useRef<Map<string, InvoiceDocument>>(new Map());
@@ -116,6 +124,11 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
     const summary = invoiceSummaries[currentIdx];
     if (!summary) return;
 
+    // Limpiar datos stale inmediatamente al cambiar de factura
+    setFormData({});
+    setFiscalLines([]);
+    dirtyRef.current = false;
+
     const cached = cacheRef.current.get(summary.id);
     if (cached) {
       const nextData: Record<string, string> = {};
@@ -171,10 +184,12 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
   const activeFileUrl = fileUrl || displayFileUrl;
 
   const handleInputChange = (id: string, value: string) => {
+    dirtyRef.current = true;
     setFormData(prev => ({ ...prev, [id]: value }));
   };
 
   const handleLineChange = (id: string, field: keyof FiscalLine, value: string) => {
+    dirtyRef.current = true;
     setFiscalLines(prev => prev.map(line =>
       line.id === id
         ? { ...line, [field]: value === "" ? 0 : (field === "id" ? value : parseFloat(value) || 0) }
@@ -182,20 +197,43 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
     ));
   };
 
-  const goToPrev = useCallback(() => {
-    if (currentIdxRef.current > 0) setCurrentIdx(currentIdxRef.current - 1);
+  // Navegación con check de dirty flag y cancelación de auto-advance
+  const cancelAutoAdvance = useCallback(() => {
+    if (autoAdvanceRef.current) {
+      clearTimeout(autoAdvanceRef.current);
+      autoAdvanceRef.current = null;
+    }
   }, []);
+
+  const navigateTo = useCallback((idx: number) => {
+    cancelAutoAdvance();
+    if (dirtyRef.current) {
+      setPendingNavIdx(idx);
+    } else {
+      setCurrentIdx(idx);
+    }
+  }, [cancelAutoAdvance]);
+
+  const goToPrev = useCallback(() => {
+    if (currentIdxRef.current > 0) navigateTo(currentIdxRef.current - 1);
+  }, [navigateTo]);
 
   const goToNext = useCallback(() => {
     const summaries = invoiceSummariesRef.current;
-    if (currentIdxRef.current < summaries.length - 1) setCurrentIdx(currentIdxRef.current + 1);
-  }, []);
+    if (currentIdxRef.current < summaries.length - 1) navigateTo(currentIdxRef.current + 1);
+  }, [navigateTo]);
 
-  // FIX #4: ejecutar la acción confirmada (aprobar/rechazar) sin window.confirm
+  // Cleanup auto-advance on unmount
+  useEffect(() => {
+    return () => cancelAutoAdvance();
+  }, [cancelAutoAdvance]);
+
+  // Ejecutar la acción confirmada (aprobar/rechazar) con guard de doble-click
   const executeConfirmedAction = async (action: "approve" | "reject") => {
     const currentInvoice = detailsCache.get(invoiceSummariesRef.current[currentIdxRef.current]?.id);
-    if (!currentInvoice) return;
+    if (!currentInvoice || submitting) return;
 
+    setSubmitting(true);
     try {
       await sendInvoiceAction(currentInvoice.id, action, {
         fields: formData,
@@ -207,6 +245,8 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
         })),
       });
 
+      dirtyRef.current = false;
+
       if (action === "approve") {
         onApprove(currentInvoice.id, { formData, fiscalLines });
         toast.success("Factura aprobada correctamente");
@@ -214,16 +254,20 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
         toast.error("Factura rechazada — movida a INCIDENCIAS");
       }
 
+      // Auto-advance con ref cancelable
       if (currentIdxRef.current < invoiceSummariesRef.current.length - 1) {
-        setTimeout(() => {
+        autoAdvanceRef.current = setTimeout(() => {
           const summaries = invoiceSummariesRef.current;
           const idx = currentIdxRef.current;
           if (idx < summaries.length - 1) setCurrentIdx(idx + 1);
+          autoAdvanceRef.current = null;
         }, 500);
       }
     } catch (err) {
       console.error(`Error en acción ${action}:`, err);
       toast.error(`Error al ${action === "approve" ? "aprobar" : "rechazar"} la factura`);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -297,6 +341,30 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* AlertDialog para cambios sin guardar */}
+      <AlertDialog open={pendingNavIdx !== null} onOpenChange={(open) => { if (!open) setPendingNavIdx(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cambios sin guardar</AlertDialogTitle>
+            <AlertDialogDescription>
+              Has editado campos de esta factura sin aprobarla. Si navegas, perderás los cambios.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPendingNavIdx(null)}>Seguir editando</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                dirtyRef.current = false;
+                setCurrentIdx(pendingNavIdx!);
+                setPendingNavIdx(null);
+              }}
+            >
+              Descartar cambios
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Header */}
       <header className="h-14 border-b bg-slate-50/50 flex items-center justify-between px-6 flex-shrink-0 z-10 transition-colors group-data-[approved=true]:bg-green-50/20">
         <div className="flex items-center gap-4">
@@ -337,7 +405,7 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
                   return (
                     <button
                       key={inv.id}
-                      onClick={() => setCurrentIdx(idx)}
+                      onClick={() => navigateTo(idx)}
                       className={cn(
                         "w-5 h-5 text-[9px] font-black rounded-full flex items-center justify-center transition-all",
                         active ? "bg-slate-900 text-white scale-110 shadow-md" : "hover:bg-slate-100 text-slate-300",
@@ -523,7 +591,7 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
         <Button
           variant="outline" size="lg"
           onClick={() => setPendingAction("reject")}
-          disabled={!invoice || loadingDetail}
+          disabled={!invoice || loadingDetail || submitting}
           className="w-52 h-11 border border-slate-200 hover:bg-slate-50 hover:text-slate-900 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none transition-all shadow-sm"
         >
           Rechazar
@@ -531,7 +599,7 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
         <Button
           size="lg"
           onClick={() => setPendingAction("approve")}
-          disabled={!invoice || loadingDetail || isApproved}
+          disabled={!invoice || loadingDetail || isApproved || submitting}
           className={cn(
             "w-52 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
             isApproved && "opacity-50 cursor-not-allowed"

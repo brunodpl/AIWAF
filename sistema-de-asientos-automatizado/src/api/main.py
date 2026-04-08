@@ -733,6 +733,17 @@ async def run_pipeline_endpoint():
             # Import pipeline module
             from src.pipeline import run_pipeline
 
+            # Persistir manifiesto de archivos para soporte de reset
+            manifest = {"files": {}, "created_at": datetime.now(timezone.utc).isoformat()}
+            for bid, fps in book_file_map.items():
+                for fp in fps:
+                    manifest["files"][os.path.basename(fp)] = {"original_book": bid}
+            manifest_path = os.path.join(cfg.output_path, "file_manifest.json")
+            os.makedirs(cfg.output_path, exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+            logger.info("[pipeline] File manifest written: %d files", len(manifest["files"]))
+
             for book_id, file_paths in book_file_map.items():
                 sandbox_folder = os.path.join(sandbox_base, BOOK_CONFIGS[book_id]["sandbox_folder"])
                 os.makedirs(sandbox_folder, exist_ok=True)
@@ -780,6 +791,131 @@ async def run_pipeline_endpoint():
     loop.run_in_executor(None, _run_pipeline_sync)
 
     return {"status": "started", "total": total_files}
+
+
+# ──────────────────────────────────────────────────────────
+# Reset endpoint — devuelve archivos a PENDIENTES, limpia artefactos
+# ──────────────────────────────────────────────────────────
+
+# Reverse lookup: sandbox_folder → book_id
+_SANDBOX_TO_BOOK = {v["sandbox_folder"]: k for k, v in BOOK_CONFIGS.items()}
+
+
+@app.post("/api/pipeline/reset")
+def reset_pipeline():
+    """
+    Reset completo del pipeline:
+    1. Devuelve archivos procesados a sus carpetas PENDIENTES originales
+    2. Limpia artefactos de output/
+    3. Registra evento en audit log (trazabilidad)
+    """
+    global _pipeline_lock
+
+    if _pipeline_lock:
+        raise HTTPException(status_code=409, detail="Pipeline en ejecución. No se puede resetear.")
+
+    cfg = settings()
+    sandbox_base = cfg.sandbox_base_path
+    output_path = Path(cfg.output_path)
+
+    files_restored = 0
+    doc_ids_deleted = 0
+
+    # 1. Leer manifiesto de archivos (si existe)
+    manifest_path = output_path / "file_manifest.json"
+    manifest_files = {}
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest_data = json.load(f)
+            manifest_files = manifest_data.get("files", {})
+        except Exception as e:
+            logger.warning("[reset] Error leyendo file_manifest.json: %s", e)
+
+    # 2. Escanear carpetas de destino y devolver archivos a PENDIENTES
+    # Carpetas donde pueden estar los archivos procesados
+    scan_folders = [
+        cfg.get_folder_path(cfg.folder_procesadas),      # 90_PROCESADAS
+        cfg.get_folder_path(cfg.folder_incidencias),      # 99_INCIDENCIAS
+    ]
+    # También escanear carpetas sandbox (por si pipeline crasheó a mitad)
+    for book_id, config in BOOK_CONFIGS.items():
+        sandbox_folder = os.path.join(sandbox_base, config["sandbox_folder"])
+        if sandbox_folder not in scan_folders:
+            scan_folders.append(sandbox_folder)
+
+    for folder in scan_folders:
+        if not os.path.isdir(folder):
+            continue
+        for entry in os.scandir(folder):
+            if not entry.is_file():
+                continue
+            fname = entry.name
+            # Determinar book_id original
+            original_book = None
+            if fname in manifest_files:
+                original_book = manifest_files[fname].get("original_book")
+            else:
+                # Inferir desde carpeta sandbox si aplica
+                folder_basename = os.path.basename(folder)
+                if folder_basename in _SANDBOX_TO_BOOK:
+                    original_book = _SANDBOX_TO_BOOK[folder_basename]
+
+            if original_book and original_book in BOOK_CONFIGS:
+                dest = os.path.join(sandbox_base, BOOK_CONFIGS[original_book]["pendientes_subdir"])
+                os.makedirs(dest, exist_ok=True)
+                try:
+                    shutil.move(entry.path, os.path.join(dest, fname))
+                    files_restored += 1
+                    logger.info("[reset] Archivo devuelto: %s → %s", fname, dest)
+                except OSError as e:
+                    logger.error("[reset] Error moviendo %s: %s", fname, e, exc_info=True)
+            else:
+                logger.warning("[reset] Archivo %s sin book_id conocido, ignorado", fname)
+
+    # 3. Borrar subcarpetas doc_id de output/
+    if output_path.exists():
+        for entry in output_path.iterdir():
+            if entry.is_dir():
+                try:
+                    shutil.rmtree(entry)
+                    doc_ids_deleted += 1
+                except OSError as e:
+                    logger.error("[reset] Error borrando %s: %s", entry, e, exc_info=True)
+
+    # 4. Borrar pipeline_status.json y file_manifest.json
+    for fname in ("pipeline_status.json", "file_manifest.json"):
+        fpath = output_path / fname
+        if fpath.exists():
+            try:
+                fpath.unlink()
+            except OSError:
+                pass
+
+    # 5. Registrar evento en audit log (trazabilidad)
+    try:
+        audit_dir = Path(cfg.logs_path) / "audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        reset_record = {
+            "schema_v": 1,
+            "ts_proceso": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "event": "reset",
+            "files_restored": files_restored,
+            "doc_ids_deleted": doc_ids_deleted,
+        }
+        reset_log = audit_dir / f"reset_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
+        with open(reset_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps(reset_record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.error("[reset] Error escribiendo audit log: %s", e, exc_info=True)
+
+    logger.info("[reset] Completado: %d archivos restaurados, %d doc_ids eliminados", files_restored, doc_ids_deleted)
+
+    return {
+        "status": "ok",
+        "files_restored": files_restored,
+        "doc_ids_deleted": doc_ids_deleted,
+    }
 
 
 @app.get("/api/clients")

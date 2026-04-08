@@ -1,8 +1,19 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { Check, RotateCcw } from "lucide-react";
+import { Check, RotateCcw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 type Stage = "books" | "processing" | "review" | "export";
 
@@ -16,12 +27,12 @@ const STAGES: { key: Stage; label: string }[] = [
 interface StageIndicatorProps {
   stage: Stage;
   className?: string;
-  // FIX #7: Callbacks para navegación y reset
   onStageClick?: (stage: Stage) => void;
   onReset?: () => void;
+  resetting?: boolean;
 }
 
-export function StageIndicator({ stage, className, onStageClick, onReset }: StageIndicatorProps) {
+export function StageIndicator({ stage, className, onStageClick, onReset, resetting }: StageIndicatorProps) {
   const currentIndex = STAGES.findIndex((s) => s.key === stage);
 
   return (
@@ -31,7 +42,6 @@ export function StageIndicator({ stage, className, onStageClick, onReset }: Stag
           const isCompleted = idx < currentIndex;
           const isActive = idx === currentIndex;
           const isFuture = idx > currentIndex;
-          // FIX #7: los pasos completados son navegables (cursor-pointer + onClick)
           const isClickable = isCompleted && !!onStageClick;
 
           return (
@@ -84,18 +94,46 @@ export function StageIndicator({ stage, className, onStageClick, onReset }: Stag
         })}
       </div>
 
-      {/* FIX #6: Botón "Nuevo escaneo" — reset global visible solo cuando no estamos en el inicio */}
+      {/* Botón "Nuevo escaneo" con confirmación AlertDialog */}
       {currentIndex > 0 && onReset && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onReset}
-          className="text-[10px] text-slate-400 hover:text-slate-600 uppercase tracking-[0.15em] h-6 px-2 gap-1 rounded-none"
-          title="Limpiar sesión y volver al inicio"
-        >
-          <RotateCcw className="h-3 w-3" />
-          Nuevo escaneo
-        </Button>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={resetting}
+              className="text-[10px] text-slate-400 hover:text-slate-600 uppercase tracking-[0.15em] h-6 px-2 gap-1 rounded-none"
+              title="Limpiar sesión y volver al inicio"
+            >
+              {resetting ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3 w-3" />
+              )}
+              {resetting ? "Reseteando..." : "Nuevo escaneo"}
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>¿Reiniciar el proceso?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Esto descartará todas las facturas procesadas y devolverá los archivos
+                a sus carpetas originales. Esta acción no se puede deshacer.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel className="rounded-none text-xs uppercase tracking-[0.15em]">
+                Cancelar
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={onReset}
+                className="rounded-none text-xs uppercase tracking-[0.15em] bg-red-600 hover:bg-red-700"
+              >
+                Reiniciar
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
     </div>
   );
