@@ -725,6 +725,11 @@ async def run_pipeline_endpoint():
     def _run_pipeline_sync():
         global _pipeline_lock
         try:
+            # Inicializar logging del pipeline (JSONL + console)
+            # Necesario porque la ruta API no pasa por pipeline.main()
+            from src.logging_config import setup_logging
+            setup_logging(logs_path=cfg.logs_path, level=logging.INFO)
+
             # Import pipeline module
             from src.pipeline import run_pipeline
 

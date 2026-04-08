@@ -1,7 +1,9 @@
 """
 Configuración central de logging del pipeline.
 
-Llamar setup_logging() UNA VEZ desde el entry point real (pipeline.main).
+Llamar setup_logging() UNA VEZ desde el entry point real:
+  - pipeline.main() para ejecución CLI
+  - api.main._run_pipeline_sync() para ejecución desde la interfaz web
 Nunca llamar desde módulos internos ni en tiempo de importación.
 
 Dos salidas:
@@ -61,8 +63,10 @@ def setup_logging(logs_path: str = "logs", level: int = logging.INFO) -> None:
     """
     root = logging.getLogger()
 
-    # Idempotente: si ya tiene handlers configurados, no añadir más
-    if root.handlers:
+    # Idempotente: verificar si NUESTRO handler JSONL ya esta configurado.
+    # No usar `if root.handlers:` porque uvicorn anade sus propios handlers
+    # al arrancar FastAPI y bloquearia la configuracion del pipeline.
+    if any(getattr(h, '_pipeline_handler', False) for h in root.handlers):
         return
 
     root.setLevel(level)
@@ -74,6 +78,7 @@ def setup_logging(logs_path: str = "logs", level: int = logging.INFO) -> None:
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
+    console._pipeline_handler = True
     root.addHandler(console)
 
     # ── Handler 2: fichero rotativo JSONL — para operación ────────────
@@ -85,4 +90,5 @@ def setup_logging(logs_path: str = "logs", level: int = logging.INFO) -> None:
         encoding="utf-8",
     )
     file_handler.setFormatter(_JSONLineFormatter())
+    file_handler._pipeline_handler = True
     root.addHandler(file_handler)
