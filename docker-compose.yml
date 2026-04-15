@@ -38,12 +38,13 @@ services:
       start_period: 40s
 
   # Interfaz - Next.js frontend
+  # NEXT_PUBLIC_API_URL ya no es necesario: el proxy reverso en next.config.mjs
+  # redirige /api/* a pipeline-api:8000 dentro de la red Docker.
+  # Cambiar la IP del servidor NO requiere reconstruir esta imagen.
   interfaz:
     build:
       context: ./interfaz-asientos-automatizados
       dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     container_name: interfaz-asientos
     ports:
       - "3000:3000"
@@ -60,7 +61,24 @@ services:
       retries: 3
       start_period: 30s
 
+  # Portainer CE - Gestión visual de contenedores
+  # Acceder en: http://localhost:9000
+  # Primera vez: crear contraseña de administrador
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - asientos-network
+    restart: unless-stopped
+
 networks:
   asientos-network:
     driver: bridge
 
+volumes:
+  portainer_data:

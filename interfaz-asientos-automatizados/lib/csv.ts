@@ -99,11 +99,11 @@ export function generateCSV(
     const conceptoGasto = normalizeConcept(conceptoRaw);
     const claseFiscal = invoice.clase_fiscal || "gasto_deducible_interior";
 
-    // Account: use client lookup if NIF matches
-    // For purchase books, the client is the receptor (nif_receptor)
-    // For sales books, the client is the emisor (nif_entidad)
-    // We try nif_receptor first (most common case), then fall back to nif_entidad
-    let cuentaContable = invoice.cuenta_contable || "";
+    // Account: priority order:
+    // 1. invoice.cuenta_contable (top-level, set by approve flow)
+    // 2. formData.cuenta_contable (field edited by user in review stage)
+    // 3. clientsLookup by NIF
+    let cuentaContable = invoice.cuenta_contable || formData.cuenta_contable || "";
     if (!cuentaContable) {
       const nifReceptor = formData.nif_receptor || "";
       if (nifReceptor && clientsLookup.has(nifReceptor.toUpperCase())) {
@@ -116,7 +116,7 @@ export function generateCSV(
     // Generate one row per fiscal line
     for (const line of invoice.fiscalLines) {
       const vatRate =
-        line.vatRate !== null && line.vatRate !== 0 ? String(line.vatRate) : "";
+        line.vatRate !== null && line.vatRate !== undefined ? String(line.vatRate) : "";
 
       rows.push({
         idAsiento,

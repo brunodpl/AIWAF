@@ -4,7 +4,13 @@
 
 import type { InvoiceDocument, FieldDecision, Book, PipelineStatus, Client } from "./types";
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+/**
+ * Base URL vacío — todas las rutas /api/* son relativas al origen del navegador.
+ * Next.js hace proxy interno a pipeline-api:8000 via rewrites en next.config.mjs.
+ * Esto elimina la dependencia de NEXT_PUBLIC_API_URL y permite cambiar la IP
+ * del servidor sin reconstruir la imagen Docker.
+ */
+export const API_URL = "";
 
 const API_TIMEOUT_MS = 30000;
 
