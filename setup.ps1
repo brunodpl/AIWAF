@@ -111,7 +111,7 @@ Write-Host "      OK: Estructura de carpetas lista" -ForegroundColor Green
 Write-Host ""
 Write-Host "[4/7] Generando archivos de configuracion..." -ForegroundColor Yellow
 
-# --- .env raiz (sin NEXT_PUBLIC_API_URL — el proxy lo gestiona) ---
+# --- .env raiz (sin NEXT_PUBLIC_API_URL, el proxy lo gestiona) ---
 if (-not (Test-Path ".env")) {
     Add-Content ".env" "# Generado automaticamente por setup.ps1"
     Add-Content ".env" ""
@@ -119,7 +119,7 @@ if (-not (Test-Path ".env")) {
     Add-Content ".env" "CREDENTIALS_PATH=$credentialsForDocker"
     Add-Content ".env" ""
     Add-Content ".env" "# Origenes CORS permitidos (separados por coma)"
-    Add-Content ".env" "# Para red local: añade http://192.168.x.x:3000"
+    Add-Content ".env" "# Para red local: agregar http://192.168.x.x:3000"
     Add-Content ".env" "ALLOWED_ORIGINS=http://localhost:3000,http://interfaz-asientos:3000"
     Write-Host "      OK: .env creado" -ForegroundColor Green
 } else {
@@ -248,11 +248,11 @@ Write-Host "  Gestion de contenedores: http://localhost:9000  (Portainer)" -Fore
 Write-Host "  API del pipeline:        http://localhost:8000" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Comandos utiles:" -ForegroundColor White
-Write-Host "    make start       — iniciar servicios" -ForegroundColor Gray
-Write-Host "    make stop        — parar servicios" -ForegroundColor Gray
-Write-Host "    make logs        — ver logs en tiempo real" -ForegroundColor Gray
-Write-Host "    make status      — estado de los contenedores" -ForegroundColor Gray
-Write-Host "    .\verify.ps1     — verificar que todo funciona" -ForegroundColor Gray
+Write-Host "    make start       -> iniciar servicios" -ForegroundColor Gray
+Write-Host "    make stop        -> parar servicios" -ForegroundColor Gray
+Write-Host "    make logs        -> ver logs en tiempo real" -ForegroundColor Gray
+Write-Host "    make status      -> estado de los contenedores" -ForegroundColor Gray
+Write-Host "    .\verify.ps1     -> verificar que todo funciona" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  SIGUIENTE PASO: Abre http://localhost:3000 en el navegador" -ForegroundColor Yellow
 Write-Host ""
