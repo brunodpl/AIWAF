@@ -73,7 +73,6 @@ def run_semantica(
     # 3. Resolver semantica
     cfg = get_settings()
     maestros_dir = Path(cfg.maestros_dir) if hasattr(cfg, 'maestros_dir') else Path("data/maestros")
-    catalogo_path = str(maestros_dir / "catalogo_semantica.yaml")
     proveedores_path = str(maestros_dir / "maestro_proveedores.yaml")
     maestro_contable_path = str(maestros_dir / "maestro_contable_fiscal.yaml")
     maestro_cuentas_path = str(maestros_dir / "maestro_cuentas.yaml")
@@ -84,7 +83,6 @@ def run_semantica(
             nif_emisor=nif_emisor,
             nombre_emisor=nombre_emisor,
             libro=libro,
-            catalogo_path=catalogo_path,
             proveedores_path=proveedores_path,
             maestro_contable_path=maestro_contable_path,
             maestro_cuentas_path=maestro_cuentas_path,

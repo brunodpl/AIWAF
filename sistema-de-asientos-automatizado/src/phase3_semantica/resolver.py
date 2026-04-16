@@ -1,23 +1,17 @@
 """
-Resolución semántica: concepto + cuenta contable.
+Resolucion semantica: concepto + cuenta contable.
 
-Estrategia de resolución (prioridad descendente):
+Estrategia de resolucion (prioridad descendente):
   1. Proveedor conocido (maestro_proveedores.yaml)
-  2. Catálogo de patrones (catalogo_semantica.yaml)
-  3. LLM especializado en PGC (Gemini) como clasificador semántico
-  4. Validación: cuenta en whitelist, coherencia libro, bienes de inversión
-  5. Si nada funciona → pendiente/warn para revisión humana
-
-El LLM NO inventa cuentas: solo elige entre las del maestro contable.
-Si human_review_required en el concepto → WARN mínimo.
-Bienes de inversión → WARN mínimo (nunca AUTO).
+  2. LLM clasificador PGC (Gemini) con lista limpia de cuentas
+  3. Fallback a pendiente si LLM falla o no hay config
+  4. Validacion: cuenta en whitelist, coherencia libro, bienes de inversion
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -26,23 +20,22 @@ import yaml
 
 from .catalogo import (
     buscar_por_nif,
+    cargar_maestro_contable,
     cargar_maestro_proveedores,
+    cuentas_para_libro,
 )
 
 logger = logging.getLogger("pipeline.semantica")
 
-# Defaults usados si config no los proporciona
 _DEFAULT_UMBRAL_AUTO = 0.90
 _DEFAULT_UMBRAL_WARN = 0.70
 
-# Mapeo de libro → tipo de cuentas válidas en maestro_cuentas.yaml
 _LIBRO_A_CUENTAS_KEY = {
     "20_COMPRAS_GASTOS":   "cuentas_validas_compras",
     "21_VENTAS_INGRESOS":  "cuentas_validas_ventas",
     "22_BIENES_INVERSION": "cuentas_validas_inmovilizado",
 }
 
-# Mapeo grupo PGC → libros esperados (para coherencia)
 _GRUPO_A_LIBRO = {
     "6": "20_COMPRAS_GASTOS",
     "7": "21_VENTAS_INGRESOS",
@@ -57,15 +50,15 @@ class CandidatoSemantico:
     confianza: float
     fuente: str
     motivo: str
+    tokens: int = 0
 
 
 @dataclass
 class ResolucionSemantica:
-    """Resultado de la resolución para un campo (concepto o cuenta_contable)."""
     valor_final: Optional[str]
     fuente_final: str
     confianza_final: float
-    decision: str  # auto, warn, block
+    decision: str  # auto, warn, pendiente, block
     motivo: str
     candidatos: list[dict] = field(default_factory=list)
 
@@ -81,25 +74,23 @@ class ResultadoSemantico:
     tokens_llm: int
 
 
-# ── System prompt para LLM clasificador PGC ────────────────────
-
 _SYSTEM_CLASIFICADOR_PGC = """\
-Eres un clasificador contable experto en el Plan General Contable (PGC) español.
-Tu tarea: dado el texto OCR de una factura y un catálogo de cuentas contables,
-clasificar la operación eligiendo la cuenta y concepto más adecuados.
+Eres un clasificador contable experto en el Plan General Contable (PGC) espanol para el sector HORECA.
+Tu tarea: dado el texto OCR de una factura y una lista de cuentas disponibles, clasificar la operacion
+eligiendo la cuenta y concepto mas adecuados.
 
 REGLAS ABSOLUTAS:
-1. Devuelve ÚNICAMENTE un objeto JSON válido. Sin texto adicional, sin markdown.
+1. Devuelve UNICAMENTE un objeto JSON valido. Sin texto adicional, sin markdown.
 2. Solo puedes elegir un concepto y cuenta de la lista de opciones proporcionada.
-3. No puedes inventar cuentas ni conceptos que no estén en la lista.
-4. Si ninguna opción encaja con claridad, devuelve concepto: null, cuenta: null.
-5. La confianza es tu estimación interna de 0.0 a 1.0.
+3. No puedes inventar cuentas ni conceptos que no esten en la lista.
+4. Si ninguna opcion encaja con claridad, devuelve concepto: null, cuenta: null.
+5. La confianza es tu estimacion interna de 0.0 a 1.0.
 
 Formato de respuesta:
 {
   "concepto": "<key del concepto elegido o null>",
-  "cuenta_contable": "<código de cuenta elegido o null>",
-  "justificacion": "<razón concisa>",
+  "cuenta_contable": "<codigo de cuenta elegido o null>",
+  "justificacion": "<razon concisa>",
   "confianza": <float 0.0-1.0>
 }
 """.strip()
@@ -109,37 +100,36 @@ def _construir_prompt_clasificacion(
     texto_ocr: str,
     nombre_emisor: str,
     libro: str,
-    opciones_catalogo: list[dict],
+    cuentas_filtradas: list[dict],
 ) -> str:
-    """Construir prompt para clasificación semántica LLM."""
+    """Construir prompt para clasificacion semantica LLM."""
     lines = [
         f"Libro contable: {libro}",
         f"Emisor: {nombre_emisor}" if nombre_emisor else "",
         "",
-        "Texto OCR de la factura (primeros 500 chars):",
-        texto_ocr[:500],
+        "Texto OCR de la factura (primeros 800 chars):",
+        texto_ocr[:800],
         "",
-        "Opciones disponibles del catálogo PGC:",
+        "Cuentas disponibles para este libro:",
     ]
-    for opt in opciones_catalogo:
+    for cuenta in cuentas_filtradas:
         lines.append(
-            f"  - concepto='{opt['concepto']}' cuenta='{opt['cuentacontable']}' "
-            f"(patrones: {', '.join(opt.get('patrones_raw', [])[:3])})"
+            f"  {cuenta['code']} - {cuenta['label']}: {cuenta['descripcion']}"
         )
     lines.append("")
-    lines.append("¿Qué concepto y cuenta contable corresponden a esta factura?")
-    return "\n".join(l for l in lines)
+    lines.append("Cual concepto y cuenta contable corresponden a esta factura?")
+    return "\n".join(lines)
 
 
 def _llamar_llm_clasificador(
     texto_ocr: str,
     nombre_emisor: str,
     libro: str,
-    opciones_catalogo: list[dict],
+    cuentas_filtradas: list[dict],
     config: object,
 ) -> Optional[CandidatoSemantico]:
     """
-    Llamar a Gemini para clasificación semántica.
+    Llamar a Gemini para clasificacion semantica.
 
     Returns:
         CandidatoSemantico o None si falla.
@@ -167,7 +157,7 @@ def _llamar_llm_clasificador(
         )
 
         prompt = _construir_prompt_clasificacion(
-            texto_ocr, nombre_emisor, libro, opciones_catalogo
+            texto_ocr, nombre_emisor, libro, cuentas_filtradas
         )
 
         generation_config = types.GenerateContentConfig(
@@ -185,7 +175,7 @@ def _llamar_llm_clasificador(
         )
 
         if not response.text:
-            logger.warning("[semantica] LLM devolvió respuesta vacía")
+            logger.warning("[semantica] LLM devolvio respuesta vacia")
             return None
 
         data = json.loads(response.text)
@@ -193,7 +183,6 @@ def _llamar_llm_clasificador(
         cuenta = data.get("cuenta_contable")
         confianza = float(data.get("confianza", 0.0))
 
-        # Calcular tokens
         tokens = 0
         if response.usage_metadata:
             tokens = (
@@ -205,27 +194,18 @@ def _llamar_llm_clasificador(
             logger.info("[semantica] LLM no pudo clasificar (null)")
             return None
 
-        # Validar que concepto/cuenta existen en catálogo
-        conceptos_validos = {o["concepto"] for o in opciones_catalogo}
-        cuentas_validas = {o["cuentacontable"] for o in opciones_catalogo}
-
-        if concepto and concepto not in conceptos_validos:
+        cuentas_validas_set = {c["code"] for c in cuentas_filtradas}
+        if cuenta and cuenta not in cuentas_validas_set:
             logger.warning(
-                f"[semantica] LLM propuso concepto '{concepto}' fuera del catálogo, descartando"
+                f"[semantica] LLM propuso cuenta '{cuenta}' fuera de opciones del libro, descartando"
             )
             return None
 
-        if cuenta and cuenta not in cuentas_validas:
-            logger.warning(
-                f"[semantica] LLM propuso cuenta '{cuenta}' fuera del catálogo, descartando"
-            )
-            return None
-
-        # Cap confianza a 0.89 (nunca AUTO directo por LLM)
-        confianza = min(confianza, 0.89)
+        # Cap confianza a 0.92: LLM puede AUTO, pero nunca supera al proveedor conocido (0.95)
+        confianza = min(confianza, 0.92)
 
         logger.info(
-            f"[semantica] LLM clasificó: concepto={concepto} cuenta={cuenta} "
+            f"[semantica] LLM clasifico: concepto={concepto} cuenta={cuenta} "
             f"confianza={confianza:.2f} tokens={tokens}"
         )
 
@@ -234,7 +214,8 @@ def _llamar_llm_clasificador(
             cuentacontable=cuenta,
             confianza=confianza,
             fuente="llm_pgc",
-            motivo=data.get("justificacion", "Clasificación LLM PGC"),
+            motivo=data.get("justificacion", "Clasificacion LLM PGC"),
+            tokens=tokens,
         )
 
     except Exception as e:
@@ -244,39 +225,32 @@ def _llamar_llm_clasificador(
 
 def _cargar_conceptos_con_review(maestro_path: str) -> dict[str, bool]:
     """
-    Extraer human_review_required de maestro_contable_fiscal.yaml para cada concepto.
+    Extraer human_review del maestro v3 para cada concepto.
+
+    Lee de maestro['conceptos'][key]['human_review'].
 
     Returns:
-        Dict concepto_key → human_review_required
+        Dict concepto_key -> human_review (bool)
     """
-    path = Path(maestro_path)
-    if not path.exists():
+    maestro = cargar_maestro_contable(maestro_path)
+    if not maestro:
         return {}
-
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        conceptos = data.get("enums", {}).get("concepto", {}).get("allowed_values", [])
-        return {
-            c["key"]: c.get("human_review_required", False)
-            for c in conceptos
-            if "key" in c
-        }
-    except Exception:
-        return {}
+    conceptos = maestro.get("conceptos", {})
+    return {
+        key: bool(v.get("human_review", False))
+        for key, v in conceptos.items()
+        if isinstance(v, dict)
+    }
 
 
 def _cargar_cuentas_validas(maestro_cuentas_path: str) -> dict[str, set[str]]:
     """
-    Cargar maestro_cuentas.yaml → whitelist de cuentas por tipo de libro.
+    Cargar maestro_cuentas.yaml -> whitelist de cuentas por tipo de libro.
 
-    NOTA: El archivo usa un formato no-estándar con punto y coma como separador
-    dentro de items YAML:  - "600"; "601"; "602"
-    Esto NO es YAML válido, así que se parsea manualmente línea a línea.
+    El archivo usa formato no-estandar con punto y coma como separador.
 
     Returns:
-        Dict tipo → set de códigos de cuenta válidos.
-        Ej: {"cuentas_validas_compras": {"600", "601", ...}}
+        Dict tipo -> set de codigos de cuenta validos.
     """
     path = Path(maestro_cuentas_path)
     if not path.exists():
@@ -289,14 +263,11 @@ def _cargar_cuentas_validas(maestro_cuentas_path: str) -> dict[str, set[str]]:
         with open(path, encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
-                # Skip comments and empty lines
                 if not stripped or stripped.startswith("#"):
                     continue
-                # Key line: "cuentas_validas_compras:"
                 if stripped.endswith(":") and not stripped.startswith("-"):
                     current_key = stripped[:-1].strip()
                     result[current_key] = set()
-                # Value line: '  - "600"; "601"; "602"'
                 elif stripped.startswith("-") and current_key is not None:
                     value_part = stripped[1:].strip()
                     for parte in value_part.split(";"):
@@ -315,14 +286,9 @@ def _validar_cuenta_en_libro(
     libro: str,
     cuentas_validas: dict[str, set[str]],
 ) -> tuple[bool, str]:
-    """
-    Validar que la cuenta propuesta está en la whitelist del libro.
-
-    Returns:
-        (es_valida, motivo)
-    """
+    """Validar que la cuenta propuesta esta en la whitelist del libro."""
     if not cuenta:
-        return False, "Cuenta contable vacía"
+        return False, "Cuenta contable vacia"
 
     cuentas_key = _LIBRO_A_CUENTAS_KEY.get(libro)
     if not cuentas_key:
@@ -330,19 +296,15 @@ def _validar_cuenta_en_libro(
 
     whitelist = cuentas_validas.get(cuentas_key, set())
     if not whitelist:
-        return True, f"Whitelist vacía para {cuentas_key}"
+        return True, f"Whitelist vacia para {cuentas_key}"
 
     if cuenta in whitelist:
-        return True, f"Cuenta {cuenta} válida para libro {libro}"
-    return False, f"Cuenta {cuenta} no está en whitelist de {libro}"
+        return True, f"Cuenta {cuenta} valida para libro {libro}"
+    return False, f"Cuenta {cuenta} no esta en whitelist de {libro}"
 
 
 def _verificar_coherencia_libro(cuenta: str | None, libro: str) -> tuple[bool, str]:
-    """
-    Verificar que el grupo PGC de la cuenta es coherente con el libro.
-
-    Grupo 6 = compras/gastos, Grupo 7 = ventas/ingresos, Grupo 2 = bienes inversión.
-    """
+    """Verificar que el grupo PGC de la cuenta es coherente con el libro."""
     if not cuenta:
         return True, ""
 
@@ -358,11 +320,9 @@ def _verificar_coherencia_libro(cuenta: str | None, libro: str) -> tuple[bool, s
 
 
 def _es_bienes_inversion(libro: str) -> bool:
-    """Detectar si el libro es bienes de inversión."""
     return "BIENES_INVERSION" in libro.upper()
 
 
-# Prioridad de decisiones
 _PRIORIDAD = {"block": 3, "warn": 2, "pendiente": 1, "auto": 0}
 
 
@@ -371,7 +331,6 @@ def resolver_semantica(
     nif_emisor: Optional[str],
     nombre_emisor: Optional[str],
     libro: str,
-    catalogo_path: str,
     proveedores_path: str,
     maestro_contable_path: str,
     maestro_cuentas_path: str = "data/maestros/maestro_cuentas.yaml",
@@ -380,35 +339,38 @@ def resolver_semantica(
     """
     Resolver concepto y cuenta_contable para una factura.
 
+    Flujo:
+      1. Proveedor conocido (maestro_proveedores)
+      2. LLM con lista limpia de cuentas del libro
+      3. Fallback a pendiente si LLM falla o config=None
+      4. Validaciones deterministicas
+
     Args:
         texto_ocr: Texto completo OCR del documento
-        nif_emisor: NIF del emisor (de fase 3.1 identidad)
+        nif_emisor: NIF del emisor
         nombre_emisor: Nombre del emisor
         libro: Libro contable destino (e.g. "20_COMPRAS_GASTOS")
-        catalogo_path: Ruta a catalogo_semantica.yaml
         proveedores_path: Ruta a maestro_proveedores.yaml
-        maestro_contable_path: Ruta a maestro_contable_fiscal.yaml
+        maestro_contable_path: Ruta a maestro_contable_fiscal.yaml (v3)
         maestro_cuentas_path: Ruta a maestro_cuentas.yaml
         config: Settings del pipeline (para LLM). None = sin LLM.
 
     Returns:
-        ResultadoSemantico con resolución de ambos campos
+        ResultadoSemantico con resolucion de ambos campos
     """
-    # 1. Cargar catálogos
     proveedores = cargar_maestro_proveedores(proveedores_path)
+    maestro = cargar_maestro_contable(maestro_contable_path)
     review_flags = _cargar_conceptos_con_review(maestro_contable_path)
     cuentas_validas = _cargar_cuentas_validas(maestro_cuentas_path)
 
-    # Extraer umbrales de config (con defaults seguros)
     umbral_auto = getattr(config, "semantica_umbral_confianza_auto", None) or _DEFAULT_UMBRAL_AUTO
     umbral_warn = getattr(config, "semantica_umbral_confianza_warn", None) or _DEFAULT_UMBRAL_WARN
-    umbral_catalogo = getattr(config, "semantica_umbral_catalogo", None) or _DEFAULT_UMBRAL_AUTO
 
     candidatos: list[CandidatoSemantico] = []
     llm_usado = False
     tokens_llm = 0
 
-    # 2. Fuente 1: Proveedor conocido (máxima prioridad)
+    # Fuente 1: Proveedor conocido (maxima prioridad)
     resultado_proveedor = buscar_por_nif(nif_emisor or "", proveedores)
     if resultado_proveedor:
         cand = CandidatoSemantico(
@@ -417,20 +379,38 @@ def resolver_semantica(
             confianza=resultado_proveedor["confianza"],
             fuente="maestro_proveedores",
             motivo=f"Proveedor conocido NIF={nif_emisor}",
+            tokens=0,
         )
         candidatos.append(cand)
         logger.info(
-            f"[semantica] Proveedor conocido: {nif_emisor} → "
+            f"[semantica] Proveedor conocido: {nif_emisor} -> "
             f"concepto={cand.concepto} cuenta={cand.cuentacontable}"
         )
 
-    # 4. LLM clasificador PGC (futuro: sera reactivado con catalogo maestro v3)
+    # Fuente 2: LLM clasificador (si no hay candidato de alta confianza)
+    mejor_confianza = max((c.confianza for c in candidatos), default=0.0)
+    if mejor_confianza < umbral_auto and config is not None:
+        cuentas_filtradas = cuentas_para_libro(maestro, libro)
+        if cuentas_filtradas:
+            logger.info(
+                f"[semantica] Mejor confianza={mejor_confianza:.2f} < {umbral_auto}, "
+                f"invocando LLM con {len(cuentas_filtradas)} cuentas"
+            )
+            resultado_llm = _llamar_llm_clasificador(
+                texto_ocr, nombre_emisor or "", libro, cuentas_filtradas, config
+            )
+            if resultado_llm:
+                llm_usado = True
+                tokens_llm = resultado_llm.tokens
+                candidatos.append(resultado_llm)
+        else:
+            logger.warning(f"[semantica] No hay cuentas filtradas para libro={libro}")
 
-    # 5. Seleccionar mejor candidato para concepto y cuenta
+    # Seleccionar mejor candidato
     concepto_res = _seleccionar_mejor(candidatos, "concepto", review_flags, umbral_auto, umbral_warn)
     cuenta_res = _seleccionar_mejor_cuenta(candidatos, concepto_res.valor_final, umbral_auto, umbral_warn)
 
-    # 6. Validación: cuenta en whitelist del libro
+    # Validacion: cuenta en whitelist del libro
     cuenta_valida, motivo_cuenta = _validar_cuenta_en_libro(
         cuenta_res.valor_final, libro, cuentas_validas
     )
@@ -439,28 +419,26 @@ def resolver_semantica(
         cuenta_res.decision = "block"
         cuenta_res.motivo = motivo_cuenta
 
-    # 7. Validación: coherencia grupo PGC con libro
-    coherente, motivo_coherencia = _verificar_coherencia_libro(
-        cuenta_res.valor_final, libro
-    )
+    # Validacion: coherencia grupo PGC con libro
+    coherente, motivo_coherencia = _verificar_coherencia_libro(cuenta_res.valor_final, libro)
     if not coherente:
         logger.warning(f"[semantica] {motivo_coherencia}")
         if _PRIORIDAD.get(cuenta_res.decision, 0) < _PRIORIDAD["warn"]:
             cuenta_res.decision = "warn"
             cuenta_res.motivo = motivo_coherencia
 
-    # 8. Bienes de inversión → WARN mínimo (nunca AUTO)
+    # Bienes de inversion -> WARN minimo (nunca AUTO)
     if _es_bienes_inversion(libro):
-        motivo_bi = "Bien de inversión requiere revisión humana obligatoria (normativa)"
+        motivo_bi = "Bien de inversion requiere revision humana obligatoria (normativa)"
         if _PRIORIDAD.get(concepto_res.decision, 0) < _PRIORIDAD["warn"]:
             concepto_res.decision = "warn"
             concepto_res.motivo += f" — {motivo_bi}"
         if _PRIORIDAD.get(cuenta_res.decision, 0) < _PRIORIDAD["warn"]:
             cuenta_res.decision = "warn"
             cuenta_res.motivo += f" — {motivo_bi}"
-        logger.info(f"[semantica] Libro bienes inversión: forzando WARN mínimo")
+        logger.info("[semantica] Libro bienes inversion: forzando WARN minimo")
 
-    # 9. Decisión global
+    # Decision global
     p_concepto = _PRIORIDAD.get(concepto_res.decision, 0)
     p_cuenta = _PRIORIDAD.get(cuenta_res.decision, 0)
     decision_global = concepto_res.decision if p_concepto >= p_cuenta else cuenta_res.decision
@@ -471,13 +449,11 @@ def resolver_semantica(
     if cuenta_res.decision != "auto":
         motivos.append(f"cuenta_contable: {cuenta_res.motivo}")
 
-    requiere_revision = decision_global != "auto"
-
     return ResultadoSemantico(
         concepto=concepto_res,
         cuenta_contable=cuenta_res,
         decision_global=decision_global,
-        requiere_revision_humana=requiere_revision,
+        requiere_revision_humana=decision_global != "auto",
         motivos_revision=motivos,
         llm_usado=llm_usado,
         tokens_llm=tokens_llm,
@@ -502,11 +478,9 @@ def _seleccionar_mejor(
             candidatos=[],
         )
 
-    # Ordenar por confianza descendente
     candidatos_sorted = sorted(candidatos, key=lambda c: c.confianza, reverse=True)
     mejor = candidatos_sorted[0]
 
-    # Serializar candidatos para trazabilidad
     candidatos_serial = [
         {
             "valor": c.concepto,
@@ -518,10 +492,8 @@ def _seleccionar_mejor(
         for c in candidatos_sorted
     ]
 
-    # Verificar human_review_required
     force_review = review_flags.get(mejor.concepto, False) if mejor.concepto else False
 
-    # Determinar decisión
     if mejor.confianza >= umbral_auto and not force_review:
         decision = "auto"
         motivo = mejor.motivo
@@ -529,7 +501,7 @@ def _seleccionar_mejor(
         decision = "warn"
         motivo = mejor.motivo
         if force_review:
-            motivo += " (human_review_required por política interna)"
+            motivo += " (human_review requerido)"
     else:
         decision = "warn"
         motivo = f"Confianza baja ({mejor.confianza:.2f}) para {campo}"
@@ -550,7 +522,7 @@ def _seleccionar_mejor_cuenta(
     umbral_auto: float = _DEFAULT_UMBRAL_AUTO,
     umbral_warn: float = _DEFAULT_UMBRAL_WARN,
 ) -> ResolucionSemantica:
-    """Seleccionar mejor candidato para cuenta_contable, priorizando coherencia con concepto."""
+    """Seleccionar mejor candidato para cuenta_contable."""
     if not candidatos:
         return ResolucionSemantica(
             valor_final=None,
@@ -561,10 +533,8 @@ def _seleccionar_mejor_cuenta(
             candidatos=[],
         )
 
-    # Priorizar candidato cuyo concepto coincida con el elegido
     coherentes = [c for c in candidatos if c.concepto == concepto_elegido]
     pool = coherentes if coherentes else candidatos
-
     pool_sorted = sorted(pool, key=lambda c: c.confianza, reverse=True)
     mejor = pool_sorted[0]
 
@@ -579,12 +549,7 @@ def _seleccionar_mejor_cuenta(
         for c in pool_sorted
     ]
 
-    if mejor.confianza >= umbral_auto:
-        decision = "auto"
-    elif mejor.confianza >= umbral_warn:
-        decision = "warn"
-    else:
-        decision = "warn"
+    decision = "auto" if mejor.confianza >= umbral_auto else "warn"
 
     return ResolucionSemantica(
         valor_final=mejor.cuentacontable,

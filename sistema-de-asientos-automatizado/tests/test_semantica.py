@@ -306,10 +306,17 @@ class TestBienesInversion:
 # ──────────────────────────────────────────────────────────
 
 class TestHumanReviewRequired:
-    def test_cargar_flags(self, catalogo_dir):
+    def test_cargar_flags_v3(self, catalogo_dir):
+        """_cargar_conceptos_con_review lee el esquema v3 de conceptos."""
         flags = _cargar_conceptos_con_review(str(catalogo_dir / "maestro_contable_fiscal.yaml"))
+        assert flags["nomina"] is True
         assert flags["equipo_informatico"] is True
         assert flags["mercaderias"] is False
+        assert flags["alquiler_local"] is False
+
+    def test_archivo_no_existe(self, tmp_path):
+        flags = _cargar_conceptos_con_review(str(tmp_path / "no_existe.yaml"))
+        assert flags == {}
 
 
 # ──────────────────────────────────────────────────────────
@@ -324,41 +331,22 @@ class TestResolverSemantica:
             nif_emisor="B15428303",
             nombre_emisor="COMERCIAL BLANCO SL",
             libro="20_COMPRAS_GASTOS",
-            catalogo_path=str(catalogo_dir / "catalogo_semantica.yaml"),
             proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
             maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
             maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
             config=None,
         )
-        assert resultado.concepto.valor_final is not None
+        assert resultado.concepto.valor_final == "mercaderias"
         assert resultado.cuenta_contable.valor_final == "600"
         assert resultado.concepto.fuente_final == "maestro_proveedores"
 
-    def test_patron_catalogo(self, catalogo_dir):
-        """Texto OCR con patron del catalogo -> match."""
+    def test_sin_proveedor_sin_llm_pendiente(self, catalogo_dir):
+        """Sin proveedor y sin LLM (config=None) -> pendiente."""
         resultado = resolver_semantica(
-            texto_ocr="ALQUILER LOCAL MENSUAL - MARZO 2026",
-            nif_emisor="X99999999",
-            nombre_emisor="DESCONOCIDO",
-            libro="20_COMPRAS_GASTOS",
-            catalogo_path=str(catalogo_dir / "catalogo_semantica.yaml"),
-            proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
-            maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
-            maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
-            config=None,
-        )
-        assert resultado.concepto.valor_final == "alquiler_local"
-        assert resultado.cuenta_contable.valor_final == "621"
-        assert resultado.decision_global == "auto"
-
-    def test_sin_match_pendiente(self, catalogo_dir):
-        """Sin proveedor ni patron -> pendiente."""
-        resultado = resolver_semantica(
-            texto_ocr="Servicio totalmente desconocido XYZ",
+            texto_ocr="Servicio desconocido XYZ",
             nif_emisor="Z99999999",
             nombre_emisor="EMPRESA DESCONOCIDA",
             libro="20_COMPRAS_GASTOS",
-            catalogo_path=str(catalogo_dir / "catalogo_semantica.yaml"),
             proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
             maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
             maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
@@ -370,11 +358,10 @@ class TestResolverSemantica:
     def test_bienes_inversion_nunca_auto(self, catalogo_dir):
         """Libro bienes de inversion -> WARN minimo, nunca AUTO."""
         resultado = resolver_semantica(
-            texto_ocr="COMPRA EQUIPO INFORMATICO SERVIDOR NUEVO",
+            texto_ocr="Compra ordenador",
             nif_emisor="X99999999",
             nombre_emisor="TECH SL",
             libro="22_BIENES_INVERSION",
-            catalogo_path=str(catalogo_dir / "catalogo_semantica.yaml"),
             proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
             maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
             maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
@@ -383,37 +370,149 @@ class TestResolverSemantica:
         assert resultado.decision_global != "auto"
         assert resultado.requiere_revision_humana is True
 
-    def test_human_review_required_warn(self, catalogo_dir):
-        """Concepto con human_review_required -> WARN minimo."""
+    def test_llm_mock_alta_confianza_puede_ser_auto(self, catalogo_dir, monkeypatch):
+        """LLM con confianza capada a 0.92 puede alcanzar AUTO (umbral 0.90)."""
+        def mock_llm(*args, **kwargs):
+            from src.phase3_semantica.resolver import CandidatoSemantico
+            return CandidatoSemantico(
+                concepto="mercaderias",
+                cuentacontable="600",
+                confianza=0.95,  # sera capado a 0.92
+                fuente="llm_pgc",
+                motivo="Clasificacion LLM mock",
+                tokens=100,
+            )
+        monkeypatch.setattr(
+            "src.phase3_semantica.resolver._llamar_llm_clasificador",
+            mock_llm,
+        )
+
+        class MockConfig:
+            semantica_umbral_confianza_auto = 0.90
+            semantica_umbral_confianza_warn = 0.70
+            semantica_umbral_catalogo = 0.85
+            google_application_credentials = ""
+            google_cloud_project_id = ""
+            gemini_arbitro_model = ""
+            gemini_arbitro_location = ""
+
         resultado = resolver_semantica(
-            texto_ocr="EQUIPO INFORMATICO NUEVO PORTATIL",
-            nif_emisor="X99999999",
-            nombre_emisor="TECH SL",
+            texto_ocr="Factura de mercaderias",
+            nif_emisor="Z99999999",
+            nombre_emisor="PROVEEDOR SL",
             libro="20_COMPRAS_GASTOS",
-            catalogo_path=str(catalogo_dir / "catalogo_semantica.yaml"),
             proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
             maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
             maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
-            config=None,
+            config=MockConfig(),
         )
-        # equipo_informatico has human_review_required: true
-        assert resultado.concepto.decision != "auto"
+        # Con confianza capada a 0.92 y umbral 0.90, debe ser AUTO
+        assert resultado.decision_global == "auto"
+        assert resultado.cuenta_contable.valor_final == "600"
+
+    def test_llm_falla_pendiente(self, catalogo_dir, monkeypatch):
+        """Si LLM falla (devuelve None) y no hay proveedor -> pendiente."""
+        monkeypatch.setattr(
+            "src.phase3_semantica.resolver._llamar_llm_clasificador",
+            lambda *args, **kwargs: None,
+        )
+
+        class MockConfig:
+            semantica_umbral_confianza_auto = 0.90
+            semantica_umbral_confianza_warn = 0.70
+            semantica_umbral_catalogo = 0.85
+            google_application_credentials = ""
+            google_cloud_project_id = ""
+            gemini_arbitro_model = ""
+            gemini_arbitro_location = ""
+
+        resultado = resolver_semantica(
+            texto_ocr="Servicio desconocido",
+            nif_emisor="Z99999999",
+            nombre_emisor="EMPRESA",
+            libro="20_COMPRAS_GASTOS",
+            proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
+            maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
+            maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
+            config=MockConfig(),
+        )
+        assert resultado.decision_global in ("pendiente", "warn")
         assert resultado.requiere_revision_humana is True
 
-    def test_cuenta_invalida_para_libro(self, catalogo_dir):
-        """Cuenta 217 (grupo 2) en libro compras -> block/warn."""
+    def test_tokens_llm_propagados(self, catalogo_dir, monkeypatch):
+        """tokens_llm se propaga correctamente al ResultadoSemantico."""
+        def mock_llm(*args, **kwargs):
+            from src.phase3_semantica.resolver import CandidatoSemantico
+            return CandidatoSemantico(
+                concepto="mercaderias",
+                cuentacontable="600",
+                confianza=0.88,
+                fuente="llm_pgc",
+                motivo="Mock",
+                tokens=350,
+            )
+        monkeypatch.setattr(
+            "src.phase3_semantica.resolver._llamar_llm_clasificador",
+            mock_llm,
+        )
+
+        class MockConfig:
+            semantica_umbral_confianza_auto = 0.90
+            semantica_umbral_confianza_warn = 0.70
+            semantica_umbral_catalogo = 0.85
+            google_application_credentials = ""
+            google_cloud_project_id = ""
+            gemini_arbitro_model = ""
+            gemini_arbitro_location = ""
+
         resultado = resolver_semantica(
-            texto_ocr="ORDENADOR NUEVO PARA OFICINA",
-            nif_emisor="X99999999",
-            nombre_emisor="TECH SL",
+            texto_ocr="Texto de prueba",
+            nif_emisor="Z99999999",
+            nombre_emisor="EMPRESA",
             libro="20_COMPRAS_GASTOS",
-            catalogo_path=str(catalogo_dir / "catalogo_semantica.yaml"),
             proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
             maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
             maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
-            config=None,
+            config=MockConfig(),
         )
-        # cuenta 217 no esta en whitelist de compras
+        assert resultado.tokens_llm == 350
+
+    def test_cuenta_invalida_para_libro_block(self, catalogo_dir, monkeypatch):
+        """Cuenta 217 (grupo 2) propuesta por LLM en libro compras -> block."""
+        def mock_llm(*args, **kwargs):
+            from src.phase3_semantica.resolver import CandidatoSemantico
+            return CandidatoSemantico(
+                concepto="equipo_informatico",
+                cuentacontable="217",
+                confianza=0.90,
+                fuente="llm_pgc",
+                motivo="Mock",
+                tokens=100,
+            )
+        monkeypatch.setattr(
+            "src.phase3_semantica.resolver._llamar_llm_clasificador",
+            mock_llm,
+        )
+
+        class MockConfig:
+            semantica_umbral_confianza_auto = 0.90
+            semantica_umbral_confianza_warn = 0.70
+            semantica_umbral_catalogo = 0.85
+            google_application_credentials = ""
+            google_cloud_project_id = ""
+            gemini_arbitro_model = ""
+            gemini_arbitro_location = ""
+
+        resultado = resolver_semantica(
+            texto_ocr="Ordenador nuevo",
+            nif_emisor="Z99999999",
+            nombre_emisor="TECH SL",
+            libro="20_COMPRAS_GASTOS",
+            proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
+            maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
+            maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
+            config=MockConfig(),
+        )
         assert resultado.cuenta_contable.decision in ("block", "warn")
 
 
@@ -428,10 +527,9 @@ class TestCompatibilidadEnsamblador:
 
         resultado = resolver_semantica(
             texto_ocr="ALQUILER LOCAL MENSUAL",
-            nif_emisor="X99999999",
+            nif_emisor="A12345678",  # SEGUROS MAPFRE -> cuenta 625
             nombre_emisor="PROPIETARIO",
             libro="20_COMPRAS_GASTOS",
-            catalogo_path=str(catalogo_dir / "catalogo_semantica.yaml"),
             proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
             maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
             maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
@@ -470,12 +568,11 @@ class TestCompatibilidadEnsamblador:
         from src.phase4_ensamblador.ensamblador import _extraer_campo_de_modulo
 
         campo_concepto = _extraer_campo_de_modulo(resultado_json, "concepto", "semantica")
-        assert campo_concepto["valor_final"] == "alquiler_local"
+        assert campo_concepto["valor_final"] == "seguro"
         assert campo_concepto["fuente_modulo"] == "semantica"
-        assert campo_concepto["decision"] == "auto"
 
         campo_cuenta = _extraer_campo_de_modulo(resultado_json, "cuenta_contable", "semantica")
-        assert campo_cuenta["valor_final"] == "621"
+        assert campo_cuenta["valor_final"] == "625"
         assert campo_cuenta["fuente_modulo"] == "semantica"
 
 
@@ -514,7 +611,7 @@ class TestMainIntegration:
         )
         monkeypatch.setattr(
             "src.phase3_semantica.main.Path",
-            lambda p: catalogo_dir / Path(p).name if "maestro" in p or "catalogo" in p else Path(p),
+            lambda p: catalogo_dir / Path(p).name if "maestro" in p else Path(p),
         )
 
         from src.phase3_semantica.main import run_semantica
