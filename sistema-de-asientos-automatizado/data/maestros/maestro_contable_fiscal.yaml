@@ -1,716 +1,252 @@
 # ============================================================
-# master_contable_fiscal.yaml
-# Versión: 2.0 (MVP producción)
-# Fuentes:
-#   PGC: Real Decreto 1514/2007 (BOE-A-2007-19884)
-#   Libros: Orden HAC/773/2019 + formatos AEAT
-#   Facturación: Real Decreto 1619/2012 (BOE-A-2012-14696)
-#   AEPD: Orientaciones IA Agéntica 2026
-# Convención de fuentes:
-#   pgc_verificada    → cuenta y descripción literal del PGC
-#   aeat_operativa    → clase o libro conforme a formatos AEAT
-#   politica_interna  → criterio operativo de la gestoría
+# maestro_contable_fiscal.yaml v3
+# Esquema plano para clasificacion LLM-first.
+# Sin match_hints. Sin enums anidados.
+# Campo "descripcion" es lo que ve el LLM en el prompt.
 # ============================================================
 
-version: 2
-name: maestro_contable_fiscal_fase3
+version: 3
+name: maestro_contable_fiscal
 scope:
   country: ES
   sector: HORECA
-  use_case: >
-    Validación semántica de salida OCR y propuesta de asiento.
-    Fase 3 del pipeline, stateless por factura.
-    Nunca inventar campos. Bloquear si faltan datos críticos.
-  books_supported:
-    - compras_gastos
-    - ingresos_ventas
-    - bienes_inversion
-
-# ============================================================
-# SECCIÓN 1 — CUENTAS CONTABLES
-# ============================================================
-enums:
-
-  cuenta_contable:
-    required: true
-    type: string
-    note: >
-      Solo proponer una cuenta si el texto OCR + tipo_operacion + concepto
-      justifican la elección con evidencia suficiente.
-      Si hay ambigüedad entre dos candidatas → status: warn + human_review.
-      Si no hay candidata clara → status: block.
-
-    allowed_values:
-
-      # ── GRUPO 6 · COMPRAS Y GASTOS ──────────────────────────
-
-      - code: "600"
-        label: "Compras de mercaderías"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "mercadería"
-            - "mercancías"
-            - "género"
-            - "bebidas para reventa"
-            - "alimentos para venta"
-            - "producto para reventa"
-            - "stock"
-          exclude:
-            - "activo"
-            - "inmovilizado"
-            - "maquinaria"
-
-      - code: "601"
-        label: "Compras de materias primas"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "materia prima"
-            - "ingredientes"
-            - "insumo"
-            - "componente productivo"
-
-      - code: "602"
-        label: "Compras de otros aprovisionamientos"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "envases"
-            - "embalajes"
-            - "consumibles"
-            - "útiles de trabajo"
-            - "aprovisionamiento"
-
-      - code: "607"
-        label: "Trabajos realizados por otras empresas"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "subcontrata"
-            - "trabajo realizado"
-            - "servicio ejecutado por tercero"
-          exclude:
-            - "profesional independiente"
-            - "abogado"
-            - "asesor"
-            - "gestor"
-
-      - code: "621"
-        label: "Arrendamientos y cánones"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "alquiler"
-            - "renta"
-            - "arrendamiento"
-            - "canon"
-            - "leasing operativo"
-
-      - code: "622"
-        label: "Reparaciones y conservación"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        note: >
-          Solo si la reparación no mejora ni amplía capacidad del activo.
-          Si la obra mejora el activo, escalado a human_review
-          para evaluar si va a 21x en lugar de 622.
-        match_hints:
-          include:
-            - "reparación"
-            - "mantenimiento"
-            - "conservación"
-            - "arreglo"
-            - "sustitución pieza"
-          exclude:
-            - "reforma"
-            - "ampliación"
-            - "mejora sustancial"
-
-      - code: "623"
-        label: "Servicios de profesionales independientes"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        note: >
-          Profesionales con actividad propia: abogados, asesores,
-          notarios, auditores, consultores, arquitectos.
-          Distinguir de 607 (empresa subcontratada) y de 629
-          (servicios generales sin profesional habilitado).
-        match_hints:
-          include:
-            - "abogado"
-            - "asesoría jurídica"
-            - "notaría"
-            - "auditoría"
-            - "consultor"
-            - "arquitecto"
-            - "ingeniero"
-            - "gestor administrativo"
-            - "honorarios profesionales"
-          exclude:
-            - "subcontrata"
-            - "empresa de servicios"
-
-      - code: "624"
-        label: "Transportes"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "transporte"
-            - "flete"
-            - "mensajería"
-            - "envío"
-            - "portes"
-            - "distribución"
-
-      - code: "625"
-        label: "Primas de seguros"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_no_deducible_iva"
-        source: "pgc_verificada"
-        note: >
-          Los seguros generalmente van exentos de IVA.
-          Si tipo_iva == 0 y concepto es seguro, es coherente.
-          Si tipo_iva > 0 con seguro, escalar a human_review.
-        match_hints:
-          include:
-            - "seguro"
-            - "prima"
-            - "póliza"
-            - "cobertura"
-
-      - code: "626"
-        label: "Servicios bancarios y similares"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_no_deducible_iva"
-        source: "pgc_verificada"
-        note: >
-          Comisiones bancarias exentas de IVA.
-          Verificar tipo_iva == 0.
-        match_hints:
-          include:
-            - "comisión bancaria"
-            - "gastos bancarios"
-            - "mantenimiento cuenta"
-            - "transferencia bancaria"
-            - "servicio financiero"
-
-      - code: "627"
-        label: "Publicidad, propaganda y relaciones públicas"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "publicidad"
-            - "anuncio"
-            - "campaña"
-            - "marketing"
-            - "relaciones públicas"
-            - "patrocinio"
-            - "diseño gráfico"
-            - "rótulo"
-
-      - code: "628"
-        label: "Suministros"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "electricidad"
-            - "luz"
-            - "agua"
-            - "gas"
-            - "telefonía"
-            - "internet"
-            - "fibra óptica"
-            - "suministro eléctrico"
-
-      - code: "629"
-        label: "Otros servicios"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_deducible_interior"
-        source: "pgc_verificada"
-        note: >
-          Usar solo cuando ninguna cuenta más específica del grupo 6
-          encaja mejor. Es cuenta de último recurso dentro del grupo.
-        match_hints:
-          include:
-            - "papelería"
-            - "material de oficina"
-            - "limpieza"
-            - "servicio de guardia"
-            - "software suscripción"
-            - "dietas"
-            - "gastos representación"
-            - "servicios diversos"
-
-      - code: "631"
-        label: "Otros tributos"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_no_deducible_iva"
-        source: "pgc_verificada"
-        note: >
-          Tasas e impuestos locales o autonómicos deducibles
-          como gasto (IBI, IAE, tasas municipales).
-          No confundir con IVA soportado ni con sanciones.
-        match_hints:
-          include:
-            - "tasa"
-            - "IBI"
-            - "IAE"
-            - "impuesto municipal"
-            - "tributo"
-            - "licencia fiscal"
-          exclude:
-            - "sanción"
-            - "multa"
-            - "recargo"
-
-      - code: "640"
-        label: "Sueldos y salarios"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_no_deducible_iva"
-        source: "pgc_verificada"
-        human_review_required: true
-        note: >
-          Las nóminas no llevan IVA. Incluirlas en el pipeline
-          solo si la gestoría procesa nóminas como documentos
-          del libro de gastos. No autocargable sin validación.
-        match_hints:
-          include:
-            - "nómina"
-            - "salario"
-            - "sueldo"
-            - "retribución"
-            - "haberes"
-
-      - code: "642"
-        label: "Seguridad Social a cargo de la empresa"
-        group: "6"
-        book_default: "compras_gastos"
-        class_default: "gasto_no_deducible_iva"
-        source: "pgc_verificada"
-        note: >
-          Sin IVA. Solo si el pipeline procesa recibos TC1/TC2
-          de Seguridad Social. human_review_required: siempre.
-        match_hints:
-          include:
-            - "seguridad social"
-            - "cuota patronal"
-            - "TC1"
-            - "TC2"
-            - "cotización empresa"
-
-      # ── GRUPO 7 · VENTAS E INGRESOS ──────────────────────────
-
-      - code: "700"
-        label: "Ventas de mercaderías"
-        group: "7"
-        book_default: "ingresos_ventas"
-        class_default: "ingreso_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "venta"
-            - "producto"
-            - "artículo"
-            - "ticket venta"
-            - "factura de venta"
-
-      - code: "705"
-        label: "Prestación de servicios"
-        group: "7"
-        book_default: "ingresos_ventas"
-        class_default: "ingreso_interior"
-        source: "pgc_verificada"
-        match_hints:
-          include:
-            - "servicio prestado"
-            - "consultoría facturada"
-            - "honorarios emitidos"
-            - "mantenimiento facturado"
-            - "reparación facturada"
-
-      # ── GRUPO 2 · INMOVILIZADO ────────────────────────────────
-      # Subcuentas reales del PGC. No usar "21x" genérico.
-
-      - code: "212"
-        label: "Instalaciones técnicas"
-        group: "2"
-        book_default: "bienes_inversion"
-        class_default: "bien_inversion"
-        source: "pgc_verificada"
-        human_review_required: true
-        match_hints:
-          include:
-            - "instalación eléctrica"
-            - "instalación de gas"
-            - "instalación climatización"
-            - "instalación frigorífica"
-            - "instalación técnica"
-
-      - code: "213"
-        label: "Maquinaria"
-        group: "2"
-        book_default: "bienes_inversion"
-        class_default: "bien_inversion"
-        source: "pgc_verificada"
-        human_review_required: true
-        match_hints:
-          include:
-            - "maquinaria"
-            - "horno"
-            - "lavavajillas industrial"
-            - "cafetera industrial"
-            - "máquina de hielo"
-            - "freidora industrial"
-            - "cámara frigorífica"
-
-      - code: "216"
-        label: "Mobiliario"
-        group: "2"
-        book_default: "bienes_inversion"
-        class_default: "bien_inversion"
-        source: "pgc_verificada"
-        human_review_required: true
-        match_hints:
-          include:
-            - "mobiliario"
-            - "mueble"
-            - "silla"
-            - "mesa"
-            - "mostrador"
-            - "barra"
-            - "estantería"
-
-      - code: "217"
-        label: "Equipos para procesos de información"
-        group: "2"
-        book_default: "bienes_inversion"
-        class_default: "bien_inversion"
-        source: "pgc_verificada"
-        human_review_required: true
-        match_hints:
-          include:
-            - "ordenador"
-            - "portátil"
-            - "servidor"
-            - "TPV"
-            - "tablet"
-            - "impresora"
-            - "escáner"
-            - "equipo informático"
-            - "terminal punto de venta"
-
-      - code: "218"
-        label: "Elementos de transporte"
-        group: "2"
-        book_default: "bienes_inversion"
-        class_default: "bien_inversion"
-        source: "pgc_verificada"
-        human_review_required: true
-        match_hints:
-          include:
-            - "vehículo"
-            - "furgoneta"
-            - "coche empresa"
-            - "camión"
-            - "motocicleta empresa"
-            - "elemento de transporte"
-
-# ============================================================
-# SECCIÓN 2 — CONCEPTOS NORMALIZADOS
-# ============================================================
-
-  concepto:
-    required: true
-    type: string
-    note: >
-      Valor normalizado derivado del texto OCR.
-      Un concepto apunta a una cuenta_contable por defecto
-      pero el grounding con maestro de proveedor tiene
-      prioridad sobre la cuenta sugerida por concepto.
-
-    allowed_values:
-
-      - key: "mercaderias"
-        label: "Mercaderías para reventa"
-        cuenta_default: "600"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "materias_primas"
-        label: "Materias primas"
-        cuenta_default: "601"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "aprovisionamientos"
-        label: "Otros aprovisionamientos"
-        cuenta_default: "602"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "trabajos_subcontratados"
-        label: "Trabajos realizados por otras empresas"
-        cuenta_default: "607"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "alquiler_local"
-        label: "Alquileres y cánones"
-        cuenta_default: "621"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "reparacion_conservacion"
-        label: "Reparaciones y conservación"
-        cuenta_default: "622"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-        note: "Escalar a human_review si texto sugiere reforma o mejora."
-
-      - key: "profesional_independiente"
-        label: "Servicios profesionales independientes"
-        cuenta_default: "623"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "transporte"
-        label: "Transportes"
-        cuenta_default: "624"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "seguro"
-        label: "Primas de seguros"
-        cuenta_default: "625"
-        class_default: "gasto_no_deducible_iva"
-        source: "politica_interna"
-        note: "Verificar tipo_iva == 0. Si tipo_iva > 0, escalar."
-
-      - key: "gasto_bancario"
-        label: "Servicios bancarios"
-        cuenta_default: "626"
-        class_default: "gasto_no_deducible_iva"
-        source: "politica_interna"
-        note: "Verificar tipo_iva == 0 (exento)."
-
-      - key: "publicidad"
-        label: "Publicidad y marketing"
-        cuenta_default: "627"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "suministros"
-        label: "Suministros"
-        cuenta_default: "628"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-
-      - key: "servicios_generales"
-        label: "Otros servicios"
-        cuenta_default: "629"
-        class_default: "gasto_deducible_interior"
-        source: "politica_interna"
-        note: "Usar solo si ninguna otra cuenta de grupo 6 encaja."
-
-      - key: "tributo"
-        label: "Tasas e impuestos"
-        cuenta_default: "631"
-        class_default: "gasto_no_deducible_iva"
-        source: "politica_interna"
-
-      - key: "nomina"
-        label: "Sueldos y salarios"
-        cuenta_default: "640"
-        class_default: "gasto_no_deducible_iva"
-        source: "politica_interna"
-        human_review_required: true
-
-      - key: "seguridad_social"
-        label: "Seguridad Social empresa"
-        cuenta_default: "642"
-        class_default: "gasto_no_deducible_iva"
-        source: "politica_interna"
-        human_review_required: true
-
-      - key: "venta_mercaderias"
-        label: "Venta de mercaderías"
-        cuenta_default: "700"
-        class_default: "ingreso_interior"
-        source: "politica_interna"
-
-      - key: "prestacion_servicios"
-        label: "Prestación de servicios"
-        cuenta_default: "705"
-        class_default: "ingreso_interior"
-        source: "politica_interna"
-
-      - key: "instalacion_tecnica"
-        label: "Instalación técnica"
-        cuenta_default: "212"
-        class_default: "bien_inversion"
-        source: "politica_interna"
-        human_review_required: true
-
-      - key: "maquinaria"
-        label: "Maquinaria"
-        cuenta_default: "213"
-        class_default: "bien_inversion"
-        source: "politica_interna"
-        human_review_required: true
-
-      - key: "mobiliario"
-        label: "Mobiliario"
-        cuenta_default: "216"
-        class_default: "bien_inversion"
-        source: "politica_interna"
-        human_review_required: true
-
-      - key: "equipo_informatico"
-        label: "Equipo para proceso de información"
-        cuenta_default: "217"
-        class_default: "bien_inversion"
-        source: "politica_interna"
-        human_review_required: true
-
-      - key: "vehiculo"
-        label: "Elemento de transporte"
-        cuenta_default: "218"
-        class_default: "bien_inversion"
-        source: "politica_interna"
-        human_review_required: true
-
-      - key: "reforma_mejora"
-        label: "Reforma o mejora de activo"
-        cuenta_default: null
-        class_default: "pendiente_revision"
-        source: "politica_interna"
-        human_review_required: true
-        note: >
-          No clasificar automáticamente. Puede ir a 212/216 o a 622
-          dependiendo de si mejora o mantiene el activo.
-
-      - key: "no_clasificado"
-        label: "No clasificado"
-        cuenta_default: null
-        class_default: "pendiente_revision"
-        source: "politica_interna"
-
-# ============================================================
-# SECCIÓN 3 — CLASES FISCALES
-# ============================================================
-
-  clase_fiscal:
-    required: true
-    type: string
-    note: >
-      La clase fiscal determina el destino en los libros AEAT
-      y el tratamiento del IVA. No sustituye a tipo_operacion.
-      Los tres campos (cuenta_contable, concepto, clase_fiscal)
-      deben ser coherentes entre sí.
-
-    allowed_values:
-
-      - key: "gasto_deducible_interior"
-        label: "Gasto deducible operaciones interiores"
-        target_book: "compras_gastos"
-        iva_expected: true
-        source: "aeat_operativa"
-
-      - key: "gasto_no_deducible"
-        label: "Gasto sin soporte deducible (factura simplificada o no afecto)"
-        target_book: "compras_gastos"
-        iva_expected: false
-        source: "aeat_operativa"
-
-      - key: "gasto_no_deducible_iva"
-        label: "Gasto deducible en renta pero sin IVA (nóminas, SS, seguros)"
-        target_book: "compras_gastos"
-        iva_expected: false
-        source: "aeat_operativa"
-
-      - key: "bien_inversion"
-        label: "Bien de inversión"
-        target_book: "bienes_inversion"
-        iva_expected: true
-        source: "aeat_operativa"
-
-      - key: "ingreso_interior"
-        label: "Ingreso operaciones interiores"
-        target_book: "ingresos_ventas"
-        iva_expected: true
-        source: "aeat_operativa"
-
-      - key: "gasto_intracomunitario"
-        label: "Adquisición intracomunitaria"
-        target_book: "compras_gastos"
-        iva_expected: false
-        source: "aeat_operativa"
-        human_review_required: true
-
-      - key: "ingreso_intracomunitario"
-        label: "Entrega intracomunitaria"
-        target_book: "ingresos_ventas"
-        iva_expected: false
-        source: "aeat_operativa"
-        human_review_required: true
-
-      - key: "gasto_importacion"
-        label: "Importación de bienes"
-        target_book: "compras_gastos"
-        iva_expected: false
-        source: "aeat_operativa"
-        human_review_required: true
-
-      - key: "gasto_isp"
-        label: "Inversión del sujeto pasivo"
-        target_book: "compras_gastos"
-        iva_expected: false
-        source: "aeat_operativa"
-        human_review_required: true
-
-      - key: "recargo_equivalencia"
-        label: "Recargo de equivalencia"
-        target_book: "compras_gastos"
-        iva_expected: true
-        source: "aeat_operativa"
-        human_review_required: true
-
-      - key: "pendiente_revision"
-        label: "Pendiente de revisión"
-        target_book: null
-        iva_expected: null
-        source: "politica_interna"
+
+# ── CUENTAS ─────────────────────────────────────────────────
+# book: compras_gastos | ingresos_ventas | bienes_inversion
+# human_review: true requiere revision humana obligatoria
+
+cuentas:
+
+  # ── GRUPO 6: COMPRAS Y GASTOS ────────────────────────────
+
+  - code: "600"
+    label: "Compras de mercaderias"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Bienes adquiridos para reventa sin transformacion (bebidas, alimentos)"
+    human_review: false
+
+  - code: "601"
+    label: "Compras de materias primas"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Ingredientes o insumos que se transforman en el proceso productivo"
+    human_review: false
+
+  - code: "602"
+    label: "Otros aprovisionamientos"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Consumibles, envases, embalajes y utiles de trabajo no almacenables"
+    human_review: false
+
+  - code: "607"
+    label: "Trabajos realizados por otras empresas"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Servicios del proceso productivo encargados a empresas terceras (subcontratacion)"
+    human_review: false
+
+  - code: "621"
+    label: "Arrendamientos y canones"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Alquiler de local, maquinaria o equipos; leasing operativo y canones"
+    human_review: false
+
+  - code: "622"
+    label: "Reparaciones y conservacion"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Mantenimiento de activos existentes que no mejoran ni amplian su capacidad"
+    human_review: false
+
+  - code: "623"
+    label: "Servicios de profesionales independientes"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Honorarios de abogados, asesores, notarios, auditores, arquitectos"
+    human_review: false
+
+  - code: "624"
+    label: "Transportes"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Gastos de transporte, mensajeria, flete y distribucion realizados por terceros"
+    human_review: false
+
+  - code: "625"
+    label: "Primas de seguros"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_no_deducible_iva"
+    descripcion: "Seguros vinculados a la actividad: multirriesgo, responsabilidad civil, vehiculos. Generalmente exentos de IVA"
+    human_review: false
+
+  - code: "626"
+    label: "Servicios bancarios y similares"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_no_deducible_iva"
+    descripcion: "Comisiones bancarias, mantenimiento de cuenta, transferencias. Exentos de IVA"
+    human_review: false
+
+  - code: "627"
+    label: "Publicidad, propaganda y relaciones publicas"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Gastos de marketing, publicidad, diseno grafico, rotulos y patrocinio"
+    human_review: false
+
+  - code: "628"
+    label: "Suministros"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Consumos de electricidad, agua, gas, telefonia e internet del local"
+    human_review: false
+
+  - code: "629"
+    label: "Otros servicios"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Otros servicios no clasificados en cuentas anteriores: papeleria, limpieza, suscripciones software, dietas"
+    human_review: false
+
+  - code: "631"
+    label: "Otros tributos"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_no_deducible_iva"
+    descripcion: "Tasas e impuestos locales o autonomicos deducibles: IBI, IAE, tasas municipales. Sin IVA"
+    human_review: false
+
+  - code: "640"
+    label: "Sueldos y salarios"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_no_deducible_iva"
+    descripcion: "Nominas, sueldos y retribuciones del personal. Sin IVA"
+    human_review: true
+
+  - code: "642"
+    label: "Seguridad Social a cargo de la empresa"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_no_deducible_iva"
+    descripcion: "Cuota patronal, cotizaciones TC1/TC2 de Seguridad Social. Sin IVA"
+    human_review: true
+
+  # ── GRUPO 7: VENTAS E INGRESOS ───────────────────────────
+
+  - code: "700"
+    label: "Ventas de mercaderias"
+    group: "7"
+    book: "ingresos_ventas"
+    class: "ingreso_interior"
+    descripcion: "Ingresos por venta de productos sin transformacion"
+    human_review: false
+
+  - code: "705"
+    label: "Prestacion de servicios"
+    group: "7"
+    book: "ingresos_ventas"
+    class: "ingreso_interior"
+    descripcion: "Ingresos por servicios prestados a terceros"
+    human_review: false
+
+  # ── GRUPO 2: BIENES DE INVERSION ────────────────────────
+
+  - code: "212"
+    label: "Instalaciones tecnicas"
+    group: "2"
+    book: "bienes_inversion"
+    class: "bien_inversion"
+    descripcion: "Instalaciones electricas, de gas, climatizacion o frigorificas fijas"
+    human_review: true
+
+  - code: "213"
+    label: "Maquinaria"
+    group: "2"
+    book: "bienes_inversion"
+    class: "bien_inversion"
+    descripcion: "Hornos, lavavajillas industrial, cafetera industrial, camara frigorifica, freidoras"
+    human_review: true
+
+  - code: "216"
+    label: "Mobiliario"
+    group: "2"
+    book: "bienes_inversion"
+    class: "bien_inversion"
+    descripcion: "Muebles, sillas, mesas, mostrador, barra, estanterias de la actividad"
+    human_review: true
+
+  - code: "217"
+    label: "Equipos para procesos de informacion"
+    group: "2"
+    book: "bienes_inversion"
+    class: "bien_inversion"
+    descripcion: "Ordenadores, portatiles, servidores, TPV, tablets, impresoras, escaner"
+    human_review: true
+
+  - code: "218"
+    label: "Elementos de transporte"
+    group: "2"
+    book: "bienes_inversion"
+    class: "bien_inversion"
+    descripcion: "Vehiculos de empresa: furgoneta, coche, camion, motocicleta"
+    human_review: true
+
+# ── CONCEPTOS ────────────────────────────────────────────────
+# Mapeo concepto_key -> cuenta por defecto y flag human_review
+
+conceptos:
+  mercaderias:             { cuenta: "600", class: "gasto_deducible_interior",  human_review: false }
+  materias_primas:         { cuenta: "601", class: "gasto_deducible_interior",  human_review: false }
+  aprovisionamientos:      { cuenta: "602", class: "gasto_deducible_interior",  human_review: false }
+  trabajos_subcontratados: { cuenta: "607", class: "gasto_deducible_interior",  human_review: false }
+  alquiler_local:          { cuenta: "621", class: "gasto_deducible_interior",  human_review: false }
+  reparacion_conservacion: { cuenta: "622", class: "gasto_deducible_interior",  human_review: false }
+  profesional_independiente: { cuenta: "623", class: "gasto_deducible_interior", human_review: false }
+  transporte:              { cuenta: "624", class: "gasto_deducible_interior",  human_review: false }
+  seguro:                  { cuenta: "625", class: "gasto_no_deducible_iva",    human_review: false }
+  gasto_bancario:          { cuenta: "626", class: "gasto_no_deducible_iva",    human_review: false }
+  publicidad:              { cuenta: "627", class: "gasto_deducible_interior",  human_review: false }
+  suministros:             { cuenta: "628", class: "gasto_deducible_interior",  human_review: false }
+  servicios_generales:     { cuenta: "629", class: "gasto_deducible_interior",  human_review: false }
+  tributo:                 { cuenta: "631", class: "gasto_no_deducible_iva",    human_review: false }
+  nomina:                  { cuenta: "640", class: "gasto_no_deducible_iva",    human_review: true  }
+  seguridad_social:        { cuenta: "642", class: "gasto_no_deducible_iva",    human_review: true  }
+  venta_mercaderias:       { cuenta: "700", class: "ingreso_interior",          human_review: false }
+  prestacion_servicios:    { cuenta: "705", class: "ingreso_interior",          human_review: false }
+  instalacion_tecnica:     { cuenta: "212", class: "bien_inversion",            human_review: true  }
+  maquinaria:              { cuenta: "213", class: "bien_inversion",            human_review: true  }
+  mobiliario:              { cuenta: "216", class: "bien_inversion",            human_review: true  }
+  equipo_informatico:      { cuenta: "217", class: "bien_inversion",            human_review: true  }
+  vehiculo:                { cuenta: "218", class: "bien_inversion",            human_review: true  }
+  no_clasificado:          { cuenta: null,  class: "pendiente_revision",        human_review: true  }
+
+# ── CLASES FISCALES ──────────────────────────────────────────
+
+clases_fiscales:
+  gasto_deducible_interior:   { book: "compras_gastos",   iva_expected: true  }
+  gasto_no_deducible:         { book: "compras_gastos",   iva_expected: false }
+  gasto_no_deducible_iva:     { book: "compras_gastos",   iva_expected: false }
+  bien_inversion:             { book: "bienes_inversion", iva_expected: true  }
+  ingreso_interior:           { book: "ingresos_ventas",  iva_expected: true  }
+  gasto_intracomunitario:     { book: "compras_gastos",   iva_expected: false }
+  ingreso_intracomunitario:   { book: "ingresos_ventas",  iva_expected: false }
+  gasto_importacion:          { book: "compras_gastos",   iva_expected: false }
+  gasto_isp:                  { book: "compras_gastos",   iva_expected: false }
+  recargo_equivalencia:       { book: "compras_gastos",   iva_expected: true  }
+  pendiente_revision:         { book: null,               iva_expected: null  }
