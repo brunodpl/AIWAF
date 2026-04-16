@@ -116,29 +116,6 @@ def cargar_maestro_proveedores(path: str | Path) -> dict[str, dict]:
     return result
 
 
-# ──────────────────────────────────────────────────────────
-# Stubs de compatibilidad — seran eliminados en Task 3
-# resolver.py aun los importa; no tienen logica de patrones
-# ──────────────────────────────────────────────────────────
-
-def cargar_catalogo_semantica(path: str | Path) -> list[dict]:
-    """
-    DEPRECATED — stub de compatibilidad hasta Task 3.
-    El catalogo de patrones es reemplazado por el maestro contable v3 + LLM.
-    """
-    logger.warning("[catalogo] cargar_catalogo_semantica esta deprecado (LLM-first refactor)")
-    return []
-
-
-def buscar_por_patrones(texto_ocr: str, catalogo: list[dict]) -> list[dict]:
-    """
-    DEPRECATED — stub de compatibilidad hasta Task 3.
-    El matching por patrones es reemplazado por LLM.
-    """
-    logger.warning("[catalogo] buscar_por_patrones esta deprecado (LLM-first refactor)")
-    return []
-
-
 def buscar_por_nif(
     nif: str,
     proveedores: dict[str, dict],

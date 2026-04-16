@@ -26,8 +26,6 @@ import yaml
 
 from .catalogo import (
     buscar_por_nif,
-    buscar_por_patrones,
-    cargar_catalogo_semantica,
     cargar_maestro_proveedores,
 )
 
@@ -397,7 +395,6 @@ def resolver_semantica(
         ResultadoSemantico con resolución de ambos campos
     """
     # 1. Cargar catálogos
-    catalogo = cargar_catalogo_semantica(catalogo_path)
     proveedores = cargar_maestro_proveedores(proveedores_path)
     review_flags = _cargar_conceptos_con_review(maestro_contable_path)
     cuentas_validas = _cargar_cuentas_validas(maestro_cuentas_path)
@@ -427,33 +424,7 @@ def resolver_semantica(
             f"concepto={cand.concepto} cuenta={cand.cuentacontable}"
         )
 
-    # 3. Fuente 2: Patrones de catálogo
-    matches_catalogo = buscar_por_patrones(texto_ocr, catalogo)
-    for match in matches_catalogo:
-        cand = CandidatoSemantico(
-            concepto=match["concepto"],
-            cuentacontable=match["cuentacontable"],
-            confianza=match["confianza"],
-            fuente="catalogo_semantica",
-            motivo=f"Patrón '{match['patron_matched']}' encontrado en texto OCR",
-        )
-        candidatos.append(cand)
-
-    # 4. Fuente 3: LLM clasificador PGC (si no hay candidatos de alta confianza)
-    mejor_confianza = max(
-        (c.confianza for c in candidatos), default=0.0
-    )
-    if mejor_confianza < umbral_auto and config is not None and catalogo:
-        logger.info(
-            f"[semantica] Mejor confianza={mejor_confianza:.2f} < {umbral_auto}, "
-            f"invocando LLM clasificador PGC"
-        )
-        resultado_llm = _llamar_llm_clasificador(
-            texto_ocr, nombre_emisor or "", libro, catalogo, config
-        )
-        if resultado_llm:
-            llm_usado = True
-            candidatos.append(resultado_llm)
+    # 4. LLM clasificador PGC (futuro: sera reactivado con catalogo maestro v3)
 
     # 5. Seleccionar mejor candidato para concepto y cuenta
     concepto_res = _seleccionar_mejor(candidatos, "concepto", review_flags, umbral_auto, umbral_warn)
