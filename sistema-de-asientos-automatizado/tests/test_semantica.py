@@ -1,15 +1,15 @@
 """
-Tests del módulo semántico (fase 3.3).
+Tests del modulo semantico (fase 3.3) — LLM-first.
 
 Verifica:
-  - Carga de catálogos
-  - Matching por patrones
+  - Carga de maestro contable v3
+  - Filtrado de cuentas por libro
   - Lookup por NIF proveedor
-  - Validación de cuenta en whitelist
+  - Validacion de cuenta en whitelist
   - Coherencia libro/grupo PGC
-  - Bienes de inversión → WARN forzado
-  - human_review_required → WARN forzado
-  - Integración: resolver_semantica produce output correcto
+  - Bienes de inversion -> WARN forzado
+  - human_review flags del maestro v3
+  - Integracion: resolver_semantica produce output correcto (sin LLM, sin patrones)
   - Compatibilidad con ensamblador
 
 No requiere credenciales de GCP (LLM mockeado).
@@ -24,8 +24,8 @@ import pytest
 from src.phase3_semantica.catalogo import (
     _normalizar_texto,
     buscar_por_nif,
-    buscar_por_patrones,
-    cargar_catalogo_semantica,
+    cargar_maestro_contable,
+    cuentas_para_libro,
     cargar_maestro_proveedores,
 )
 from src.phase3_semantica.resolver import (
@@ -38,34 +38,81 @@ from src.phase3_semantica.resolver import (
 )
 
 
-# ──────────────────────────────────────────────────────────
-# Fixtures: archivos temporales de catálogos
-# ──────────────────────────────────────────────────────────
+MAESTRO_V3_YAML = """\
+version: 3
+name: maestro_contable_fiscal
+scope:
+  country: ES
+  sector: HORECA
+
+cuentas:
+  - code: "600"
+    label: "Compras de mercaderias"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Bienes adquiridos para reventa sin transformacion"
+    human_review: false
+  - code: "621"
+    label: "Arrendamientos y canones"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_deducible_interior"
+    descripcion: "Alquiler de local, maquinaria o equipos"
+    human_review: false
+  - code: "625"
+    label: "Primas de seguros"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_no_deducible_iva"
+    descripcion: "Seguros vinculados a la actividad. Exentos de IVA"
+    human_review: false
+  - code: "640"
+    label: "Sueldos y salarios"
+    group: "6"
+    book: "compras_gastos"
+    class: "gasto_no_deducible_iva"
+    descripcion: "Nominas y retribuciones del personal"
+    human_review: true
+  - code: "217"
+    label: "Equipos para procesos de informacion"
+    group: "2"
+    book: "bienes_inversion"
+    class: "bien_inversion"
+    descripcion: "Ordenadores, portatiles, TPV, tablets"
+    human_review: true
+  - code: "700"
+    label: "Ventas de mercaderias"
+    group: "7"
+    book: "ingresos_ventas"
+    class: "ingreso_interior"
+    descripcion: "Ingresos por venta de productos"
+    human_review: false
+
+conceptos:
+  mercaderias:         { cuenta: "600", class: "gasto_deducible_interior",  human_review: false }
+  alquiler_local:      { cuenta: "621", class: "gasto_deducible_interior",  human_review: false }
+  seguro:              { cuenta: "625", class: "gasto_no_deducible_iva",    human_review: false }
+  nomina:              { cuenta: "640", class: "gasto_no_deducible_iva",    human_review: true  }
+  equipo_informatico:  { cuenta: "217", class: "bien_inversion",            human_review: true  }
+  venta_mercaderias:   { cuenta: "700", class: "ingreso_interior",          human_review: false }
+  no_clasificado:      { cuenta: null,  class: "pendiente_revision",        human_review: true  }
+
+clases_fiscales:
+  gasto_deducible_interior: { book: "compras_gastos",   iva_expected: true  }
+  gasto_no_deducible_iva:   { book: "compras_gastos",   iva_expected: false }
+  bien_inversion:           { book: "bienes_inversion", iva_expected: true  }
+  ingreso_interior:         { book: "ingresos_ventas",  iva_expected: true  }
+  pendiente_revision:       { book: null,               iva_expected: null  }
+"""
+
 
 @pytest.fixture
 def catalogo_dir(tmp_path):
-    """Crear directorio temporal con catálogos de prueba."""
-    # catalogo_semantica.yaml
-    catalogo = tmp_path / "catalogo_semantica.yaml"
-    catalogo.write_text(
-        '- patrones: ["COMPRA MERCADERÍAS", "MERCANCÍAS"]\n'
-        '  concepto: "mercaderias"\n'
-        '  cuentacontable: "600"\n'
-        '  confianza_catalogo: 0.98\n'
-        '- patrones: ["ALQUILER", "ARRENDAMIENTO"]\n'
-        '  concepto: "alquiler_local"\n'
-        '  cuentacontable: "621"\n'
-        '  confianza_catalogo: 0.99\n'
-        '- patrones: ["SEGURO", "PÓLIZA"]\n'
-        '  concepto: "seguro"\n'
-        '  cuentacontable: "625"\n'
-        '  confianza_catalogo: 0.99\n'
-        '- patrones: ["ORDENADOR", "EQUIPO INFORMÁTICO"]\n'
-        '  concepto: "equipo_informatico"\n'
-        '  cuentacontable: "217"\n'
-        '  confianza_catalogo: 0.98\n',
-        encoding="utf-8",
-    )
+    """Crear directorio temporal con catalogos de prueba (maestro v3)."""
+    # maestro_contable_fiscal.yaml (v3)
+    maestro_contable = tmp_path / "maestro_contable_fiscal.yaml"
+    maestro_contable.write_text(MAESTRO_V3_YAML, encoding="utf-8")
 
     # maestro_proveedores.yaml
     proveedores = tmp_path / "maestro_proveedores.yaml"
@@ -73,35 +120,18 @@ def catalogo_dir(tmp_path):
         'proveedores:\n'
         '  - nif: "B15428303"\n'
         '    nombre: "COMERCIAL BLANCO SL"\n'
-        '    concepto_defecto: "Compra de mercaderías"\n'
+        '    concepto_defecto: "mercaderias"\n'
         '    cuentacontable_defecto: "600"\n'
         '    confianza: 0.97\n'
         '  - nif: "A12345678"\n'
         '    nombre: "SEGUROS MAPFRE"\n'
-        '    concepto_defecto: "Seguro"\n'
+        '    concepto_defecto: "seguro"\n'
         '    cuentacontable_defecto: "625"\n'
         '    confianza: 0.95\n',
         encoding="utf-8",
     )
 
-    # maestro_contable_fiscal.yaml (mínimo)
-    maestro_contable = tmp_path / "maestro_contable_fiscal.yaml"
-    maestro_contable.write_text(
-        'enums:\n'
-        '  concepto:\n'
-        '    allowed_values:\n'
-        '      - key: "mercaderias"\n'
-        '        human_review_required: false\n'
-        '      - key: "alquiler_local"\n'
-        '        human_review_required: false\n'
-        '      - key: "equipo_informatico"\n'
-        '        human_review_required: true\n'
-        '      - key: "seguro"\n'
-        '        human_review_required: false\n',
-        encoding="utf-8",
-    )
-
-    # maestro_cuentas.yaml — same non-standard format as production file
+    # maestro_cuentas.yaml
     maestro_cuentas = tmp_path / "maestro_cuentas.yaml"
     maestro_cuentas.write_text(
         '# maestro_cuentas.yaml\n'
@@ -119,7 +149,7 @@ def catalogo_dir(tmp_path):
 
 
 # ──────────────────────────────────────────────────────────
-# Tests: normalización de texto
+# Tests: normalizacion de texto
 # ──────────────────────────────────────────────────────────
 
 class TestNormalizarTexto:
@@ -136,32 +166,57 @@ class TestNormalizarTexto:
 
 
 # ──────────────────────────────────────────────────────────
-# Tests: carga de catálogos
+# Tests: carga del maestro contable v3
 # ──────────────────────────────────────────────────────────
 
-class TestCargarCatalogos:
-    def test_cargar_catalogo_semantica(self, catalogo_dir):
-        catalogo = cargar_catalogo_semantica(catalogo_dir / "catalogo_semantica.yaml")
-        assert len(catalogo) == 4
-        assert catalogo[0]["concepto"] == "mercaderias"
-        assert catalogo[0]["cuentacontable"] == "600"
+class TestCargarMaestroContable:
+    def test_carga_version_3(self, catalogo_dir):
+        maestro = cargar_maestro_contable(catalogo_dir / "maestro_contable_fiscal.yaml")
+        assert maestro["version"] == 3
+        assert len(maestro["cuentas"]) == 6  # solo las del fixture
 
-    def test_cargar_catalogo_no_existe(self, tmp_path):
-        catalogo = cargar_catalogo_semantica(tmp_path / "no_existe.yaml")
-        assert catalogo == []
+    def test_cuentas_tienen_campos_requeridos(self, catalogo_dir):
+        maestro = cargar_maestro_contable(catalogo_dir / "maestro_contable_fiscal.yaml")
+        for cuenta in maestro["cuentas"]:
+            assert "code" in cuenta
+            assert "label" in cuenta
+            assert "book" in cuenta
+            assert "descripcion" in cuenta
+            assert "human_review" in cuenta
 
-    def test_cargar_proveedores(self, catalogo_dir):
-        proveedores = cargar_maestro_proveedores(catalogo_dir / "maestro_proveedores.yaml")
-        assert "B15428303" in proveedores
-        assert proveedores["B15428303"]["cuentacontable_defecto"] == "600"
+    def test_conceptos_tienen_human_review(self, catalogo_dir):
+        maestro = cargar_maestro_contable(catalogo_dir / "maestro_contable_fiscal.yaml")
+        assert maestro["conceptos"]["nomina"]["human_review"] is True
+        assert maestro["conceptos"]["mercaderias"]["human_review"] is False
 
-    def test_cargar_proveedores_no_existe(self, tmp_path):
-        proveedores = cargar_maestro_proveedores(tmp_path / "no_existe.yaml")
-        assert proveedores == {}
+    def test_archivo_no_existe(self, tmp_path):
+        maestro = cargar_maestro_contable(tmp_path / "no_existe.yaml")
+        assert maestro == {}
+
+    def test_cuentas_para_libro_compras(self, catalogo_dir):
+        maestro = cargar_maestro_contable(catalogo_dir / "maestro_contable_fiscal.yaml")
+        cuentas = cuentas_para_libro(maestro, "20_COMPRAS_GASTOS")
+        assert len(cuentas) == 4  # 600, 621, 625, 640
+        codigos = [c["code"] for c in cuentas]
+        assert "600" in codigos
+        assert "621" in codigos
+        assert "217" not in codigos  # bienes_inversion, no compras
+
+    def test_cuentas_para_libro_inversion(self, catalogo_dir):
+        maestro = cargar_maestro_contable(catalogo_dir / "maestro_contable_fiscal.yaml")
+        cuentas = cuentas_para_libro(maestro, "22_BIENES_INVERSION")
+        codigos = [c["code"] for c in cuentas]
+        assert "217" in codigos
+        assert "600" not in codigos
+
+    def test_cuentas_para_libro_desconocido(self, catalogo_dir):
+        maestro = cargar_maestro_contable(catalogo_dir / "maestro_contable_fiscal.yaml")
+        cuentas = cuentas_para_libro(maestro, "99_LIBRO_INEXISTENTE")
+        assert cuentas == []
 
 
 # ──────────────────────────────────────────────────────────
-# Tests: búsqueda por NIF
+# Tests: busqueda por NIF
 # ──────────────────────────────────────────────────────────
 
 class TestBuscarPorNif:
@@ -184,38 +239,7 @@ class TestBuscarPorNif:
 
 
 # ──────────────────────────────────────────────────────────
-# Tests: búsqueda por patrones
-# ──────────────────────────────────────────────────────────
-
-class TestBuscarPorPatrones:
-    def test_match_unico(self, catalogo_dir):
-        catalogo = cargar_catalogo_semantica(catalogo_dir / "catalogo_semantica.yaml")
-        resultado = buscar_por_patrones("Factura por COMPRA MERCADERÍAS varias", catalogo)
-        assert len(resultado) >= 1
-        assert resultado[0]["concepto"] == "mercaderias"
-
-    def test_match_multiple(self, catalogo_dir):
-        catalogo = cargar_catalogo_semantica(catalogo_dir / "catalogo_semantica.yaml")
-        texto = "ALQUILER local + SEGURO anual del local"
-        resultado = buscar_por_patrones(texto, catalogo)
-        assert len(resultado) >= 2
-        conceptos = {r["concepto"] for r in resultado}
-        assert "alquiler_local" in conceptos
-        assert "seguro" in conceptos
-
-    def test_sin_match(self, catalogo_dir):
-        catalogo = cargar_catalogo_semantica(catalogo_dir / "catalogo_semantica.yaml")
-        resultado = buscar_por_patrones("Texto totalmente irrelevante xyz", catalogo)
-        assert resultado == []
-
-    def test_texto_vacio(self, catalogo_dir):
-        catalogo = cargar_catalogo_semantica(catalogo_dir / "catalogo_semantica.yaml")
-        resultado = buscar_por_patrones("", catalogo)
-        assert resultado == []
-
-
-# ──────────────────────────────────────────────────────────
-# Tests: validación de cuentas
+# Tests: validacion de cuentas
 # ──────────────────────────────────────────────────────────
 
 class TestValidacionCuentas:
@@ -266,7 +290,7 @@ class TestCoherenciaLibro:
 
 
 # ──────────────────────────────────────────────────────────
-# Tests: bienes de inversión
+# Tests: bienes de inversion
 # ──────────────────────────────────────────────────────────
 
 class TestBienesInversion:
@@ -278,7 +302,7 @@ class TestBienesInversion:
 
 
 # ──────────────────────────────────────────────────────────
-# Tests: human_review_required
+# Tests: human_review flags del maestro v3
 # ──────────────────────────────────────────────────────────
 
 class TestHumanReviewRequired:
@@ -289,12 +313,12 @@ class TestHumanReviewRequired:
 
 
 # ──────────────────────────────────────────────────────────
-# Tests: resolver_semantica integración
+# Tests: resolver_semantica integracion
 # ──────────────────────────────────────────────────────────
 
 class TestResolverSemantica:
     def test_proveedor_conocido_auto(self, catalogo_dir):
-        """Proveedor con NIF en maestro → concepto y cuenta resueltos."""
+        """Proveedor con NIF en maestro -> concepto y cuenta resueltos."""
         resultado = resolver_semantica(
             texto_ocr="Factura de proveedor",
             nif_emisor="B15428303",
@@ -311,7 +335,7 @@ class TestResolverSemantica:
         assert resultado.concepto.fuente_final == "maestro_proveedores"
 
     def test_patron_catalogo(self, catalogo_dir):
-        """Texto OCR con patrón del catálogo → match."""
+        """Texto OCR con patron del catalogo -> match."""
         resultado = resolver_semantica(
             texto_ocr="ALQUILER LOCAL MENSUAL - MARZO 2026",
             nif_emisor="X99999999",
@@ -328,7 +352,7 @@ class TestResolverSemantica:
         assert resultado.decision_global == "auto"
 
     def test_sin_match_pendiente(self, catalogo_dir):
-        """Sin proveedor ni patrón → pendiente."""
+        """Sin proveedor ni patron -> pendiente."""
         resultado = resolver_semantica(
             texto_ocr="Servicio totalmente desconocido XYZ",
             nif_emisor="Z99999999",
@@ -344,9 +368,9 @@ class TestResolverSemantica:
         assert resultado.requiere_revision_humana is True
 
     def test_bienes_inversion_nunca_auto(self, catalogo_dir):
-        """Libro bienes de inversión → WARN mínimo, nunca AUTO."""
+        """Libro bienes de inversion -> WARN minimo, nunca AUTO."""
         resultado = resolver_semantica(
-            texto_ocr="COMPRA EQUIPO INFORMÁTICO SERVIDOR NUEVO",
+            texto_ocr="COMPRA EQUIPO INFORMATICO SERVIDOR NUEVO",
             nif_emisor="X99999999",
             nombre_emisor="TECH SL",
             libro="22_BIENES_INVERSION",
@@ -360,9 +384,9 @@ class TestResolverSemantica:
         assert resultado.requiere_revision_humana is True
 
     def test_human_review_required_warn(self, catalogo_dir):
-        """Concepto con human_review_required → WARN mínimo."""
+        """Concepto con human_review_required -> WARN minimo."""
         resultado = resolver_semantica(
-            texto_ocr="EQUIPO INFORMÁTICO NUEVO PORTÁTIL",
+            texto_ocr="EQUIPO INFORMATICO NUEVO PORTATIL",
             nif_emisor="X99999999",
             nombre_emisor="TECH SL",
             libro="20_COMPRAS_GASTOS",
@@ -377,7 +401,7 @@ class TestResolverSemantica:
         assert resultado.requiere_revision_humana is True
 
     def test_cuenta_invalida_para_libro(self, catalogo_dir):
-        """Cuenta 217 (grupo 2) en libro compras → block/warn."""
+        """Cuenta 217 (grupo 2) en libro compras -> block/warn."""
         resultado = resolver_semantica(
             texto_ocr="ORDENADOR NUEVO PARA OFICINA",
             nif_emisor="X99999999",
@@ -389,7 +413,7 @@ class TestResolverSemantica:
             maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
             config=None,
         )
-        # cuenta 217 no está en whitelist de compras
+        # cuenta 217 no esta en whitelist de compras
         assert resultado.cuenta_contable.decision in ("block", "warn")
 
 
@@ -414,7 +438,7 @@ class TestCompatibilidadEnsamblador:
             config=None,
         )
 
-        # Simular la serialización como la haría main.py
+        # Simular la serializacion como la haria main.py
         resultado_json = {
             "documento_id": "test",
             "fase": "3_semantica",
@@ -456,7 +480,7 @@ class TestCompatibilidadEnsamblador:
 
 
 # ──────────────────────────────────────────────────────────
-# Tests: integración main.py (filesystem)
+# Tests: integracion main.py (filesystem)
 # ──────────────────────────────────────────────────────────
 
 class TestMainIntegration:
@@ -508,7 +532,7 @@ class TestMainIntegration:
 
 
 class _MockSettings:
-    """Mock mínimo de Settings para tests sin .env."""
+    """Mock minimo de Settings para tests sin .env."""
     google_application_credentials = ""
     google_cloud_project_id = ""
     gemini_arbitro_model = ""
