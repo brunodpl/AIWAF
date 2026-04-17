@@ -39,6 +39,13 @@ def _safe_decimal(valor: Any) -> Optional[Decimal]:
         return None
 
 
+def _format_importe(valor: Optional[Decimal]) -> Optional[str]:
+    """Formatea un importe a string español: dos decimales, coma como separador."""
+    if valor is None:
+        return None
+    return str(valor.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)).replace(".", ",")
+
+
 def _peor_decision(*decisiones: str) -> str:
     """Retorna la peor decisión según prioridad: auto < warn < pendiente < block."""
     peor = "auto"
@@ -175,10 +182,10 @@ def _verificar_linea(
         diff = abs(cuota - cuota_recalculada)
         if diff <= tolerancia:
             reglas.append({"codigo": "FISCAL_004", "estado": "ok",
-                           "diferencia": str(diff)})
+                           "diferencia": _format_importe(diff)})
         else:
             reglas.append({"codigo": "FISCAL_004", "estado": "fail",
-                           "diferencia": str(diff)})
+                           "diferencia": _format_importe(diff)})
             errores.append(
                 f"Línea {indice}: cuota={cuota} vs recalculada={cuota_recalculada} "
                 f"(diff={diff}, tolerancia={tolerancia})"
@@ -206,10 +213,10 @@ def _verificar_linea(
             diff = abs(total_linea - base)
             if diff <= tolerancia:
                 reglas.append({"codigo": "FISCAL_005", "estado": "ok",
-                               "diferencia": str(diff)})
+                               "diferencia": _format_importe(diff)})
             else:
                 reglas.append({"codigo": "FISCAL_005", "estado": "fail",
-                               "diferencia": str(diff)})
+                               "diferencia": _format_importe(diff)})
                 errores.append(
                     f"Línea {indice} exenta: total_linea={total_linea} vs base={base} "
                     f"(diff={diff})"
@@ -225,10 +232,10 @@ def _verificar_linea(
             diff = abs(total_linea - total_linea_recalculado)
             if diff <= tolerancia:
                 reglas.append({"codigo": "FISCAL_005", "estado": "ok",
-                               "diferencia": str(diff)})
+                               "diferencia": _format_importe(diff)})
             else:
                 reglas.append({"codigo": "FISCAL_005", "estado": "fail",
-                               "diferencia": str(diff)})
+                               "diferencia": _format_importe(diff)})
                 errores.append(
                     f"Línea {indice}: total_linea={total_linea} vs "
                     f"recalculado={total_linea_recalculado} (diff={diff})"
@@ -263,12 +270,12 @@ def _verificar_linea(
     return {
         "indice": indice,
         "clasificacion": clasificacion.value,
-        "base_observada": str(base) if base is not None else None,
-        "tipo_observado": str(tipo_dec) if tipo_dec is not None else None,
-        "cuota_observada": str(cuota) if cuota is not None else None,
-        "total_linea_observado": str(total_linea) if total_linea is not None else None,
-        "cuota_recalculada": str(cuota_recalculada) if cuota_recalculada is not None else None,
-        "total_linea_recalculado": str(total_linea_recalculado) if total_linea_recalculado is not None else None,
+        "base_observada": _format_importe(base),
+        "tipo_observado": _format_importe(tipo_dec),
+        "cuota_observada": _format_importe(cuota),
+        "total_linea_observado": _format_importe(total_linea),
+        "cuota_recalculada": _format_importe(cuota_recalculada),
+        "total_linea_recalculado": _format_importe(total_linea_recalculado),
         "reglas": reglas,
         "decision_linea": decision_linea,
         "confianza_minima": confianza_min,
@@ -351,16 +358,16 @@ def verificar_fiscal(
         if diff_total <= tolerancia:
             reglas_factura.append({
                 "codigo": "FISCAL_007", "estado": "ok",
-                "observado": str(total_euros),
-                "recalculado": str(suma_recalculada),
-                "diferencia": str(diff_total),
+                "observado": _format_importe(total_euros),
+                "recalculado": _format_importe(suma_recalculada),
+                "diferencia": _format_importe(diff_total),
             })
         else:
             reglas_factura.append({
                 "codigo": "FISCAL_007", "estado": "fail",
-                "observado": str(total_euros),
-                "recalculado": str(suma_recalculada),
-                "diferencia": str(diff_total),
+                "observado": _format_importe(total_euros),
+                "recalculado": _format_importe(suma_recalculada),
+                "diferencia": _format_importe(diff_total),
             })
             errores_factura.append(
                 f"Total factura: observado={total_euros} vs recalculado={suma_recalculada} "
@@ -513,7 +520,7 @@ def verificar_fiscal(
     return {
         "campos": {
             "total_euros": {
-                "valor_final": Decimal(str(total_euros)) if total_euros is not None else None,
+                "valor_final": _format_importe(total_euros),
                 "fuente_final": "fiscal_verificado",
                 "confianza_final": confianza_total_out,
                 "decision": decision_total,
@@ -534,7 +541,7 @@ def verificar_fiscal(
         "decision_global": decision_global,
         "requiere_revision_humana": requiere_revision_humana,
         "motivos_revision": motivos_revision,
-        "tolerancia": str(tolerancia),
+        "tolerancia": _format_importe(tolerancia),
         "requiere_revision_ocr": requiere_revision_ocr,
         "clasificacion_lineas": clasificacion_resumen,
         "bloques_fiscales": bloques_fiscales,

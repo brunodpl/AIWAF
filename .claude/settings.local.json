@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Get-Content setup.ps1 | Select-String -Pattern '[^\\\\x00-\\\\x7F]' | Select-Object LineNumber, Line\")",
+      "Bash(powershell -Command '& { $null = [System.Management.Automation.Language.Parser]::ParseFile\\('\\\\''setup.ps1'\\\\'', [ref]$null, [ref]$null\\); Write-Host '\\\\''Syntax OK'\\\\'' }')",
+      "Bash(python -c \"import yaml; d=yaml.safe_load\\(open\\('data/maestros/maestro_contable_fiscal.yaml', encoding='utf-8'\\)\\); print\\('version:', d['version']\\); print\\('cuentas:', len\\(d['cuentas']\\)\\); print\\('conceptos:', len\\(d['conceptos']\\)\\)\")",
+      "Bash(python -m pytest tests/test_semantica.py::TestCargarMaestroContable tests/test_semantica.py::TestBuscarPorNif tests/test_semantica.py::TestNormalizarTexto -v)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python -m pytest tests/test_semantica.py::TestResolverSemantica::test_proveedor_conocido_auto -v)",
+      "Bash(python -m pytest tests/test_semantica.py::TestCargarMaestroContable tests/test_semantica.py::TestHumanReviewRequired tests/test_semantica.py::TestResolverSemantica tests/test_semantica.py::TestValidacionCuentas tests/test_semantica.py::TestCoherenciaLibro tests/test_semantica.py::TestBienesInversion -v)",
+      "Bash(python -m pytest tests/test_semantica.py -v)",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(python -m pytest tests/test_pipeline.py::test_pipeline_e2e_genera_resultado_validacion -v --tb=long)"
+    ]
+  }
+}
