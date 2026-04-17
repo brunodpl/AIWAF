@@ -11,7 +11,8 @@
       "Bash(python -m pytest tests/test_semantica.py::TestCargarMaestroContable tests/test_semantica.py::TestHumanReviewRequired tests/test_semantica.py::TestResolverSemantica tests/test_semantica.py::TestValidacionCuentas tests/test_semantica.py::TestCoherenciaLibro tests/test_semantica.py::TestBienesInversion -v)",
       "Bash(python -m pytest tests/test_semantica.py -v)",
       "Bash(python -m pytest tests/ -v --tb=short)",
-      "Bash(python -m pytest tests/test_pipeline.py::test_pipeline_e2e_genera_resultado_validacion -v --tb=long)"
+      "Bash(python -m pytest tests/test_pipeline.py::test_pipeline_e2e_genera_resultado_validacion -v --tb=long)",
+      "Bash(python -m pytest src/phase3_fiscal/test_fiscal.py -v)"
     ]
   }
 }
