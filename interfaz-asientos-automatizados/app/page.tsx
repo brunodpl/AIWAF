@@ -17,14 +17,12 @@ const STORAGE_KEY_INVOICES = "horeca_approved_invoices";
 const STORAGE_KEY_STAGE = "horeca_current_stage";
 
 export default function Home() {
-  // FIX #1: No leer localStorage en el inicializador de useState (crash SSR/hidratación).
-  // Usamos estado "hydrated" y restauramos en useEffect post-mount.
   const [hydrated, setHydrated] = useState(false);
   const [stage, setStage] = useState<Stage>("books");
   const [approvedInvoices, setApprovedInvoices] = useState<Map<string, ApprovedInvoiceData>>(new Map());
+  const [rejectedInvoices, setRejectedInvoices] = useState<Set<string>>(new Set());
 
   // Restore from localStorage only after mount (client-side)
-  // Validates against backend to avoid showing ghost invoices
   useEffect(() => {
     let cancelled = false;
     async function restore() {
@@ -33,7 +31,6 @@ export default function Home() {
         if (savedInvoices) {
           const entries = JSON.parse(savedInvoices) as [string, ApprovedInvoiceData][];
           if (entries.length > 0) {
-            // Validar contra backend
             let validEntries = entries;
             try {
               const response = await fetchInvoices();
@@ -79,7 +76,6 @@ export default function Home() {
     localStorage.setItem(STORAGE_KEY_STAGE, stage);
   }, [stage, hydrated]);
 
-  // Reset global — limpia backend + frontend y vuelve al inicio
   const [resetting, setResetting] = useState(false);
   const handleReset = useCallback(async () => {
     setResetting(true);
@@ -90,8 +86,8 @@ export default function Home() {
       console.error("Reset backend failed:", err);
       toast.warning("No se pudo contactar el backend. Se limpia solo el estado local.");
     }
-    // Limpiar frontend pase lo que pase
     setApprovedInvoices(new Map());
+    setRejectedInvoices(new Set());
     setStage("books");
     localStorage.removeItem(STORAGE_KEY_INVOICES);
     localStorage.removeItem(STORAGE_KEY_STAGE);
@@ -111,19 +107,34 @@ export default function Home() {
         });
         return next;
       });
+      setRejectedInvoices((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     },
     []
   );
 
+  const handleReject = useCallback((id: string) => {
+    setRejectedInvoices((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    setApprovedInvoices((prev) => {
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
   const approvedIds = new Set(approvedInvoices.keys());
 
-  // No renderizar hasta que la restauración de localStorage haya ocurrido
-  // (evita flash de contenido incorrecto)
   if (!hydrated) return null;
 
   return (
     <div className="w-full h-screen bg-slate-50 overflow-hidden flex flex-col">
-      {/* Stage indicator bar — positioned at top */}
       <div className="flex-shrink-0 px-6 py-2 bg-white border-b border-slate-100">
         <StageIndicator
           stage={stage}
@@ -133,7 +144,6 @@ export default function Home() {
         />
       </div>
 
-      {/* Stage content */}
       <div className="flex-1 overflow-hidden">
         {stage === "books" && (
           <BooksManager onPipelineStart={() => setStage("processing")} />
@@ -149,7 +159,9 @@ export default function Home() {
         {stage === "review" && (
           <InvoiceReviewer
             approvedInvoices={approvedIds}
+            rejectedInvoices={rejectedInvoices}
             onApprove={handleApprove}
+            onReject={handleReject}
             onExport={() => setStage("export")}
           />
         )}

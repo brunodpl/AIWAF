@@ -651,6 +651,37 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
     return {"uploaded": uploaded, "errors": errors}
 
 
+@app.delete("/api/books/{book_id}/files/{filename}")
+def delete_book_file(book_id: str, filename: str):
+    """Delete a pending file before pipeline starts."""
+    if book_id not in BOOK_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}")
+
+    # Check pipeline is not running
+    cfg = settings()
+    status_path = os.path.join(cfg.output_path, "pipeline_status.json")
+    if os.path.exists(status_path):
+        try:
+            with open(status_path) as f:
+                status = json.load(f)
+            if status.get("status") == "running":
+                raise HTTPException(status_code=409, detail="Pipeline is running — cannot delete files")
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Sanitize filename to prevent path traversal
+    safe_name = pathlib.PurePosixPath(filename).name
+    if not safe_name or safe_name.startswith(".") or ".." in safe_name:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_path = os.path.join(cfg.sandbox_base_path, BOOK_CONFIGS[book_id]["pendientes_subdir"], safe_name)
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    os.remove(file_path)
+    return {"deleted": safe_name}
+
+
 @app.get("/api/pipeline/status")
 def pipeline_status():
     """Read pipeline processing status."""
