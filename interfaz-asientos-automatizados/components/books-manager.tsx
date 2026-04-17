@@ -11,9 +11,10 @@ import {
   Loader2,
   FileText,
   RefreshCw,
+  X,
 } from "lucide-react";
 import { Book, BookFile } from "@/lib/types";
-import { fetchBooks, uploadFiles, runPipeline } from "@/lib/api";
+import { fetchBooks, uploadFiles, runPipeline, deleteBookFile } from "@/lib/api";
 
 interface BooksManagerProps {
   onPipelineStart: () => void;
@@ -32,6 +33,7 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
   const [uploadingBooks, setUploadingBooks] = useState<Set<string>>(new Set());
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [dragOverBook, setDragOverBook] = useState<string | null>(null);
+  const [deletingFile, setDeletingFile] = useState<string | null>(null);
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -114,6 +116,29 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
     },
     [handleDrop]
   );
+
+  const handleDeleteFile = useCallback(async (bookId: string, filename: string) => {
+    const key = `${bookId}/${filename}`;
+    setDeletingFile(key);
+    try {
+      await deleteBookFile(bookId as "gastos" | "ingresos" | "bienes", filename);
+      setBooks((prev) =>
+        prev
+          ? prev.map((b) =>
+              b.id === bookId
+                ? { ...b, files: b.files.filter((f: BookFile) => f.name !== filename) }
+                : b
+            )
+          : prev
+      );
+      toast.success(`Archivo eliminado: ${filename}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Error eliminando archivo: ${message}`);
+    } finally {
+      setDeletingFile(null);
+    }
+  }, []);
 
   const handleRunPipeline = useCallback(async () => {
     try {
@@ -257,19 +282,34 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                       </div>
                     )}
 
-                    {book.files.map((file: BookFile) => (
-                      <div
-                        key={file.name}
-                        className="flex items-center gap-2 p-2 bg-slate-50 rounded border border-slate-100"
-                      >
-                        <FileText className="h-4 w-4 text-slate-400 flex-shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-mono truncate">{file.name}</p>
-                          <p className="text-[10px] text-slate-400">{file.size_kb} KB</p>
+                    {book.files.map((file: BookFile) => {
+                      const fileKey = `${book.id}/${file.name}`;
+                      const isDeleting = deletingFile === fileKey;
+                      return (
+                        <div
+                          key={file.name}
+                          className="flex items-center gap-2 p-2 bg-slate-50 rounded border border-slate-100 group/file"
+                        >
+                          <FileText className="h-4 w-4 text-slate-400 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-mono truncate">{file.name}</p>
+                            <p className="text-[10px] text-slate-400">{file.size_kb} KB</p>
+                          </div>
+                          <button
+                            onClick={() => handleDeleteFile(book.id, file.name)}
+                            disabled={isDeleting}
+                            className="opacity-0 group-hover/file:opacity-100 transition-opacity p-1 rounded hover:bg-red-50 text-slate-300 hover:text-red-400 disabled:opacity-50"
+                            aria-label={`Eliminar ${file.name}`}
+                          >
+                            {isDeleting ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <X className="h-3 w-3" />
+                            )}
+                          </button>
                         </div>
-                        {/* Delete button removed until backend endpoint is implemented */}
-                      </div>
-                    ))}
+                      );
+                    })}
 
                     {!isUploading && (
                       <button

@@ -359,6 +359,28 @@ export async function uploadFiles(
 }
 
 /**
+ * Delete a pending file from a book before the pipeline starts.
+ */
+export async function deleteBookFile(
+  bookId: "gastos" | "ingresos" | "bienes",
+  filename: string
+): Promise<void> {
+  const encodedName = encodeURIComponent(filename);
+  const response = await fetchWithTimeout(
+    `${API_URL}/api/books/${bookId}/files/${encodedName}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    let msg = `Error eliminando archivo (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body.detail) msg = body.detail;
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+}
+
+/**
  * Fetch current pipeline processing status.
  */
 export async function fetchPipelineStatus(): Promise<PipelineStatus> {

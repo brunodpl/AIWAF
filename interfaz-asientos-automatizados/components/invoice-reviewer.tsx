@@ -45,19 +45,19 @@ interface InvoiceSummary {
 
 interface InvoiceReviewerProps {
   approvedInvoices: Set<string>;
+  rejectedInvoices: Set<string>;
   onApprove: (id: string, data: { formData: Record<string, string>; fiscalLines: FiscalLine[] }) => void;
+  onReject: (id: string) => void;
   onExport: () => void;
 }
 
-export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: InvoiceReviewerProps) {
+export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove, onReject, onExport }: InvoiceReviewerProps) {
   const [invoiceSummaries, setInvoiceSummaries] = useState<InvoiceSummary[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Estado para controlar los AlertDialogs de confirmación
-  const [pendingAction, setPendingAction] = useState<"approve" | "reject" | null>(null);
   // Guard de doble-click: deshabilita botones durante la llamada API
   const [submitting, setSubmitting] = useState(false);
   // Dirty flag: detecta cambios sin guardar
@@ -228,7 +228,7 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
     return () => cancelAutoAdvance();
   }, [cancelAutoAdvance]);
 
-  // Ejecutar la acción confirmada (aprobar/rechazar) con guard de doble-click
+  // Ejecutar la acción (aprobar/rechazar) con guard de doble-click
   const executeConfirmedAction = async (action: "approve" | "reject") => {
     const currentInvoice = detailsCache.get(invoiceSummariesRef.current[currentIdxRef.current]?.id);
     if (!currentInvoice || submitting) return;
@@ -251,6 +251,7 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
         onApprove(currentInvoice.id, { formData, fiscalLines });
         toast.success("Factura aprobada correctamente");
       } else {
+        onReject(currentInvoice.id);
         toast.error("Factura rechazada — movida a INCIDENCIAS");
       }
 
@@ -302,45 +303,16 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
 
   const invoice = detailsCache.get(invoiceSummaries[currentIdx]?.id);
   const isApproved = invoice ? approvedInvoices.has(invoice.id) : false;
+  const isRejected = invoice ? rejectedInvoices.has(invoice.id) : false;
   const totalInvoices = invoiceSummaries.length;
   const approvedCount = invoiceSummaries.filter(inv => approvedInvoices.has(inv.id)).length;
 
   return (
-    // FIX #3: h-full en lugar de h-screen — no doble scroll region
     <div
       className="flex flex-col h-full bg-white text-slate-900 overflow-hidden text-sm group"
       data-approved={isApproved}
+      data-rejected={isRejected}
     >
-      {/* AlertDialog compartido para aprobar/rechazar — FIX #4 */}
-      <AlertDialog open={pendingAction !== null} onOpenChange={(open) => { if (!open) setPendingAction(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {pendingAction === "approve" ? "Confirmar aprobación" : "Confirmar rechazo"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingAction === "approve"
-                ? `¿Aprobar la factura ${invoice?.id}? Se registrará esta acción en el log de auditoría.`
-                : `¿Rechazar la factura ${invoice?.id}? Se moverá a INCIDENCIAS para revisión manual.`
-              }
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setPendingAction(null)}>Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                const action = pendingAction!;
-                setPendingAction(null);
-                executeConfirmedAction(action);
-              }}
-              className={pendingAction === "reject" ? "bg-red-600 hover:bg-red-700" : ""}
-            >
-              {pendingAction === "approve" ? "Aprobar" : "Rechazar"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       {/* AlertDialog para cambios sin guardar */}
       <AlertDialog open={pendingNavIdx !== null} onOpenChange={(open) => { if (!open) setPendingNavIdx(null); }}>
         <AlertDialogContent>
@@ -366,7 +338,7 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
       </AlertDialog>
 
       {/* Header */}
-      <header className="h-14 border-b bg-slate-50/50 flex items-center justify-between px-6 flex-shrink-0 z-10 transition-colors group-data-[approved=true]:bg-green-50/20">
+      <header className="h-14 border-b bg-slate-50/50 flex items-center justify-between px-6 flex-shrink-0 z-10 transition-colors group-data-[approved=true]:bg-green-50/20 group-data-[rejected=true]:bg-red-50/30">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <h2 className="text-xs font-black uppercase tracking-[0.1em] text-slate-800">Revisión de Factura</h2>
@@ -374,6 +346,11 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
                <div className="bg-green-600 rounded-full p-0.5 animate-in zoom-in duration-300">
                   <Check className="h-2.5 w-2.5 text-white stroke-[4]" />
                </div>
+            )}
+            {isRejected && (
+               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-600 animate-in zoom-in duration-300">
+                 RECHAZADA
+               </span>
             )}
           </div>
           <div className="h-4 w-[1px] bg-slate-200" />
@@ -401,6 +378,7 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
             <div className="flex items-center gap-1.5 px-3">
                {invoiceSummaries.map((inv, idx) => {
                   const done = approvedInvoices.has(inv.id);
+                  const rejected = rejectedInvoices.has(inv.id);
                   const active = currentIdx === idx;
                   return (
                     <button
@@ -408,9 +386,12 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
                       onClick={() => navigateTo(idx)}
                       className={cn(
                         "w-5 h-5 text-[9px] font-black rounded-full flex items-center justify-center transition-all",
-                        active ? "bg-slate-900 text-white scale-110 shadow-md" : "hover:bg-slate-100 text-slate-300",
+                        active && !done && !rejected && "bg-slate-900 text-white scale-110 shadow-md",
+                        !active && !done && !rejected && "hover:bg-slate-100 text-slate-300",
                         done && !active && "text-green-500 bg-green-50/50",
-                        done && active && "bg-green-600"
+                        done && active && "bg-green-600 text-white scale-110 shadow-md",
+                        rejected && !active && "text-red-400 bg-red-50/60",
+                        rejected && active && "bg-red-500 text-white scale-110 shadow-md"
                       )}
                       aria-label={`Ir a factura ${inv.id}`}
                     >
@@ -476,7 +457,7 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
       </header>
 
       {/* Main content */}
-      <div className="flex flex-grow overflow-hidden border-b transition-opacity group-data-[approved=true]:opacity-90">
+      <div className="flex flex-grow overflow-hidden border-b transition-opacity group-data-[approved=true]:opacity-90 group-data-[rejected=true]:opacity-80">
         <ResizablePanelGroup direction="horizontal">
           <ResizablePanel defaultSize={45} minSize={30}>
             <div className="h-full flex flex-col">
@@ -548,8 +529,11 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
                                             </div>
                                           )}
                                        </td>
-                                       <td className="p-1 px-4 text-right text-slate-400 font-medium tracking-tighter">
-                                          {line.vatAmount.toFixed(2)}€
+                                       <td className="p-1 px-2">
+                                          <div className="flex items-center justify-end">
+                                             <Input value={line.vatAmount} onChange={(e) => handleLineChange(line.id, 'vatAmount', e.target.value)} className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-right bg-transparent" />
+                                             <span className="text-slate-200 pr-2">€</span>
+                                          </div>
                                        </td>
                                        <td className="p-1 px-2">
                                           <div className="flex items-center justify-end">
@@ -590,25 +574,32 @@ export function InvoiceReviewer({ approvedInvoices, onApprove, onExport }: Invoi
       <footer className="h-24 flex items-center justify-center gap-6 px-8 bg-white flex-shrink-0">
         <Button
           variant="outline" size="lg"
-          onClick={() => setPendingAction("reject")}
+          onClick={() => executeConfirmedAction("reject")}
           disabled={!invoice || loadingDetail || submitting}
-          className="w-52 h-11 border border-slate-200 hover:bg-slate-50 hover:text-slate-900 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none transition-all shadow-sm"
+          className={cn(
+            "w-52 h-11 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none transition-all shadow-sm",
+            isRejected
+              ? "border-red-400 bg-red-50 text-red-600 hover:bg-red-100"
+              : "border border-slate-200 hover:bg-slate-50 hover:text-slate-900"
+          )}
         >
           Rechazar
         </Button>
         <Button
           size="lg"
-          onClick={() => setPendingAction("approve")}
-          disabled={!invoice || loadingDetail || isApproved || submitting}
+          onClick={() => executeConfirmedAction("approve")}
+          disabled={!invoice || loadingDetail || submitting}
           className={cn(
-            "w-52 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
-            isApproved && "opacity-50 cursor-not-allowed"
+            "w-52 h-11 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
+            isApproved
+              ? "bg-green-700 border-green-700 hover:bg-green-800 text-white"
+              : "bg-slate-900 border border-slate-900 hover:bg-black text-white"
           )}
         >
           {isApproved ? (
             <><Check className="h-4 w-4 mr-2" />Aprobada</>
           ) : (
-            <><Check className="h-4 w-4 mr-2" />Confirmar y Aprobar</>
+            <><Check className="h-4 w-4 mr-2" />Aprobar</>
           )}
         </Button>
       </footer>
