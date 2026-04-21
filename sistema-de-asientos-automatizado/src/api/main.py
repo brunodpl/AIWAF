@@ -225,12 +225,15 @@ def safe_float(val: object, default: float = 0.0) -> float:
     Convertir un valor a float de forma segura.
 
     Maneja None (válido en líneas EXENTA per AGENTS.md), strings no numéricos,
+    strings con coma decimal española ("1250,50" → 1250.5),
     y tipos incompatibles sin lanzar excepción.
     """
     if val is None:
         return default
     try:
-        return float(val)
+        # Normalizar coma decimal española → punto decimal inglés
+        normalized = str(val).replace(",", ".") if isinstance(val, str) else val
+        return float(normalized)
     except (ValueError, TypeError):
         return default
 

@@ -190,11 +190,15 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   const handleLineChange = (id: string, field: keyof FiscalLine, value: string) => {
     dirtyRef.current = true;
-    setFiscalLines(prev => prev.map(line =>
-      line.id === id
-        ? { ...line, [field]: value === "" ? 0 : (field === "id" ? value : parseFloat(value) || 0) }
-        : line
-    ));
+    setFiscalLines(prev => prev.map(line => {
+      if (line.id !== id) return line;
+      if (field === "id") return { ...line, [field]: value };
+      if (value === "") return { ...line, [field]: 0 };
+      // Normalizar coma decimal española → punto decimal antes de parsear
+      const normalized = value.replace(",", ".");
+      const parsed = parseFloat(normalized);
+      return { ...line, [field]: isNaN(parsed) ? 0 : parsed };
+    }));
   };
 
   // Navegación con check de dirty flag y cancelación de auto-advance
@@ -520,14 +524,20 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                           </div>
                                        </td>
                                        <td className="p-1 px-2">
-                                          {line.vatRate === null || line.vatRate === 0 ? (
-                                            <span className="text-[10px] font-bold text-amber-600 px-2 py-1">EXENTA</span>
-                                          ) : (
-                                            <div className="flex items-center justify-center">
-                                               <Input value={line.vatRate} onChange={(e) => handleLineChange(line.id, 'vatRate', e.target.value)} className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-center bg-transparent w-16" />
+                                          <div className="flex items-center justify-center">
+                                             <Input
+                                               value={line.vatRate === null || line.vatRate === 0 ? "" : line.vatRate}
+                                               placeholder="EXENTA"
+                                               onChange={(e) => handleLineChange(line.id, 'vatRate', e.target.value)}
+                                               className={cn(
+                                                 "h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-center bg-transparent w-16",
+                                                 (line.vatRate === null || line.vatRate === 0) && "placeholder:text-amber-500 placeholder:font-bold"
+                                               )}
+                                             />
+                                             {line.vatRate !== null && line.vatRate !== 0 && (
                                                <span className="text-slate-200">%</span>
-                                            </div>
-                                          )}
+                                             )}
+                                          </div>
                                        </td>
                                        <td className="p-1 px-2">
                                           <div className="flex items-center justify-end">
