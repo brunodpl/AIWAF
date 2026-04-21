@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -86,14 +87,70 @@ REGLAS ABSOLUTAS:
 4. Si ninguna opcion encaja con claridad, devuelve concepto: null, cuenta: null.
 5. La confianza es tu estimacion interna de 0.0 a 1.0.
 
+DESAMBIGUACION CRITICA HORECA - cuentas 600 / 601 / 602:
+- 600 (mercaderias): el bien llega del proveedor y se VENDE o SIRVE SIN NINGUNA TRANSFORMACION.
+  Ejemplo: botellas de cerveza, vino embotellado, latas de refresco, agua, tabaco, snacks envasados.
+- 601 (materias_primas): el bien se TRANSFORMA EN COCINA antes de venderlo.
+  Ejemplo: carne cruda, pescado fresco, verduras, fruta, harina, huevos, aceite de cocinar.
+- 602 (aprovisionamientos): el bien SE CONSUME en el proceso pero NO se vende al cliente.
+  Ejemplo: envases, bolsas, servilletas, pajitas, vajilla desechable, productos de limpieza.
+
+FORMATO EXACTO DEL CAMPO "concepto":
+- Debe ser EXACTAMENTE la clave entre parentesis mostrada en la lista (p.ej. "mercaderias").
+- Solo letras minusculas y guion_bajo. NUNCA incluyas numeros, mayusculas, espacios ni simbolos.
+- Correcto:   "mercaderias", "materias_primas", "aprovisionamientos", "suministros"
+- Incorrecto: "600", "Mercaderias", "materias primas", "mercaderias_600", "Compras"
+
 Formato de respuesta:
 {
-  "concepto": "<key del concepto elegido o null>",
-  "cuenta_contable": "<codigo de cuenta elegido o null>",
-  "justificacion": "<razon concisa>",
+  "concepto": "<clave exacta entre parentesis o null>",
+  "cuenta_contable": "<codigo de cuenta o null>",
+  "justificacion": "<razon concisa en una linea>",
   "confianza": <float 0.0-1.0>
 }
 """.strip()
+
+
+def _normalizar_concepto_clave(concepto: Optional[str]) -> Optional[str]:
+    """Normalizar la clave de concepto devuelta por el LLM.
+
+    Elimina numeros, simbolos, espacios y capitalización incorrecta.
+    Devuelve None si la cadena resultante esta vacia.
+
+    Ejemplos:
+        "mercaderias_600" -> "mercaderias"
+        "Materias Primas" -> "materias_primas"
+        "600"             -> None   (solo numeros, sin letras validas)
+        None              -> None
+    """
+    if not concepto:
+        return None
+    # Espacios y guiones a guion_bajo
+    normalized = concepto.strip().replace(" ", "_").replace("-", "_")
+    # Eliminar todo salvo letras y guion_bajo
+    normalized = re.sub(r"[^a-zA-Z_]", "", normalized)
+    # Minusculas
+    normalized = normalized.lower().strip("_")
+    # Colapsar guiones_bajos multiples
+    normalized = re.sub(r"_+", "_", normalized)
+    return normalized if normalized else None
+
+
+def _cuenta_a_concepto(maestro: dict) -> dict[str, str]:
+    """Construir mapa cuenta_code -> concepto_key desde el maestro v3.
+
+    Usado para:
+    1. Mostrar claves en el prompt del LLM.
+    2. Derivar concepto cuando el LLM devuelve clave invalida pero cuenta correcta.
+
+    Ignora conceptos cuya cuenta sea null (e.g. "no_clasificado").
+    """
+    conceptos = maestro.get("conceptos", {})
+    return {
+        v["cuenta"]: key
+        for key, v in conceptos.items()
+        if isinstance(v, dict) and v.get("cuenta")
+    }
 
 
 def _construir_prompt_clasificacion(
@@ -101,8 +158,14 @@ def _construir_prompt_clasificacion(
     nombre_emisor: str,
     libro: str,
     cuentas_filtradas: list[dict],
+    cuenta_a_concepto_map: Optional[dict[str, str]] = None,
 ) -> str:
-    """Construir prompt para clasificacion semantica LLM."""
+    """Construir prompt para clasificacion semantica LLM.
+
+    Muestra la clave de concepto entre parentesis junto a cada cuenta
+    para que el LLM devuelva el valor exacto sin inventar nombres.
+    """
+    cmap = cuenta_a_concepto_map or {}
     lines = [
         f"Libro contable: {libro}",
         f"Emisor: {nombre_emisor}" if nombre_emisor else "",
@@ -110,14 +173,16 @@ def _construir_prompt_clasificacion(
         "Texto OCR de la factura (primeros 800 chars):",
         texto_ocr[:800],
         "",
-        "Cuentas disponibles para este libro:",
+        "Cuentas disponibles — devuelve EXACTAMENTE la clave entre parentesis:",
     ]
     for cuenta in cuentas_filtradas:
+        concepto_key = cmap.get(cuenta["code"], "")
+        clave_str = f' (concepto: "{concepto_key}")' if concepto_key else ""
         lines.append(
-            f"  {cuenta['code']} - {cuenta['label']}: {cuenta['descripcion']}"
+            f"  {cuenta['code']}{clave_str} - {cuenta['label']}: {cuenta['descripcion']}"
         )
     lines.append("")
-    lines.append("Cual concepto y cuenta contable corresponden a esta factura?")
+    lines.append("Cual es el concepto y la cuenta contable de esta factura?")
     return "\n".join(lines)
 
 
@@ -127,6 +192,7 @@ def _llamar_llm_clasificador(
     libro: str,
     cuentas_filtradas: list[dict],
     config: object,
+    maestro: Optional[dict] = None,
 ) -> Optional[CandidatoSemantico]:
     """
     Llamar a Gemini para clasificacion semantica.
@@ -156,8 +222,9 @@ def _llamar_llm_clasificador(
             http_options=types.HttpOptions(api_version="v1"),
         )
 
+        cuenta_mapa = _cuenta_a_concepto(maestro) if maestro else {}
         prompt = _construir_prompt_clasificacion(
-            texto_ocr, nombre_emisor, libro, cuentas_filtradas
+            texto_ocr, nombre_emisor, libro, cuentas_filtradas, cuenta_mapa
         )
 
         generation_config = types.GenerateContentConfig(
@@ -179,7 +246,7 @@ def _llamar_llm_clasificador(
             return None
 
         data = json.loads(response.text)
-        concepto = data.get("concepto")
+        concepto_raw = data.get("concepto")
         cuenta = data.get("cuenta_contable")
         confianza = float(data.get("confianza", 0.0))
 
@@ -190,7 +257,7 @@ def _llamar_llm_clasificador(
                 + getattr(response.usage_metadata, "candidates_token_count", 0)
             )
 
-        if concepto is None and cuenta is None:
+        if concepto_raw is None and cuenta is None:
             logger.info("[semantica] LLM no pudo clasificar (null)")
             return None
 
@@ -200,6 +267,19 @@ def _llamar_llm_clasificador(
                 f"[semantica] LLM propuso cuenta '{cuenta}' fuera de opciones del libro, descartando"
             )
             return None
+
+        # Normalizar clave de concepto: quitar numeros, simbolos, mayusculas
+        concepto = _normalizar_concepto_clave(concepto_raw)
+
+        # Si el concepto normalizado no es una clave valida del maestro, derivarlo de la cuenta
+        conceptos_validos = set(maestro.get("conceptos", {}).keys()) if maestro else set()
+        if concepto and conceptos_validos and concepto not in conceptos_validos:
+            concepto_derivado = (cuenta_mapa.get(cuenta) if cuenta else None)
+            logger.warning(
+                f"[semantica] LLM concepto '{concepto_raw}' -> normalizado '{concepto}' "
+                f"no es clave valida; derivando de cuenta '{cuenta}' -> '{concepto_derivado}'"
+            )
+            concepto = concepto_derivado
 
         # Cap confianza a 0.92: LLM puede AUTO, pero nunca supera al proveedor conocido (0.95)
         confianza = min(confianza, 0.92)
@@ -397,9 +477,25 @@ def resolver_semantica(
                 f"invocando LLM con {len(cuentas_filtradas)} cuentas"
             )
             resultado_llm = _llamar_llm_clasificador(
-                texto_ocr, nombre_emisor or "", libro, cuentas_filtradas, config
+                texto_ocr, nombre_emisor or "", libro, cuentas_filtradas, config,
+                maestro=maestro,
             )
             if resultado_llm:
+                # Normalizar clave de concepto (proteccion extra ante mocks o LLM ruidoso)
+                concepto_limpio = _normalizar_concepto_clave(resultado_llm.concepto)
+                conceptos_validos = set(maestro.get("conceptos", {}).keys()) if maestro else set()
+                cuenta_mapa_local = _cuenta_a_concepto(maestro) if maestro else {}
+                if concepto_limpio and conceptos_validos and concepto_limpio not in conceptos_validos:
+                    concepto_derivado = cuenta_mapa_local.get(resultado_llm.cuentacontable)
+                    logger.warning(
+                        f"[semantica] Candidato LLM concepto '{resultado_llm.concepto}' "
+                        f"normalizado '{concepto_limpio}' invalido; "
+                        f"derivado de cuenta '{resultado_llm.cuentacontable}' -> '{concepto_derivado}'"
+                    )
+                    resultado_llm.concepto = concepto_derivado
+                elif concepto_limpio != resultado_llm.concepto:
+                    resultado_llm.concepto = concepto_limpio
+
                 llm_usado = True
                 tokens_llm = resultado_llm.tokens
                 candidatos.append(resultado_llm)

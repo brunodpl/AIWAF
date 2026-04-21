@@ -24,7 +24,12 @@ cuentas:
     group: "6"
     book: "compras_gastos"
     class: "gasto_deducible_interior"
-    descripcion: "Bienes adquiridos para reventa sin transformacion (bebidas, alimentos)"
+    descripcion: >-
+      Productos TERMINADOS comprados para vender SIN transformacion:
+      bebidas embotelladas (cervezas, vinos, refrescos, agua mineral),
+      tabaco, snacks envasados, conservas, hielo en bolsa.
+      El producto llega del proveedor y se sirve o vende TAL CUAL, sin elaboracion.
+      NO incluye ingredientes crudos ni consumibles del proceso.
     human_review: false
 
   - code: "601"
@@ -32,7 +37,12 @@ cuentas:
     group: "6"
     book: "compras_gastos"
     class: "gasto_deducible_interior"
-    descripcion: "Ingredientes o insumos que se transforman en el proceso productivo"
+    descripcion: >-
+      Ingredientes CRUDOS que se TRANSFORMAN en cocina para elaborar platos o bebidas propias:
+      carne cruda, pescado fresco, verduras, fruta, harina, huevos, aceite para cocinar,
+      especias a granel, lacteos para elaboraciones.
+      La clave: el ingrediente SE ELABORA antes de venderse.
+      NO incluye productos que se venden sin transformar ni consumibles del proceso.
     human_review: false
 
   - code: "602"
@@ -40,7 +50,12 @@ cuentas:
     group: "6"
     book: "compras_gastos"
     class: "gasto_deducible_interior"
-    descripcion: "Consumibles, envases, embalajes y utiles de trabajo no almacenables"
+    descripcion: >-
+      Consumibles y materiales auxiliares del proceso productivo que NO se venden al cliente:
+      envases, cajas de embalaje, papel film, bolsas de plastico, pajitas, servilletas de papel,
+      vajilla desechable, palillos, productos de limpieza, guantes de latex, menaje de un solo uso,
+      papel de aluminio, film transparente.
+      La clave: el articulo SE CONSUME en el proceso pero NO se vende.
     human_review: false
 
   - code: "607"
@@ -48,7 +63,11 @@ cuentas:
     group: "6"
     book: "compras_gastos"
     class: "gasto_deducible_interior"
-    descripcion: "Servicios del proceso productivo encargados a empresas terceras (subcontratacion)"
+    descripcion: >-
+      Servicios del proceso productivo ENCARGADOS A TERCEROS que forman parte de la cadena interna:
+      elaboracion de productos por otra empresa, maquila, subcontratacion de produccion,
+      trabajos especializados integrados en el producto final.
+      Distinto de 623 (honorarios profesionales independientes puntuales).
     human_review: false
 
   - code: "621"

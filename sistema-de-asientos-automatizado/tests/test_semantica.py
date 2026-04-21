@@ -35,6 +35,8 @@ from src.phase3_semantica.resolver import (
     _es_bienes_inversion,
     _cargar_cuentas_validas,
     _cargar_conceptos_con_review,
+    _normalizar_concepto_clave,
+    _cuenta_a_concepto,
 )
 
 
@@ -626,6 +628,153 @@ class TestMainIntegration:
         assert "concepto" in data["campos"]
         assert "cuenta_contable" in data["campos"]
         assert data["decision_global"] in ("auto", "warn", "pendiente", "block")
+
+
+# ──────────────────────────────────────────────────────────
+# Tests: normalizacion de clave de concepto
+# ──────────────────────────────────────────────────────────
+
+class TestNormalizarConceptoClave:
+    def test_clave_limpia_sin_cambios(self):
+        assert _normalizar_concepto_clave("mercaderias") == "mercaderias"
+
+    def test_quita_numeros_sufijo(self):
+        assert _normalizar_concepto_clave("mercaderias_600") == "mercaderias"
+
+    def test_quita_numeros_prefijo(self):
+        assert _normalizar_concepto_clave("600_mercaderias") == "mercaderias"
+
+    def test_espacios_a_guion_bajo(self):
+        assert _normalizar_concepto_clave("materias primas") == "materias_primas"
+
+    def test_mayusculas_a_minusculas(self):
+        assert _normalizar_concepto_clave("Materias_Primas") == "materias_primas"
+
+    def test_guion_a_guion_bajo(self):
+        assert _normalizar_concepto_clave("alquiler-local") == "alquiler_local"
+
+    def test_none_devuelve_none(self):
+        assert _normalizar_concepto_clave(None) is None
+
+    def test_cadena_vacia_devuelve_none(self):
+        result = _normalizar_concepto_clave("")
+        assert result is None or result == ""
+
+    def test_solo_numeros_devuelve_none(self):
+        result = _normalizar_concepto_clave("600")
+        # sin letras, no hay clave valida
+        assert not result
+
+
+class TestCuentaAConcepto:
+    def test_mapeo_desde_maestro_v3(self, catalogo_dir):
+        import yaml
+        maestro = yaml.safe_load(MAESTRO_V3_YAML)
+        mapping = _cuenta_a_concepto(maestro)
+        assert mapping["600"] == "mercaderias"
+        assert mapping["621"] == "alquiler_local"
+        assert mapping["625"] == "seguro"
+        assert mapping["640"] == "nomina"
+
+    def test_maestro_vacio_devuelve_dict_vacio(self):
+        mapping = _cuenta_a_concepto({})
+        assert mapping == {}
+
+    def test_ignora_concepto_sin_cuenta(self):
+        maestro = {
+            "conceptos": {
+                "no_clasificado": {"cuenta": None, "human_review": True},
+                "mercaderias":    {"cuenta": "600", "human_review": False},
+            }
+        }
+        mapping = _cuenta_a_concepto(maestro)
+        assert "600" in mapping
+        # no_clasificado tiene cuenta=None -> no aparece
+        assert None not in mapping
+
+
+class TestLlmConceptoNormalizado:
+    """El LLM puede devolver claves con numeros/simbolos: deben normalizarse."""
+
+    def test_concepto_con_numero_normalizado(self, catalogo_dir, monkeypatch):
+        """LLM devuelve 'mercaderias_600' -> se normaliza a 'mercaderias'."""
+        def mock_llm(*args, **kwargs):
+            from src.phase3_semantica.resolver import CandidatoSemantico
+            return CandidatoSemantico(
+                concepto="mercaderias_600",   # incorrecto pero normalizable
+                cuentacontable="600",
+                confianza=0.91,
+                fuente="llm_pgc",
+                motivo="Mock con numero",
+                tokens=80,
+            )
+        monkeypatch.setattr(
+            "src.phase3_semantica.resolver._llamar_llm_clasificador",
+            mock_llm,
+        )
+
+        class MockConfig:
+            semantica_umbral_confianza_auto = 0.90
+            semantica_umbral_confianza_warn = 0.70
+            semantica_umbral_catalogo = 0.85
+            google_application_credentials = ""
+            google_cloud_project_id = ""
+            gemini_arbitro_model = ""
+            gemini_arbitro_location = ""
+
+        resultado = resolver_semantica(
+            texto_ocr="Compra de bebidas",
+            nif_emisor="Z99999999",
+            nombre_emisor="PROVEEDOR",
+            libro="20_COMPRAS_GASTOS",
+            proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
+            maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
+            maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
+            config=MockConfig(),
+        )
+        # La clave debe quedar normalizada como "mercaderias"
+        assert resultado.concepto.valor_final == "mercaderias"
+        assert resultado.cuenta_contable.valor_final == "600"
+
+    def test_concepto_invalido_deriva_de_cuenta(self, catalogo_dir, monkeypatch):
+        """LLM devuelve concepto completamente invalido pero cuenta correcta -> deriva concepto de cuenta."""
+        def mock_llm(*args, **kwargs):
+            from src.phase3_semantica.resolver import CandidatoSemantico
+            return CandidatoSemantico(
+                concepto="Compras de Mercaderias",   # invalido, no normalizable a clave conocida
+                cuentacontable="600",
+                confianza=0.91,
+                fuente="llm_pgc",
+                motivo="Mock clave mala",
+                tokens=80,
+            )
+        monkeypatch.setattr(
+            "src.phase3_semantica.resolver._llamar_llm_clasificador",
+            mock_llm,
+        )
+
+        class MockConfig:
+            semantica_umbral_confianza_auto = 0.90
+            semantica_umbral_confianza_warn = 0.70
+            semantica_umbral_catalogo = 0.85
+            google_application_credentials = ""
+            google_cloud_project_id = ""
+            gemini_arbitro_model = ""
+            gemini_arbitro_location = ""
+
+        resultado = resolver_semantica(
+            texto_ocr="Compra de bebidas",
+            nif_emisor="Z99999999",
+            nombre_emisor="PROVEEDOR",
+            libro="20_COMPRAS_GASTOS",
+            proveedores_path=str(catalogo_dir / "maestro_proveedores.yaml"),
+            maestro_contable_path=str(catalogo_dir / "maestro_contable_fiscal.yaml"),
+            maestro_cuentas_path=str(catalogo_dir / "maestro_cuentas.yaml"),
+            config=MockConfig(),
+        )
+        # El concepto debe haberse derivado de la cuenta 600 -> "mercaderias"
+        assert resultado.concepto.valor_final == "mercaderias"
+        assert resultado.cuenta_contable.valor_final == "600"
 
 
 class _MockSettings:
