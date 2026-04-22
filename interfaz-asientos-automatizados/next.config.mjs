@@ -18,10 +18,11 @@ const nextConfig = {
    * la IP del servidor sin reconstruir la imagen.
    */
   async rewrites() {
+    const apiBase = process.env.PIPELINE_API_URL ?? "http://pipeline-api:8000";
     return [
       {
         source: "/api/:path*",
-        destination: "http://pipeline-api:8000/api/:path*",
+        destination: `${apiBase}/api/:path*`,
       },
     ];
   },
