@@ -71,6 +71,33 @@ def _detectar_modulos(doc_dir: Path) -> dict:
 
 
 # ──────────────────────────────────────────────────────────
+# Limpieza de valores
+# ──────────────────────────────────────────────────────────
+
+# Símbolos que el OCR devuelve cuando no encuentra un valor
+_PLACEHOLDERS_VACIOS = {"-", "+", "%", "--", "N/A", "n/a", "na", "NA", ""}
+
+
+def _limpiar_valor(valor):
+    """
+    Elimina símbolos inválidos de valor_final antes de ensamblar.
+
+    - Strings que son solo un placeholder ("-", "N/A"…) → None
+    - Strings con signo delantero (+/-/%) → se elimina el signo
+    - Listas, dicts, None y valores no-string → sin cambios
+    """
+    if valor is None or not isinstance(valor, str):
+        return valor
+    stripped = valor.strip()
+    if stripped in _PLACEHOLDERS_VACIOS:
+        return None
+    if stripped and stripped[0] in ("+", "-", "%"):
+        stripped = stripped[1:].strip()
+        return stripped if stripped else None
+    return stripped
+
+
+# ──────────────────────────────────────────────────────────
 # Traducción de formato de módulo a formato ensamblador
 # ──────────────────────────────────────────────────────────
 
@@ -108,7 +135,7 @@ def _extraer_campo_de_modulo(modulo_data: dict, campo: str, nombre_modulo: str) 
 
     # Mapeo de claves: identidad usa fuente_final/confianza_final, ensamblador usa fuente_dato/confianza
     return {
-        "valor_final":   campo_data.get("valor_final"),
+        "valor_final":   _limpiar_valor(campo_data.get("valor_final")),
         "fuente_modulo": nombre_modulo,
         "fuente_dato":   campo_data.get("fuente_final"),
         "confianza":     campo_data.get("confianza_final"),
