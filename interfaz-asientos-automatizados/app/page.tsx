@@ -129,8 +129,6 @@ export default function Home() {
     });
   }, []);
 
-  const approvedIds = new Set(approvedInvoices.keys());
-
   if (!hydrated) return null;
 
   return (
@@ -158,7 +156,7 @@ export default function Home() {
 
         {stage === "review" && (
           <InvoiceReviewer
-            approvedInvoices={approvedIds}
+            approvedInvoices={approvedInvoices}
             rejectedInvoices={rejectedInvoices}
             onApprove={handleApprove}
             onReject={handleReject}

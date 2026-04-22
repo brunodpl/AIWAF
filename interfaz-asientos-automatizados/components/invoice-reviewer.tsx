@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Check, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
-import { FiscalLine, InvoiceDocument } from "@/lib/types";
+import { ApprovedInvoiceData, FiscalLine, InvoiceDocument } from "@/lib/types";
 import {
   fetchInvoices,
   fetchInvoiceDetail,
@@ -44,7 +44,7 @@ interface InvoiceSummary {
 }
 
 interface InvoiceReviewerProps {
-  approvedInvoices: Set<string>;
+  approvedInvoices: Map<string, ApprovedInvoiceData>;
   rejectedInvoices: Set<string>;
   onApprove: (id: string, data: { formData: Record<string, string>; fiscalLines: FiscalLine[] }) => void;
   onReject: (id: string) => void;
@@ -69,6 +69,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   const [detailsCache, setDetailsCache] = useState<Map<string, InvoiceDocument>>(new Map());
   const cacheRef = useRef<Map<string, InvoiceDocument>>(new Map());
+  const approvedInvoicesRef = useRef<Map<string, ApprovedInvoiceData>>(new Map());
 
   const currentIdxRef = useRef(0);
   const invoiceSummariesRef = useRef<InvoiceSummary[]>([]);
@@ -76,6 +77,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
   useEffect(() => { invoiceSummariesRef.current = invoiceSummaries; }, [invoiceSummaries]);
   useEffect(() => { cacheRef.current = detailsCache; }, [detailsCache]);
+  useEffect(() => { approvedInvoicesRef.current = approvedInvoices; }, [approvedInvoices]);
 
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [fiscalLines, setFiscalLines] = useState<FiscalLine[]>([]);
@@ -129,14 +131,29 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     setFiscalLines([]);
     dirtyRef.current = false;
 
+    // Función auxiliar: aplica datos al formulario, priorizando datos aprobados por el usuario
+    // sobre los datos brutos de la API (esto es el "human in the loop" — lo que el humano
+    // aprobó es la fuente de verdad, no lo que escaneó la IA).
+    const applyInvoiceData = (source: InvoiceDocument) => {
+      const approvedData = approvedInvoicesRef.current.get(summary.id);
+      if (approvedData) {
+        // Factura ya aprobada: restaurar exactamente lo que el usuario aprobó
+        setFormData(approvedData.formData);
+        setFiscalLines(approvedData.fiscalLines);
+      } else {
+        // Factura sin aprobar: cargar datos originales de la API
+        const nextData: Record<string, string> = {};
+        source.fields.forEach(f => { nextData[f.id] = f.value; });
+        setFormData(nextData);
+        setFiscalLines(source.fiscalLines);
+      }
+      setFileUrl(source.imageUrl);
+      setFileType(source.fileType);
+    };
+
     const cached = cacheRef.current.get(summary.id);
     if (cached) {
-      const nextData: Record<string, string> = {};
-      cached.fields.forEach(f => { nextData[f.id] = f.value; });
-      setFormData(nextData);
-      setFiscalLines(cached.fiscalLines);
-      setFileUrl(cached.imageUrl);
-      setFileType(cached.fileType);
+      applyInvoiceData(cached);
       return;
     }
 
@@ -150,7 +167,6 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         if (cancelled) return;
 
         const invoice = transformToInvoice(detail);
-        const resolvedFileType = invoice.fileType;
 
         setDetailsCache(prev => {
           const next = new Map(prev);
@@ -158,12 +174,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
           return next;
         });
 
-        const nextData: Record<string, string> = {};
-        invoice.fields.forEach(f => { nextData[f.id] = f.value; });
-        setFormData(nextData);
-        setFiscalLines(invoice.fiscalLines);
-        setFileUrl(invoice.imageUrl);
-        setFileType(resolvedFileType);
+        applyInvoiceData(invoice);
       } catch (err) {
         if (cancelled) return;
         console.error(`Error loading detail for ${summary.id}:`, err);
