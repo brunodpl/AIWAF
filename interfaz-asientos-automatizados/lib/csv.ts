@@ -160,6 +160,102 @@ export function generateCSV(
   return "\uFEFF" + lines.join("\r\n") + "\r\n";
 }
 
+const INTERMEGA_HEADER =
+  "FECHA,SERIE,Nº FACTURA,NOMBRE CLI-PRO,NIF CLI-PRO,DESCRIPCION," +
+  "BASE,%IVA,CUOTA IVA,%RECARGO EQUIVALENCIA,CUOTA RECARGO EQUIVALENCIA," +
+  "%RETENCION,IMPORTE RETENCION,BASE EXENTA,TOTAL FACTURA";
+
+function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
+  const f = invoice.formData;
+  const fecha = formatDateDDMMYYYY(f.fecha_expedicion || "");
+  const total = Number(f.total_euros || 0).toFixed(2);
+  const nombreCliente = f.nombre_cliente || f.nombre_receptor || "";
+  const nifCliente = f.nif_cliente || f.nif_receptor || "";
+  const concepto = f.concepto || "";
+
+  return invoice.fiscalLines.map((line) => {
+    // vatRate 0 → exenta → Intermega usa tipo 9
+    const pctIVA = line.vatRate === 0 ? "9" : String(line.vatRate ?? "");
+    const fields = [
+      fecha,
+      "",                                      // SERIE
+      f.numero_factura || "",
+      nombreCliente,
+      nifCliente,
+      concepto,
+      Number(line.base).toFixed(2),
+      pctIVA,
+      Number(line.vatAmount).toFixed(2),
+      "", "",                                  // %RE / Cuota RE
+      "0", "0",                               // %Ret / Importe Ret
+      "",                                      // BASE EXENTA
+      total,
+    ];
+    return fields.map((v) => csvEscape(String(v))).join(",");
+  });
+}
+
+/**
+ * Generate Intermega FISC CSV content, partitioned by clase_fiscal.
+ * Returns two CSV strings: emitidas (ingreso_*) and recibidas (gasto_*).
+ */
+export function generateIntermegaCSV(
+  approvedInvoices: Map<string, ApprovedInvoiceData>
+): { emitidas: string; recibidas: string } {
+  const sorted = Array.from(approvedInvoices.entries()).sort((a, b) => {
+    const dateA = a[1].formData.fecha_expedicion || "";
+    const dateB = b[1].formData.fecha_expedicion || "";
+    if (dateA !== dateB) return dateA.localeCompare(dateB);
+    return (a[1].formData.numero_factura || "").localeCompare(
+      b[1].formData.numero_factura || ""
+    );
+  });
+
+  const emitidas: string[] = [INTERMEGA_HEADER];
+  const recibidas: string[] = [INTERMEGA_HEADER];
+
+  for (const [, invoice] of sorted) {
+    const rows = intermegaRowsFor(invoice);
+    const claseFiscal = invoice.clase_fiscal || "gasto_deducible_interior";
+    const target = claseFiscal.startsWith("ingreso") ? emitidas : recibidas;
+    target.push(...rows);
+  }
+
+  const bom = "\uFEFF";
+  return {
+    emitidas: bom + emitidas.join("\r\n") + "\r\n",
+    recibidas: bom + recibidas.join("\r\n") + "\r\n",
+  };
+}
+
+/**
+ * Download the two Intermega CSV files (emitidas + recibidas) in the browser.
+ */
+export function downloadIntermegaCSV(
+  emitidas: string,
+  recibidas: string
+): void {
+  const dateTag = new Date()
+    .toISOString()
+    .slice(0, 10)
+    .replace(/-/g, "");
+  const files = [
+    { content: emitidas, name: `facturas_emitidas_${dateTag}.csv` },
+    { content: recibidas, name: `facturas_recibidas_${dateTag}.csv` },
+  ];
+  for (const { content, name } of files) {
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+}
+
 /**
  * Download the CSV file in the browser.
  */

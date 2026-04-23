@@ -20,7 +20,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { ApprovedInvoiceData } from "@/lib/types";
-import { generateCSV, downloadCSV } from "@/lib/csv";
+import { generateCSV, downloadCSV, generateIntermegaCSV, downloadIntermegaCSV } from "@/lib/csv";
 
 interface ExportStageProps {
   approvedInvoices: Map<string, ApprovedInvoiceData>;
@@ -112,6 +112,7 @@ function groupByCliente(rows: AsientoRow[]): Map<string, { nombre: string; rows:
 
 export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
   const [downloading, setDownloading] = useState(false);
+  const [downloadingIntermega, setDownloadingIntermega] = useState(false);
   const [showMissingAccountsDialog, setShowMissingAccountsDialog] = useState(false);
   const [missingAccountsCount, setMissingAccountsCount] = useState(0);
 
@@ -130,6 +131,24 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
       toast.error("Error generando el CSV");
     } finally {
       setDownloading(false);
+    }
+  }, [approvedInvoices]);
+
+  const handleDownloadIntermega = useCallback(() => {
+    if (approvedInvoices.size === 0) {
+      toast.error("No hay facturas aprobadas para exportar");
+      return;
+    }
+    try {
+      setDownloadingIntermega(true);
+      const { emitidas, recibidas } = generateIntermegaCSV(approvedInvoices);
+      downloadIntermegaCSV(emitidas, recibidas);
+      toast.success("CSV Intermega descargado (emitidas + recibidas)");
+    } catch (err) {
+      console.error("Error generating Intermega CSV:", err);
+      toast.error("Error generando el CSV Intermega");
+    } finally {
+      setDownloadingIntermega(false);
     }
   }, [approvedInvoices]);
 
@@ -315,6 +334,22 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
             <Download className="h-4 w-4 mr-2" />
           )}
           Descargar CSV
+        </Button>
+        <Button
+          size="lg"
+          onClick={handleDownloadIntermega}
+          disabled={approvedInvoices.size === 0 || downloadingIntermega}
+          className={cn(
+            "w-64 h-11 bg-white border border-slate-900 hover:bg-slate-50 text-slate-900 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
+            (approvedInvoices.size === 0 || downloadingIntermega) && "opacity-50 cursor-not-allowed"
+          )}
+        >
+          {downloadingIntermega ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <Download className="h-4 w-4 mr-2" />
+          )}
+          Descargar Intermega
         </Button>
       </footer>
     </div>
