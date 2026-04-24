@@ -200,12 +200,13 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   };
 
   const handleLineChange = (id: string, field: keyof FiscalLine, value: string) => {
+    if (value !== "" && !/^-?\d*(,\d*)?$/.test(value)) return;
     dirtyRef.current = true;
     setFiscalLines(prev => prev.map(line => {
       if (line.id !== id) return line;
       if (field === "id") return { ...line, [field]: value };
-      if (value === "") return { ...line, [field]: 0 };
-      // Normalizar coma decimal española → punto decimal antes de parsear
+      // Preserve intermediate states (empty, minus sign, trailing comma) as raw string
+      if (value === "" || value === "-" || value.endsWith(",")) return { ...line, [field]: value as unknown as number };
       const normalized = value.replace(",", ".");
       const parsed = parseFloat(normalized);
       return { ...line, [field]: isNaN(parsed) ? 0 : parsed };
@@ -252,12 +253,12 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     try {
       await sendInvoiceAction(currentInvoice.id, action, {
         fields: formData,
-        fiscalLines: fiscalLines.map(l => ({
-          base: Number(l.base),
-          tipo_iva: l.vatRate !== null ? Number(l.vatRate) : null,
-          cuota: Number(l.vatAmount),
-          total: Number(l.total),
-        })),
+        fiscalLines: fiscalLines.map(l => {
+          const base = parseFloat(String(l.base).replace(',', '.')) || 0;
+          const cuota = parseFloat(String(l.vatAmount).replace(',', '.')) || 0;
+          const vatRate = l.vatRate !== null ? (parseFloat(String(l.vatRate).replace(',', '.')) || null) : null;
+          return { base, tipo_iva: vatRate, cuota, total: base + cuota };
+        }),
       });
 
       dirtyRef.current = false;
@@ -522,7 +523,6 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                     <th className="p-3 text-left w-1/4 tracking-widest">Base</th>
                                     <th className="p-3 text-center tracking-widest">IVA %</th>
                                     <th className="p-3 text-right tracking-widest">Cuota</th>
-                                    <th className="p-3 text-right tracking-widest">Total</th>
                                  </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-50">
@@ -530,14 +530,14 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                     <tr key={`${invoice.id}_line_${idx}`} className="hover:bg-slate-50/30 transition-colors">
                                        <td className="p-1 px-2">
                                           <div className="flex items-center">
-                                             <Input value={line.base} onChange={(e) => handleLineChange(line.id, 'base', e.target.value)} className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs bg-transparent" />
+                                             <Input value={typeof line.base === 'number' ? String(line.base).replace('.', ',') : String((line.base as unknown) ?? "")} onChange={(e) => handleLineChange(line.id, 'base', e.target.value)} className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs bg-transparent" />
                                              <span className="text-slate-200 pr-2">€</span>
                                           </div>
                                        </td>
                                        <td className="p-1 px-2">
                                           <div className="flex items-center justify-center">
                                              <Input
-                                               value={line.vatRate === null || line.vatRate === 0 ? "" : line.vatRate}
+                                               value={line.vatRate === null || line.vatRate === 0 ? "" : String(line.vatRate).replace('.', ',')}
                                                placeholder="EXENTA"
                                                onChange={(e) => handleLineChange(line.id, 'vatRate', e.target.value)}
                                                className={cn(
@@ -552,13 +552,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                        </td>
                                        <td className="p-1 px-2">
                                           <div className="flex items-center justify-end">
-                                             <Input value={line.vatAmount} onChange={(e) => handleLineChange(line.id, 'vatAmount', e.target.value)} className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-right bg-transparent" />
-                                             <span className="text-slate-200 pr-2">€</span>
-                                          </div>
-                                       </td>
-                                       <td className="p-1 px-2">
-                                          <div className="flex items-center justify-end">
-                                             <Input value={line.total} onChange={(e) => handleLineChange(line.id, 'total', e.target.value)} className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-right font-bold bg-transparent" />
+                                             <Input value={typeof line.vatAmount === 'number' ? String(line.vatAmount).replace('.', ',') : String((line.vatAmount as unknown) ?? "")} onChange={(e) => handleLineChange(line.id, 'vatAmount', e.target.value)} className="h-9 border-transparent focus-visible:border-slate-100 focus-visible:ring-0 rounded-none text-xs text-right bg-transparent" />
                                              <span className="text-slate-200 pr-2">€</span>
                                           </div>
                                        </td>
