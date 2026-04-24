@@ -21,6 +21,8 @@ export interface FiscalLine {
   decisionLine?: string;
 }
 
+export type Libro = "gastos" | "ingresos" | "bienes";
+
 export interface InvoiceDocument {
   id: string;
   status: "pending" | "approved" | "rejected";
@@ -29,6 +31,7 @@ export interface InvoiceDocument {
   decision_global?: "auto" | "warn" | "block" | "pendiente";
   fields: InvoiceField[];
   fiscalLines: FiscalLine[];
+  libro?: Libro;
 }
 
 /** A file pending in a PENDIENTES book folder */
@@ -68,6 +71,6 @@ export interface Client {
 export interface ApprovedInvoiceData {
   formData: Record<string, string>;
   fiscalLines: FiscalLine[];
-  clase_fiscal: string;
+  libro?: Libro;
   cuenta_contable: string;
 }

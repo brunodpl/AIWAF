@@ -2,7 +2,13 @@
  * API client for communicating with the pipeline backend.
  */
 
-import type { InvoiceDocument, FieldDecision, Book, PipelineStatus, Client } from "./types";
+import type { InvoiceDocument, FieldDecision, Book, PipelineStatus, Client, Libro } from "./types";
+
+const LIBRO_MAP: Record<string, Libro> = {
+  "20_COMPRAS_GASTOS": "gastos",
+  "21_VENTAS_INGRESOS": "ingresos",
+  "22_BIENES_INVERSION": "bienes",
+};
 
 /**
  * Base URL vacío — todas las rutas /api/* son relativas al origen del navegador.
@@ -199,6 +205,9 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
   const filename = detail.invoice_filename || "";
   const fileType: "pdf" | "image" = filename.toLowerCase().endsWith(".pdf") ? "pdf" : "image";
 
+  const libroRaw = detail.metadata?.libro as string | undefined;
+  const libro = libroRaw ? LIBRO_MAP[libroRaw] : undefined;
+
   return {
     id: detail.id,
     status: detail.decision_global === "auto" ? "approved" : "pending",
@@ -207,6 +216,7 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
     decision_global: detail.decision_global as InvoiceDocument["decision_global"],
     fields,
     fiscalLines,
+    libro,
   };
 }
 

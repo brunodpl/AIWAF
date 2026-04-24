@@ -1,21 +1,8 @@
-import type { ApprovedInvoiceData, FiscalLine, Client } from "./types";
+import type { ApprovedInvoiceData } from "./types";
 
 /**
- * Normalize a string for use as a concept in CSV.
- * Lowercase, remove accents, max 50 chars.
- */
-function normalizeConcept(concept: string): string {
-  return concept
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s_-]/g, "")
-    .slice(0, 50);
-}
-
-/**
- * Escape a CSV field value. If it contains commas, quotes, or newlines,
- * wrap in double quotes and escape internal quotes.
+ * Escape a CSV field. If it contains commas, quotes or newlines, wrap in
+ * double quotes and escape internal quotes.
  */
 function csvEscape(value: string | number): string {
   const str = String(value);
@@ -25,139 +12,34 @@ function csvEscape(value: string | number): string {
   return str;
 }
 
-/**
- * Format a date from YYYY-MM-DD to DD/MM/YYYY.
- */
+/** Format YYYY-MM-DD (or ISO8601) → DD/MM/YYYY. */
 function formatDateDDMMYYYY(dateStr: string): string {
   if (!dateStr) return "";
-  // Handle ISO8601 or YYYY-MM-DD
   const parts = dateStr.split("T")[0].split("-");
-  if (parts.length === 3) {
-    return `${parts[2]}/${parts[1]}/${parts[0]}`;
-  }
+  if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
   return dateStr;
 }
 
-interface CSVRow {
-  idAsiento: string;
-  fechaExpedicion: string;
-  numFactura: string;
-  nifEmisor: string;
-  nombreEmisor: string;
-  cuentaContable: string;
-  conceptoGasto: string;
-  baseImponible: string;
-  tipoIVA: string;
-  cuotaIVA: string;
-  totalFactura: string;
-  claseFiscal: string;
-}
-
 /**
- * Generate CSV content from approved invoices.
- *
- * - UTF-8 with BOM (\uFEFF)
- * - One row per fiscal line
- * - Sequential AS-500, AS-501... IDs
- * - CRLF line endings
- *
- * @param approvedInvoices Map of docId -> ApprovedInvoiceData
- * @param clientsLookup Map of NIF -> Client (for account lookup)
- * @returns CSV string ready for Blob creation
+ * Parse a possibly-Spanish-formatted numeric string ("131,00", "1.234,56")
+ * into a plain Number. Empty / invalid → 0.
  */
-export function generateCSV(
-  approvedInvoices: Map<string, ApprovedInvoiceData>,
-  clientsLookup: Map<string, Client>
-): string {
-  const HEADER =
-    "ID_Asiento,Fecha_Expedicion,Num_Factura,NIF_Emisor,Nombre_Emisor,Cuenta_Contable,Concepto_Gasto,Base_Imponible,Tipo_IVA,Cuota_IVA,Total_Factura,Clase_Fiscal";
-
-  const rows: CSVRow[] = [];
-  let asientoIndex = 500;
-
-  // Sort invoices deterministically: by fecha_expedicion, then numero_factura
-  const sortedInvoices = Array.from(approvedInvoices.entries()).sort((a, b) => {
-    const dateA = a[1].formData.fecha_expedicion || "";
-    const dateB = b[1].formData.fecha_expedicion || "";
-    if (dateA !== dateB) return dateA.localeCompare(dateB);
-    const numA = a[1].formData.numero_factura || "";
-    const numB = b[1].formData.numero_factura || "";
-    return numA.localeCompare(numB);
-  });
-
-  for (const [_docId, invoice] of sortedInvoices) {
-    const idAsiento = `AS-${asientoIndex}`;
-    asientoIndex++;
-
-    const formData = invoice.formData;
-    const fechaExpedicion = formatDateDDMMYYYY(formData.fecha_expedicion || "");
-    const numFactura = formData.numero_factura || "";
-    const nifEmisor = formData.nif_entidad || "";
-    const nombreEmisor = formData.nombre_entidad || "";
-    const totalFactura = formData.total_euros || "0";
-    const conceptoRaw = formData.concepto || "";
-    const conceptoGasto = normalizeConcept(conceptoRaw);
-    const claseFiscal = invoice.clase_fiscal || "gasto_deducible_interior";
-
-    // Account: priority order:
-    // 1. invoice.cuenta_contable (top-level, set by approve flow)
-    // 2. formData.cuenta_contable (field edited by user in review stage)
-    // 3. clientsLookup by NIF
-    let cuentaContable = invoice.cuenta_contable || formData.cuenta_contable || "";
-    if (!cuentaContable) {
-      const nifReceptor = formData.nif_receptor || "";
-      if (nifReceptor && clientsLookup.has(nifReceptor.toUpperCase())) {
-        cuentaContable = clientsLookup.get(nifReceptor.toUpperCase())!.cuenta_contable;
-      } else if (nifEmisor && clientsLookup.has(nifEmisor.toUpperCase())) {
-        cuentaContable = clientsLookup.get(nifEmisor.toUpperCase())!.cuenta_contable;
-      }
-    }
-
-    // Generate one row per fiscal line
-    for (const line of invoice.fiscalLines) {
-      const vatRate =
-        line.vatRate !== null && line.vatRate !== undefined ? String(line.vatRate) : "";
-
-      rows.push({
-        idAsiento,
-        fechaExpedicion,
-        numFactura,
-        nifEmisor,
-        nombreEmisor,
-        cuentaContable,
-        conceptoGasto,
-        baseImponible: Number(line.base).toFixed(2),
-        tipoIVA: vatRate,
-        cuotaIVA: Number(line.vatAmount).toFixed(2),
-        totalFactura: Number(totalFactura).toFixed(2),
-        claseFiscal,
-      });
-    }
+export function normalizeNumber(value: string | number | null | undefined): number {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number") return isFinite(value) ? value : 0;
+  // Spanish format detection: has comma decimal and dot thousands
+  const hasComma = value.includes(",");
+  const hasDot = value.includes(".");
+  let normalized = value.trim();
+  if (hasComma && hasDot) {
+    // "1.234,56" → "1234.56"
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  } else if (hasComma) {
+    // "131,00" → "131.00"
+    normalized = normalized.replace(",", ".");
   }
-
-  // Build CSV
-  const lines = [HEADER];
-  for (const row of rows) {
-    lines.push(
-      [
-        csvEscape(row.idAsiento),
-        csvEscape(row.fechaExpedicion),
-        csvEscape(row.numFactura),
-        csvEscape(row.nifEmisor),
-        csvEscape(row.nombreEmisor),
-        csvEscape(row.cuentaContable),
-        csvEscape(row.conceptoGasto),
-        csvEscape(row.baseImponible),
-        csvEscape(row.tipoIVA),
-        csvEscape(row.cuotaIVA),
-        csvEscape(row.totalFactura),
-        csvEscape(row.claseFiscal),
-      ].join(",")
-    );
-  }
-
-  // UTF-8 BOM + CRLF
-  return "\uFEFF" + lines.join("\r\n") + "\r\n";
+  const n = Number(normalized);
+  return isFinite(n) ? n : 0;
 }
 
 const INTERMEGA_HEADER =
@@ -168,7 +50,7 @@ const INTERMEGA_HEADER =
 function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
   const f = invoice.formData;
   const fecha = formatDateDDMMYYYY(f.fecha_expedicion || "");
-  const total = Number(f.total_euros || 0).toFixed(2);
+  const total = normalizeNumber(f.total_euros).toFixed(2);
   const nombreCliente = f.nombre_cliente || f.nombre_receptor || "";
   const nifCliente = f.nif_cliente || f.nif_receptor || "";
   const concepto = f.concepto || "";
@@ -183,9 +65,9 @@ function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
       nombreCliente,
       nifCliente,
       concepto,
-      Number(line.base).toFixed(2),
+      normalizeNumber(line.base).toFixed(2),
       pctIVA,
-      Number(line.vatAmount).toFixed(2),
+      normalizeNumber(line.vatAmount).toFixed(2),
       "", "",                                  // %RE / Cuota RE
       "0", "0",                               // %Ret / Importe Ret
       "",                                      // BASE EXENTA
@@ -196,12 +78,14 @@ function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
 }
 
 /**
- * Generate Intermega FISC CSV content, partitioned by clase_fiscal.
- * Returns two CSV strings: emitidas (ingreso_*) and recibidas (gasto_*).
+ * Generate Intermega FISC CSVs partitioned by libro.
+ * - libro === "ingresos"  → emitidas
+ * - libro === "gastos" | "bienes" | undefined → recibidas
+ * Each CSV is UTF-8 with BOM, CRLF, and literal Intermega header.
  */
 export function generateIntermegaCSV(
   approvedInvoices: Map<string, ApprovedInvoiceData>
-): { emitidas: string; recibidas: string } {
+): { emitidas: string; recibidas: string; counts: { emitidas: number; recibidas: number } } {
   const sorted = Array.from(approvedInvoices.entries()).sort((a, b) => {
     const dateA = a[1].formData.fecha_expedicion || "";
     const dateB = b[1].formData.fecha_expedicion || "";
@@ -213,64 +97,48 @@ export function generateIntermegaCSV(
 
   const emitidas: string[] = [INTERMEGA_HEADER];
   const recibidas: string[] = [INTERMEGA_HEADER];
+  let nEmitidas = 0;
+  let nRecibidas = 0;
 
   for (const [, invoice] of sorted) {
     const rows = intermegaRowsFor(invoice);
-    const claseFiscal = invoice.clase_fiscal || "gasto_deducible_interior";
-    const target = claseFiscal.startsWith("ingreso") ? emitidas : recibidas;
-    target.push(...rows);
+    if (invoice.libro === "ingresos") {
+      emitidas.push(...rows);
+      nEmitidas++;
+    } else {
+      recibidas.push(...rows);
+      nRecibidas++;
+    }
   }
 
   const bom = "\uFEFF";
   return {
     emitidas: bom + emitidas.join("\r\n") + "\r\n",
     recibidas: bom + recibidas.join("\r\n") + "\r\n",
+    counts: { emitidas: nEmitidas, recibidas: nRecibidas },
   };
 }
 
-/**
- * Download the two Intermega CSV files (emitidas + recibidas) in the browser.
- */
-export function downloadIntermegaCSV(
-  emitidas: string,
-  recibidas: string
-): void {
-  const dateTag = new Date()
-    .toISOString()
-    .slice(0, 10)
-    .replace(/-/g, "");
-  const files = [
-    { content: emitidas, name: `facturas_emitidas_${dateTag}.csv` },
-    { content: recibidas, name: `facturas_recibidas_${dateTag}.csv` },
-  ];
-  for (const { content, name } of files) {
-    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = name;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }
-}
-
-/**
- * Download the CSV file in the browser.
- */
-export function downloadCSV(csvContent: string): void {
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+function downloadBlob(content: string, filename: string): void {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-
-  const now = new Date();
-  const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-  link.download = `asientos_${timestamp}.csv`;
-
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+function todayTag(): string {
+  return new Date().toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+export function downloadIntermegaEmitidas(csv: string): void {
+  downloadBlob(csv, `facturas_emitidas_${todayTag()}.csv`);
+}
+
+export function downloadIntermegaRecibidas(csv: string): void {
+  downloadBlob(csv, `facturas_recibidas_${todayTag()}.csv`);
 }

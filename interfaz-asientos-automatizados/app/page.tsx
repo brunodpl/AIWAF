@@ -8,7 +8,7 @@ import { BooksManager } from "@/components/books-manager";
 import { PipelineProgress } from "@/components/pipeline-progress";
 import { InvoiceReviewer } from "@/components/invoice-reviewer";
 import { ExportStage } from "@/components/export-stage";
-import { ApprovedInvoiceData, FiscalLine } from "@/lib/types";
+import { ApprovedInvoiceData, FiscalLine, Libro } from "@/lib/types";
 import { resetPipeline, fetchInvoices } from "@/lib/api";
 
 type Stage = "books" | "processing" | "review" | "export";
@@ -95,14 +95,17 @@ export default function Home() {
   }, []);
 
   const handleApprove = useCallback(
-    (id: string, data: { formData: Record<string, string>; fiscalLines: FiscalLine[] }) => {
+    (
+      id: string,
+      data: { formData: Record<string, string>; fiscalLines: FiscalLine[]; libro?: Libro }
+    ) => {
       setApprovedInvoices((prev) => {
         const next = new Map(prev);
         const existing = next.get(id);
         next.set(id, {
           formData: data.formData,
           fiscalLines: data.fiscalLines,
-          clase_fiscal: existing?.clase_fiscal || "gasto_deducible_interior",
+          libro: data.libro ?? existing?.libro,
           cuenta_contable: existing?.cuenta_contable || "",
         });
         return next;

@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Check, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
-import { ApprovedInvoiceData, FiscalLine, InvoiceDocument } from "@/lib/types";
+import { ApprovedInvoiceData, FiscalLine, InvoiceDocument, Libro } from "@/lib/types";
 import {
   fetchInvoices,
   fetchInvoiceDetail,
@@ -46,7 +46,7 @@ interface InvoiceSummary {
 interface InvoiceReviewerProps {
   approvedInvoices: Map<string, ApprovedInvoiceData>;
   rejectedInvoices: Set<string>;
-  onApprove: (id: string, data: { formData: Record<string, string>; fiscalLines: FiscalLine[] }) => void;
+  onApprove: (id: string, data: { formData: Record<string, string>; fiscalLines: FiscalLine[]; libro?: Libro }) => void;
   onReject: (id: string) => void;
   onExport: () => void;
 }
@@ -263,7 +263,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       dirtyRef.current = false;
 
       if (action === "approve") {
-        onApprove(currentInvoice.id, { formData, fiscalLines });
+        onApprove(currentInvoice.id, { formData, fiscalLines, libro: currentInvoice.libro });
         toast.success("Factura aprobada correctamente");
       } else {
         onReject(currentInvoice.id);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -20,14 +20,20 @@ import {
   Loader2,
 } from "lucide-react";
 import { ApprovedInvoiceData } from "@/lib/types";
-import { generateCSV, downloadCSV, generateIntermegaCSV, downloadIntermegaCSV } from "@/lib/csv";
+import {
+  generateIntermegaCSV,
+  downloadIntermegaEmitidas,
+  downloadIntermegaRecibidas,
+  normalizeNumber,
+} from "@/lib/csv";
+
+type ExportKind = "emitidas" | "recibidas";
 
 interface ExportStageProps {
   approvedInvoices: Map<string, ApprovedInvoiceData>;
   onBack: () => void;
 }
 
-// Tipo para una fila de la tabla de verificación
 interface AsientoRow {
   docId: string;
   nif_cliente: string;
@@ -43,6 +49,11 @@ interface AsientoRow {
   tipo_porcentaje: string;
   cuota: string;
   total_euros: string;
+  kind: ExportKind;
+}
+
+function invoiceKind(invoice: ApprovedInvoiceData): ExportKind {
+  return invoice.libro === "ingresos" ? "emitidas" : "recibidas";
 }
 
 function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): AsientoRow[] {
@@ -52,44 +63,40 @@ function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): A
     const fd = invoice.formData;
     const nifCliente = fd.nif_cliente || fd.nif_receptor || "";
     const nombreCliente = fd.nombre_cliente || fd.nombre_receptor || "";
+    const totalFactura = normalizeNumber(fd.total_euros).toFixed(2);
+    const kind = invoiceKind(invoice);
+
+    const base = {
+      docId,
+      nif_cliente: nifCliente,
+      nombre_cliente: nombreCliente,
+      fecha_operacion: fd.fecha_operacion || "",
+      fecha_expedicion: fd.fecha_expedicion || "",
+      numero_factura: fd.numero_factura || "",
+      cuenta_contable: fd.cuenta_contable || "",
+      nombre_entidad: fd.nombre_entidad || "",
+      nif_entidad: fd.nif_entidad || "",
+      concepto: fd.concepto || "",
+      kind,
+    };
 
     if (invoice.fiscalLines.length > 0) {
-      // Una fila por línea fiscal (multi-IVA)
       for (const line of invoice.fiscalLines) {
         rows.push({
-          docId,
-          nif_cliente: nifCliente,
-          nombre_cliente: nombreCliente,
-          fecha_operacion: fd.fecha_operacion || "",
-          fecha_expedicion: fd.fecha_expedicion || "",
-          numero_factura: fd.numero_factura || "",
-          cuenta_contable: fd.cuenta_contable || "",
-          nombre_entidad: fd.nombre_entidad || "",
-          nif_entidad: fd.nif_entidad || "",
-          concepto: fd.concepto || "",
-          base_euros: Number(line.base).toFixed(2),
+          ...base,
+          base_euros: normalizeNumber(line.base).toFixed(2),
           tipo_porcentaje: line.vatRate != null && line.vatRate !== 0 ? String(line.vatRate) : "EXENTA",
-          cuota: Number(line.vatAmount).toFixed(2),
-          total_euros: Number(line.total).toFixed(2),
+          cuota: normalizeNumber(line.vatAmount).toFixed(2),
+          total_euros: totalFactura,
         });
       }
     } else {
-      // Sin líneas fiscales: una fila con datos de cabecera
       rows.push({
-        docId,
-        nif_cliente: nifCliente,
-        nombre_cliente: nombreCliente,
-        fecha_operacion: fd.fecha_operacion || "",
-        fecha_expedicion: fd.fecha_expedicion || "",
-        numero_factura: fd.numero_factura || "",
-        cuenta_contable: fd.cuenta_contable || "",
-        nombre_entidad: fd.nombre_entidad || "",
-        nif_entidad: fd.nif_entidad || "",
-        concepto: fd.concepto || "",
-        base_euros: fd.total_euros || "0.00",
+        ...base,
+        base_euros: totalFactura,
         tipo_porcentaje: "",
         cuota: "0.00",
-        total_euros: fd.total_euros || "0.00",
+        total_euros: totalFactura,
       });
     }
   }
@@ -97,7 +104,6 @@ function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): A
   return rows;
 }
 
-// Agrupar filas por nif_cliente
 function groupByCliente(rows: AsientoRow[]): Map<string, { nombre: string; rows: AsientoRow[] }> {
   const groups = new Map<string, { nombre: string; rows: AsientoRow[] }>();
   for (const row of rows) {
@@ -111,68 +117,67 @@ function groupByCliente(rows: AsientoRow[]): Map<string, { nombre: string; rows:
 }
 
 export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
-  const [downloading, setDownloading] = useState(false);
-  const [downloadingIntermega, setDownloadingIntermega] = useState(false);
-  const [showMissingAccountsDialog, setShowMissingAccountsDialog] = useState(false);
+  const [downloadingKind, setDownloadingKind] = useState<ExportKind | null>(null);
+  const [pendingKind, setPendingKind] = useState<ExportKind | null>(null);
   const [missingAccountsCount, setMissingAccountsCount] = useState(0);
 
-  const allRows = buildAsientoRows(approvedInvoices);
-  const grouped = groupByCliente(allRows);
+  const allRows = useMemo(() => buildAsientoRows(approvedInvoices), [approvedInvoices]);
+  const grouped = useMemo(() => groupByCliente(allRows), [allRows]);
 
-  const doDownload = useCallback(() => {
-    try {
-      setDownloading(true);
-      // generateCSV espera clients Map — pasamos vacío (las cuentas ya están en formData)
-      const csvContent = generateCSV(approvedInvoices, new Map());
-      downloadCSV(csvContent);
-      toast.success("CSV descargado correctamente");
-    } catch (err) {
-      console.error("Error generating CSV:", err);
-      toast.error("Error generando el CSV");
-    } finally {
-      setDownloading(false);
-    }
-  }, [approvedInvoices]);
-
-  const handleDownloadIntermega = useCallback(() => {
-    if (approvedInvoices.size === 0) {
-      toast.error("No hay facturas aprobadas para exportar");
-      return;
-    }
-    try {
-      setDownloadingIntermega(true);
-      const { emitidas, recibidas } = generateIntermegaCSV(approvedInvoices);
-      downloadIntermegaCSV(emitidas, recibidas);
-      toast.success("CSV Intermega descargado (emitidas + recibidas)");
-    } catch (err) {
-      console.error("Error generating Intermega CSV:", err);
-      toast.error("Error generando el CSV Intermega");
-    } finally {
-      setDownloadingIntermega(false);
-    }
-  }, [approvedInvoices]);
-
-  const handleDownloadCSV = useCallback(() => {
-    if (approvedInvoices.size === 0) {
-      toast.error("No hay facturas aprobadas para exportar");
-      return;
-    }
-
-    // Comprobar cuentas contables vacías
-    let missing = 0;
+  const { countEmitidas, countRecibidas } = useMemo(() => {
+    let e = 0, r = 0;
     for (const [, invoice] of approvedInvoices) {
-      if (!invoice.formData.cuenta_contable) {
-        missing++;
-      }
+      if (invoiceKind(invoice) === "emitidas") e++;
+      else r++;
     }
+    return { countEmitidas: e, countRecibidas: r };
+  }, [approvedInvoices]);
 
-    if (missing > 0) {
-      setMissingAccountsCount(missing);
-      setShowMissingAccountsDialog(true);
-    } else {
-      doDownload();
-    }
-  }, [approvedInvoices, doDownload]);
+  const doDownload = useCallback(
+    (kind: ExportKind) => {
+      try {
+        setDownloadingKind(kind);
+        const { emitidas, recibidas } = generateIntermegaCSV(approvedInvoices);
+        if (kind === "emitidas") {
+          downloadIntermegaEmitidas(emitidas);
+          toast.success("Facturas emitidas descargadas");
+        } else {
+          downloadIntermegaRecibidas(recibidas);
+          toast.success("Facturas recibidas descargadas");
+        }
+      } catch (err) {
+        console.error("Error generating Intermega CSV:", err);
+        toast.error("Error generando el CSV Intermega");
+      } finally {
+        setDownloadingKind(null);
+      }
+    },
+    [approvedInvoices]
+  );
+
+  const handleDownload = useCallback(
+    (kind: ExportKind) => {
+      const targetCount = kind === "emitidas" ? countEmitidas : countRecibidas;
+      if (targetCount === 0) {
+        toast.error(`No hay facturas ${kind} aprobadas para exportar`);
+        return;
+      }
+
+      let missing = 0;
+      for (const [, invoice] of approvedInvoices) {
+        if (invoiceKind(invoice) !== kind) continue;
+        if (!invoice.formData.cuenta_contable) missing++;
+      }
+
+      if (missing > 0) {
+        setMissingAccountsCount(missing);
+        setPendingKind(kind);
+      } else {
+        doDownload(kind);
+      }
+    },
+    [approvedInvoices, countEmitidas, countRecibidas, doDownload]
+  );
 
   const COLUMNS = [
     { key: "fecha_operacion", label: "F. Operación", align: "left" as const },
@@ -188,15 +193,16 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
     { key: "total_euros", label: "Total", align: "right" as const },
   ];
 
+  const dialogOpen = pendingKind !== null;
+
   return (
     <div className="flex flex-col h-full bg-white">
-      {/* AlertDialog para cuentas faltantes */}
-      <AlertDialog open={showMissingAccountsDialog} onOpenChange={setShowMissingAccountsDialog}>
+      <AlertDialog open={dialogOpen} onOpenChange={(open) => !open && setPendingKind(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Cuentas contables incompletas</AlertDialogTitle>
             <AlertDialogDescription>
-              Hay {missingAccountsCount} factura(s) sin cuenta contable asignada.
+              Hay {missingAccountsCount} factura(s) {pendingKind} sin cuenta contable asignada.
               Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -206,8 +212,9 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                setShowMissingAccountsDialog(false);
-                doDownload();
+                const k = pendingKind;
+                setPendingKind(null);
+                if (k) doDownload(k);
               }}
               className="rounded-none text-xs uppercase tracking-[0.15em]"
             >
@@ -235,33 +242,30 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[10px] font-bold text-slate-400 font-mono">
-            {approvedInvoices.size} factura(s) — {allRows.length} línea(s) de asiento
+            {approvedInvoices.size} factura(s) — {countEmitidas} emitidas · {countRecibidas} recibidas
           </span>
         </div>
       </header>
 
-      {/* Content — tabla de verificación agrupada por cliente */}
+      {/* Content */}
       <div className="flex-1 overflow-auto p-6">
         {Array.from(grouped.entries()).map(([nifCliente, group]) => (
           <div key={nifCliente} className="mb-8">
-            {/* Header de grupo: cliente */}
             <div className="flex items-center gap-3 mb-3 px-1">
               <span className="text-[10px] font-black uppercase tracking-[0.15em] text-teal-700 bg-teal-50 px-2 py-1">
                 {nifCliente}
               </span>
-              <span className="text-xs font-bold text-slate-600">
-                {group.nombre}
-              </span>
+              <span className="text-xs font-bold text-slate-600">{group.nombre}</span>
               <span className="text-[10px] text-slate-400 font-mono">
                 ({group.rows.length} línea{group.rows.length !== 1 ? "s" : ""})
               </span>
             </div>
 
-            {/* Tabla del grupo */}
             <div className="border border-slate-200 overflow-hidden overflow-x-auto">
               <table className="w-full text-xs font-mono border-collapse min-w-[900px]">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-100 text-[10px] text-slate-400 uppercase font-black">
+                    <th className="p-2.5 tracking-widest whitespace-nowrap text-left">Tipo</th>
                     {COLUMNS.map((col) => (
                       <th
                         key={col.key}
@@ -280,6 +284,18 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
                 <tbody className="divide-y divide-slate-50">
                   {group.rows.map((row, idx) => (
                     <tr key={`${row.docId}_${idx}`} className="hover:bg-slate-50/30 transition-colors">
+                      <td className="p-2.5">
+                        <span
+                          className={cn(
+                            "text-[9px] font-black uppercase tracking-[0.1em] px-1.5 py-0.5",
+                            row.kind === "emitidas"
+                              ? "bg-emerald-50 text-emerald-700"
+                              : "bg-amber-50 text-amber-700"
+                          )}
+                        >
+                          {row.kind === "emitidas" ? "Emit." : "Recib."}
+                        </span>
+                      </td>
                       <td className="p-2.5">{row.fecha_operacion || "—"}</td>
                       <td className="p-2.5">{row.fecha_expedicion || "—"}</td>
                       <td className="p-2.5">{row.numero_factura || "—"}</td>
@@ -294,11 +310,13 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
                         {row.concepto || "—"}
                       </td>
                       <td className="p-2.5 text-right">{row.base_euros}€</td>
-                      <td className={cn(
-                        "p-2.5 text-center",
-                        row.tipo_porcentaje === "EXENTA" && "text-amber-600 text-[10px] font-bold"
-                      )}>
-                        {row.tipo_porcentaje === "EXENTA" ? "EXENTA" : `${row.tipo_porcentaje}%`}
+                      <td
+                        className={cn(
+                          "p-2.5 text-center",
+                          row.tipo_porcentaje === "EXENTA" && "text-amber-600 text-[10px] font-bold"
+                        )}
+                      >
+                        {row.tipo_porcentaje === "EXENTA" ? "EXENTA" : row.tipo_porcentaje ? `${row.tipo_porcentaje}%` : "—"}
                       </td>
                       <td className="p-2.5 text-right">{row.cuota}€</td>
                       <td className="p-2.5 text-right font-bold">{row.total_euros}€</td>
@@ -321,35 +339,35 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
       <footer className="h-24 flex items-center justify-center gap-6 px-8 bg-white border-t flex-shrink-0">
         <Button
           size="lg"
-          onClick={handleDownloadCSV}
-          disabled={approvedInvoices.size === 0 || downloading}
+          onClick={() => handleDownload("emitidas")}
+          disabled={countEmitidas === 0 || downloadingKind !== null}
           className={cn(
             "w-64 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
-            (approvedInvoices.size === 0 || downloading) && "opacity-50 cursor-not-allowed"
+            (countEmitidas === 0 || downloadingKind !== null) && "opacity-50 cursor-not-allowed"
           )}
         >
-          {downloading ? (
+          {downloadingKind === "emitidas" ? (
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
           ) : (
             <Download className="h-4 w-4 mr-2" />
           )}
-          Descargar CSV
+          Descargar facturas emitidas ({countEmitidas})
         </Button>
         <Button
           size="lg"
-          onClick={handleDownloadIntermega}
-          disabled={approvedInvoices.size === 0 || downloadingIntermega}
+          onClick={() => handleDownload("recibidas")}
+          disabled={countRecibidas === 0 || downloadingKind !== null}
           className={cn(
-            "w-64 h-11 bg-white border border-slate-900 hover:bg-slate-50 text-slate-900 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
-            (approvedInvoices.size === 0 || downloadingIntermega) && "opacity-50 cursor-not-allowed"
+            "w-64 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
+            (countRecibidas === 0 || downloadingKind !== null) && "opacity-50 cursor-not-allowed"
           )}
         >
-          {downloadingIntermega ? (
+          {downloadingKind === "recibidas" ? (
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
           ) : (
             <Download className="h-4 w-4 mr-2" />
           )}
-          Descargar Intermega
+          Descargar facturas recibidas ({countRecibidas})
         </Button>
       </footer>
     </div>
