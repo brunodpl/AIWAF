@@ -1,12 +1,12 @@
 import type { ApprovedInvoiceData } from "./types";
 
 /**
- * Escape a CSV field. If it contains commas, quotes or newlines, wrap in
- * double quotes and escape internal quotes.
+ * Escape a CSV field for semicolon-delimited format (Spanish Excel locale).
+ * Wraps in double quotes if the value contains semicolons, quotes or newlines.
  */
 function csvEscape(value: string | number): string {
   const str = String(value);
-  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
+  if (str.includes(";") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
     return '"' + str.replace(/"/g, '""') + '"';
   }
   return str;
@@ -43,14 +43,18 @@ export function normalizeNumber(value: string | number | null | undefined): numb
 }
 
 const INTERMEGA_HEADER =
-  "FECHA,SERIE,Nº FACTURA,NOMBRE CLI-PRO,NIF CLI-PRO,DESCRIPCION," +
-  "BASE,%IVA,CUOTA IVA,%RECARGO EQUIVALENCIA,CUOTA RECARGO EQUIVALENCIA," +
-  "%RETENCION,IMPORTE RETENCION,BASE EXENTA,TOTAL FACTURA";
+  "FECHA;SERIE;Nº FACTURA;NOMBRE CLI-PRO;NIF CLI-PRO;DESCRIPCION;" +
+  "BASE;%IVA;CUOTA IVA;%RECARGO EQUIVALENCIA;CUOTA RECARGO EQUIVALENCIA;" +
+  "%RETENCION;IMPORTE RETENCION;BASE EXENTA;TOTAL FACTURA";
+
+function toSpanishDecimal(n: number): string {
+  return n.toFixed(2).replace(".", ",");
+}
 
 function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
   const f = invoice.formData;
   const fecha = formatDateDDMMYYYY(f.fecha_expedicion || "");
-  const total = normalizeNumber(f.total_euros).toFixed(2);
+  const total = toSpanishDecimal(normalizeNumber(f.total_euros));
   const nombreCliente = f.nombre_cliente || f.nombre_receptor || "";
   const nifCliente = f.nif_cliente || f.nif_receptor || "";
   const concepto = f.concepto || "";
@@ -65,15 +69,15 @@ function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
       nombreCliente,
       nifCliente,
       concepto,
-      normalizeNumber(line.base).toFixed(2),
+      toSpanishDecimal(normalizeNumber(line.base)),
       pctIVA,
-      normalizeNumber(line.vatAmount).toFixed(2),
+      toSpanishDecimal(normalizeNumber(line.vatAmount)),
       "", "",                                  // %RE / Cuota RE
       "0", "0",                               // %Ret / Importe Ret
       "",                                      // BASE EXENTA
       total,
     ];
-    return fields.map((v) => csvEscape(String(v))).join(",");
+    return fields.map((v) => csvEscape(String(v))).join(";");
   });
 }
 
