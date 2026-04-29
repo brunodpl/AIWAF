@@ -51,12 +51,21 @@ function toSpanishDecimal(n: number): string {
   return n.toFixed(2).replace(".", ",");
 }
 
+/** Strip Excel text-prefix artifacts and invalid chars from NIF/CIF. */
+function sanitizeNIF(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^[^A-Za-z0-9]+/, "") // leading non-alphanumeric (´, ', `, etc.)
+    .replace(/\s+/g, "")           // internal spaces
+    .toUpperCase();
+}
+
 function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
   const f = invoice.formData;
   const fecha = formatDateDDMMYYYY(f.fecha_expedicion || "");
   const total = toSpanishDecimal(normalizeNumber(f.total_euros));
   const nombreCliente = f.nombre_cliente || f.nombre_receptor || "";
-  const nifCliente = f.nif_cliente || f.nif_receptor || "";
+  const nifCliente = sanitizeNIF(f.nif_cliente || f.nif_receptor || "");
   const concepto = f.concepto || "";
 
   return invoice.fiscalLines.map((line) => {
