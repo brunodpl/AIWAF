@@ -14,6 +14,7 @@ on:
       version:
         description: 'Versión a publicar (sin la v)'
         required: true
+        type: string
 
 env:
   REGISTRY: ghcr.io
@@ -28,17 +29,18 @@ jobs:
       packages: write
     outputs:
       version: ${{ steps.version.outputs.value }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Resolve version
         id: version
+        shell: bash
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
             echo "value=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            # Quita el prefijo 'v' del tag
             echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -84,9 +86,7 @@ jobs:
     needs: build-and-push
     permissions:
       contents: read
-    env:
-      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,17 +94,19 @@ jobs:
           fetch-depth: 0
 
       - name: Generate latest.json
+        shell: bash
         env:
           VERSION: ${{ needs.build-and-push.outputs.version }}
         run: |
           mkdir -p _release
-          # Saca un changelog corto (mensajes de los últimos commits desde el tag anterior)
+
           PREV_TAG=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
             CHANGELOG=$(git log --pretty=format:'- %s' "$PREV_TAG..v${VERSION}" | head -10)
           else
             CHANGELOG=$(git log --pretty=format:'- %s' "v${VERSION}" | head -10)
           fi
+
           cat > _release/latest.json <<EOF
           {
             "version": "${VERSION}",
@@ -114,11 +116,14 @@ jobs:
             "interfaz_image": "ghcr.io/${{ env.IMAGE_OWNER }}/aiwaf-interfaz:${VERSION}"
           }
           EOF
+
           cat _release/latest.json
 
       - name: Deploy latest.json to Cloudflare Pages
-        if: ${{ env.CF_API_TOKEN != '' }}
         uses: cloudflare/pages-action@v1
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         with:
           apiToken: ${{ env.CF_API_TOKEN }}
           accountId: ${{ env.CF_ACCOUNT_ID }}
