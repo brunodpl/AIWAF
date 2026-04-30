@@ -481,3 +481,77 @@ export async function fetchClients(): Promise<ClientsResponse> {
     throw error;
   }
 }
+
+/**
+ * Cancel an in-flight pipeline run (cooperative — stops after current invoice).
+ */
+export async function cancelPipeline(): Promise<{ status: string }> {
+  const response = await fetchWithTimeout(`${API_URL}/api/pipeline/cancel`, { method: "POST" });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`No se pudo cancelar (${response.status}): ${text}`);
+  }
+  return response.json();
+}
+
+/**
+ * System version (installed locally).
+ */
+export interface SystemVersion {
+  version: string;
+  gestoria_nif: string;
+  gestoria_nombre: string;
+}
+
+export async function fetchSystemVersion(): Promise<SystemVersion> {
+  const response = await fetchWithTimeout(`${API_URL}/api/system/version`);
+  if (!response.ok) throw new Error("No se pudo leer la versión instalada");
+  return response.json();
+}
+
+/**
+ * Latest published version. Returns update_available=true when newer than installed.
+ */
+export interface LatestVersion {
+  version: string | null;
+  current: string;
+  update_available: boolean;
+  changelog?: string;
+  released_at?: string;
+  error?: string;
+}
+
+export async function fetchLatestVersion(): Promise<LatestVersion> {
+  const response = await fetchWithTimeout(`${API_URL}/api/system/latest-version`);
+  if (!response.ok) throw new Error("No se pudo comprobar actualizaciones");
+  return response.json();
+}
+
+/**
+ * Submit feedback (Problema/Recomendación/Pregunta) — backend forwards to Discord.
+ */
+export type FeedbackTipo = "problema" | "recomendacion" | "pregunta";
+
+export interface FeedbackPayload {
+  tipo: FeedbackTipo;
+  descripcion: string;
+  incluir_logs: boolean;
+  navegador?: string;
+}
+
+export async function submitFeedback(payload: FeedbackPayload): Promise<{
+  status: string;
+  delivered: boolean;
+  delivery_error?: string | null;
+}> {
+  const response = await fetchWithTimeout(`${API_URL}/api/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Error enviando feedback (${response.status}): ${text}`);
+  }
+  return response.json();
+}

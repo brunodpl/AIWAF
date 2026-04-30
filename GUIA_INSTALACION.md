@@ -109,8 +109,8 @@ bash verify.sh
 
 Resultado esperado:
 ```
-[OK]   API activa en http://localhost:8000
-[OK]   Interfaz activa en http://localhost:3000
+[OK]   API activa en http://localhost:8003
+[OK]   Interfaz activa en http://localhost:3003
 [OK]   Portainer activo en http://localhost:9000
 [OK]   Credenciales GCP encontradas
 [OK]   Google Cloud Project ID configurado
@@ -151,9 +151,9 @@ Una vez instalado, accede desde cualquier navegador:
 
 | Servicio | URL | Para qué |
 |---|---|---|
-| Interfaz principal | http://localhost:3000 | Procesar facturas y exportar CSV |
+| Interfaz principal | http://localhost:3003 | Procesar facturas y exportar CSV |
 | Gestión Docker | http://localhost:9000 | Ver estado, reiniciar, ver logs |
-| API backend | http://localhost:8000 | Solo para diagnóstico técnico |
+| API backend | http://localhost:8003 | Solo para diagnóstico técnico |
 
 **Para acceder desde otro PC de la red local**, reemplaza `localhost` por la IP del servidor donde está instalado (ej: `http://192.168.1.100:3000`).
 
@@ -185,7 +185,7 @@ bash verify.sh  # Linux
 
 ## Flujo de trabajo típico
 
-1. **Subir facturas**: En la interfaz (http://localhost:3000), selecciona el libro contable (Compras y Gastos, Ventas, Bienes de Inversión) y sube los PDFs de las facturas.
+1. **Subir facturas**: En la interfaz (http://localhost:3003), selecciona el libro contable (Compras y Gastos, Ventas, Bienes de Inversión) y sube los PDFs de las facturas.
 
 2. **Procesar**: Haz clic en "Ejecutar pipeline". El sistema procesará las facturas automáticamente.
 

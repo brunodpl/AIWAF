@@ -23,9 +23,11 @@ import type { PipelineStatus } from "@/lib/types";
 interface PipelineProgressProps {
   onComplete: () => void;
   onBack: () => void;
+  /** Saltar a la pantalla de revisión sin esperar a que termine el pipeline */
+  onJumpToReview?: () => void;
 }
 
-export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) {
+export function PipelineProgress({ onComplete, onBack, onJumpToReview }: PipelineProgressProps) {
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -223,6 +225,21 @@ export function PipelineProgress({ onComplete, onBack }: PipelineProgressProps) 
                 {progress}% completado
               </p>
             )}
+          </div>
+        )}
+
+        {isRunning && onJumpToReview && status && status.processed >= 1 && (
+          <div className="mt-6">
+            <Button
+              onClick={onJumpToReview}
+              variant="default"
+              className="text-xs rounded-none uppercase tracking-[0.15em] bg-teal-600 hover:bg-teal-700"
+            >
+              Ver {status.processed} factura{status.processed === 1 ? "" : "s"} ya procesada{status.processed === 1 ? "" : "s"}
+            </Button>
+            <p className="text-[10px] text-slate-400 mt-2">
+              El procesamiento continúa en segundo plano. Las nuevas facturas se irán añadiendo a la lista de revisión.
+            </p>
           </div>
         )}
 

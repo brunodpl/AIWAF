@@ -1,18 +1,23 @@
 services:
   # Pipeline API - Python backend
   pipeline-api:
+    image: ${AIWAF_PIPELINE_IMAGE:-aiwaf-pipeline:local}
     build:
       context: ./sistema-de-asientos-automatizado
       dockerfile: Dockerfile
     container_name: pipeline-api
     ports:
-      - "8000:8000"
+      # Host:Container — puerto del host elegido para no chocar con otros servicios
+      # típicos (3000/8000 los usan muchas apps). El puerto interno sigue siendo 8000.
+      - "8003:8000"
     volumes:
       # Ruta al archivo de credenciales definida en .env (CREDENTIALS_PATH)
       # Ejemplo en .env: CREDENTIALS_PATH=/home/usuario/.secrets/sa.json
       - ${CREDENTIALS_PATH}:/app/credentials/service_account.json:ro
       # Persistir datos de salida — bind mount para trazabilidad visible en host
       - ./sistema-de-asientos-automatizado/data/output:/app/data/output
+      # Persistir feedback recibido desde la UI (audit + reintentos)
+      - ./sistema-de-asientos-automatizado/data/feedback:/app/data/feedback
       # Maestros y clients.json — datos de referencia
       - ./sistema-de-asientos-automatizado/data/maestros:/app/data/maestros:ro
       - ./sistema-de-asientos-automatizado/data/clients.json:/app/data/clients.json:ro
@@ -26,7 +31,16 @@ services:
       # Credenciales: ruta fija dentro del contenedor, el archivo viene del volumen
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service_account.json
       # CORS: configurar en .env raíz
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://interfaz-asientos:3000}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3003,http://interfaz-asientos:3000}
+      # Versión instalada (inyectada por el instalador / GitHub Action)
+      - AIWAF_VERSION=${AIWAF_VERSION:-0.0.0-dev}
+      # URL del JSON con la última versión publicada (default = Cloudflare Pages oficial)
+      - AIWAF_LATEST_VERSION_URL=${AIWAF_LATEST_VERSION_URL:-https://aiwaf-releases.pages.dev/latest.json}
+      # Webhook Discord para feedback (configurado por el instalador)
+      - FEEDBACK_WEBHOOK_URL=${FEEDBACK_WEBHOOK_URL:-}
+      # Identificación de la gestoría — aparece en cada feedback
+      - AIWAF_GESTORIA_NIF=${AIWAF_GESTORIA_NIF:-}
+      - AIWAF_GESTORIA_NOMBRE=${AIWAF_GESTORIA_NOMBRE:-}
     networks:
       - asientos-network
     restart: unless-stopped
@@ -42,12 +56,13 @@ services:
   # redirige /api/* a pipeline-api:8000 dentro de la red Docker.
   # Cambiar la IP del servidor NO requiere reconstruir esta imagen.
   interfaz:
+    image: ${AIWAF_INTERFAZ_IMAGE:-aiwaf-interfaz:local}
     build:
       context: ./interfaz-asientos-automatizados
       dockerfile: Dockerfile
     container_name: interfaz-asientos
     ports:
-      - "3000:3000"
+      - "3003:3000"
     depends_on:
       pipeline-api:
         condition: service_healthy

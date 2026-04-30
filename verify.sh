@@ -26,17 +26,17 @@ echo -e "${CYAN}============================================================${NC
 echo ""
 
 # --- API backend ---
-if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
-    check_ok "API activa en http://localhost:8000"
+if curl -sf http://localhost:8003/health > /dev/null 2>&1; then
+    check_ok "API activa en http://localhost:8003"
 else
-    check_fail "API no responde en http://localhost:8000/health — ejecuta: docker compose up -d"
+    check_fail "API no responde en http://localhost:8003/health — ejecuta: docker compose up -d"
 fi
 
 # --- Frontend ---
-if curl -sf http://localhost:3000 > /dev/null 2>&1; then
-    check_ok "Interfaz activa en http://localhost:3000"
+if curl -sf http://localhost:3003 > /dev/null 2>&1; then
+    check_ok "Interfaz activa en http://localhost:3003"
 else
-    check_fail "Interfaz no responde en http://localhost:3000 — ejecuta: docker compose up -d"
+    check_fail "Interfaz no responde en http://localhost:3003 — ejecuta: docker compose up -d"
 fi
 
 # --- Portainer ---
@@ -133,6 +133,6 @@ elif [ "$WARN_COUNT" -gt 0 ]; then
     exit 0
 else
     echo -e "${GREEN}  Todo en orden. El sistema esta listo para usar.${NC}"
-    echo -e "${CYAN}  Abre http://localhost:3000 en el navegador.${NC}"
+    echo -e "${CYAN}  Abre http://localhost:3003 en el navegador.${NC}"
     exit 0
 fi

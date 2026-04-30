@@ -15,9 +15,13 @@ import os
 import pathlib
 import shutil
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+import urllib.request
+import urllib.error
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +30,20 @@ from pydantic import BaseModel
 from urllib.parse import quote
 
 from src.config import settings
+
+# Versión inyectada en build (.env.docker o ENV en docker-compose)
+APP_VERSION = os.getenv("AIWAF_VERSION", "0.0.0-dev")
+LATEST_VERSION_URL = os.getenv(
+    "AIWAF_LATEST_VERSION_URL",
+    "https://aiwaf-releases.pages.dev/latest.json",
+)
+FEEDBACK_WEBHOOK_URL = os.getenv("FEEDBACK_WEBHOOK_URL", "").strip()
+GESTORIA_NIF = os.getenv("AIWAF_GESTORIA_NIF", "")
+GESTORIA_NOMBRE = os.getenv("AIWAF_GESTORIA_NOMBRE", "")
+
+# Lock de pipeline persistente en disco (sobrevive reinicios).
+# Si mtime > LOCK_STALE_SECONDS, se considera huérfano y se libera.
+LOCK_STALE_SECONDS = 30 * 60  # 30 minutos
 
 logger = logging.getLogger("pipeline.api")
 
@@ -38,7 +56,7 @@ app = FastAPI(
 # CORS para permitir conexiones desde la interfaz Next.js
 # En producción, restringir a origins específicos via variable de entorno
 allowed_origins = os.getenv(
-    "ALLOWED_ORIGINS", "http://localhost:3000"
+    "ALLOWED_ORIGINS", "http://localhost:3003"
 ).split(",")
 
 app.add_middleware(
@@ -513,8 +531,8 @@ def get_stats():
                         stats["by_user_action"]["approved"] += 1
                     elif action.get("action") == "reject":
                         stats["by_user_action"]["rejected"] += 1
-            except Exception:
-                pass
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("[stats] Error leyendo action_log de %s: %s", doc_id, exc)
 
     _stats_cache["data"] = stats
     _stats_cache["ts"] = now
@@ -568,10 +586,97 @@ def get_invoice_file(doc_id: str):
 
 
 # ──────────────────────────────────────────────────────────
-# Pipeline lock (module-level)
+# Pipeline lock (persistido en disco) + cancel flag
 # ──────────────────────────────────────────────────────────
 
-_pipeline_lock = False
+def _lock_path() -> Path:
+    return Path(settings().output_path) / ".pipeline_lock"
+
+
+def _cancel_path() -> Path:
+    return Path(settings().output_path) / ".pipeline_cancel"
+
+
+def is_pipeline_locked() -> bool:
+    """
+    True si hay un pipeline corriendo. Si el lock es viejo (>30min) lo libera
+    automáticamente — protege contra crashes que dejen el lock pegado.
+    """
+    lock = _lock_path()
+    if not lock.exists():
+        return False
+    try:
+        age = time.time() - lock.stat().st_mtime
+        if age > LOCK_STALE_SECONDS:
+            logger.warning(
+                "[pipeline-lock] Lock huérfano (%.0fs) — liberando automáticamente", age
+            )
+            lock.unlink(missing_ok=True)
+            return False
+    except OSError as exc:
+        logger.error("[pipeline-lock] No se puede inspeccionar el lock: %s", exc)
+        return False
+    return True
+
+
+def acquire_pipeline_lock() -> bool:
+    """Crea el fichero de lock. Devuelve False si ya existía y está vivo."""
+    if is_pipeline_locked():
+        return False
+    lock = _lock_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(
+            json.dumps({"acquired_at": datetime.now(timezone.utc).isoformat(), "pid": os.getpid()}),
+            encoding="utf-8",
+        )
+        # Limpiar flag de cancelación previa
+        _cancel_path().unlink(missing_ok=True)
+        return True
+    except OSError as exc:
+        logger.error("[pipeline-lock] No se pudo crear el lock: %s", exc)
+        return False
+
+
+def release_pipeline_lock() -> None:
+    try:
+        _lock_path().unlink(missing_ok=True)
+        _cancel_path().unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("[pipeline-lock] Error liberando lock: %s", exc)
+
+
+def is_cancel_requested() -> bool:
+    return _cancel_path().exists()
+
+
+@app.on_event("startup")
+def _recover_stale_pipeline_state() -> None:
+    """
+    Al arrancar el contenedor, si quedó un lock huérfano + status 'running',
+    los marcamos como interrumpidos para que la UI no se quede esperando.
+    """
+    try:
+        cfg = settings()
+        status_path = Path(cfg.output_path) / "pipeline_status.json"
+        if not status_path.exists():
+            _lock_path().unlink(missing_ok=True)
+            _cancel_path().unlink(missing_ok=True)
+            return
+
+        if not is_pipeline_locked():
+            with status_path.open("r", encoding="utf-8") as f:
+                status = json.load(f)
+            if status.get("status") == "running":
+                logger.warning("[startup] Pipeline 'running' sin lock vivo → marcando como interrumpido")
+                status["status"] = "error"
+                status["error_message"] = "Procesamiento interrumpido por reinicio del sistema"
+                status["completed_at"] = datetime.now(timezone.utc).isoformat()
+                with status_path.open("w", encoding="utf-8") as f:
+                    json.dump(status, f, indent=2)
+        _cancel_path().unlink(missing_ok=True)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("[startup] Error en recovery de pipeline: %s", exc, exc_info=True)
 
 
 # ──────────────────────────────────────────────────────────
@@ -711,8 +816,7 @@ def pipeline_status():
 @app.post("/api/pipeline/run")
 async def run_pipeline_endpoint():
     """Launch pipeline processing in background."""
-    global _pipeline_lock
-    if _pipeline_lock:
+    if not acquire_pipeline_lock():
         raise HTTPException(status_code=409, detail="Pipeline already running")
 
     cfg = settings()
@@ -733,6 +837,7 @@ async def run_pipeline_endpoint():
             total_files += len(files)
 
     if total_files == 0:
+        release_pipeline_lock()
         return {"status": "started", "total": 0}
 
     # Write initial status
@@ -754,10 +859,7 @@ async def run_pipeline_endpoint():
         logger.error(f"Error writing pipeline status: {e}", exc_info=True)
 
     # Launch in background — use run_in_executor to isolate from event loop
-    _pipeline_lock = True
-
     def _run_pipeline_sync():
-        global _pipeline_lock
         try:
             # Inicializar logging del pipeline (JSONL + console)
             # Necesario porque la ruta API no pasa por pipeline.main()
@@ -779,6 +881,10 @@ async def run_pipeline_endpoint():
             logger.info("[pipeline] File manifest written: %d files", len(manifest["files"]))
 
             for book_id, file_paths in book_file_map.items():
+                if is_cancel_requested():
+                    logger.warning("[pipeline] Cancelación solicitada — abortando libros pendientes")
+                    break
+
                 sandbox_folder = os.path.join(sandbox_base, BOOK_CONFIGS[book_id]["sandbox_folder"])
                 os.makedirs(sandbox_folder, exist_ok=True)
 
@@ -800,12 +906,16 @@ async def run_pipeline_endpoint():
             try:
                 with open(status_path, "r", encoding="utf-8") as f:
                     status = json.load(f)
-                status["status"] = "completed"
+                if is_cancel_requested():
+                    status["status"] = "cancelled"
+                    status["error_message"] = "Procesamiento cancelado por el usuario"
+                else:
+                    status["status"] = "completed"
                 status["completed_at"] = datetime.now(timezone.utc).isoformat()
                 with open(status_path, "w", encoding="utf-8") as f:
                     json.dump(status, f, indent=2)
-            except Exception:
-                pass
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.error("Pipeline background: error escribiendo status final: %s", exc, exc_info=True)
         except Exception as e:
             logger.error(f"Pipeline background task failed: {e}", exc_info=True)
             try:
@@ -816,10 +926,10 @@ async def run_pipeline_endpoint():
                 status["completed_at"] = datetime.now(timezone.utc).isoformat()
                 with open(status_path, "w", encoding="utf-8") as f:
                     json.dump(status, f, indent=2)
-            except Exception:
-                pass
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.error("Pipeline background: error escribiendo status de error: %s", exc, exc_info=True)
         finally:
-            _pipeline_lock = False
+            release_pipeline_lock()
 
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, _run_pipeline_sync)
@@ -843,9 +953,7 @@ def reset_pipeline():
     2. Limpia artefactos de output/
     3. Registra evento en audit log (trazabilidad)
     """
-    global _pipeline_lock
-
-    if _pipeline_lock:
+    if is_pipeline_locked():
         raise HTTPException(status_code=409, detail="Pipeline en ejecución. No se puede resetear.")
 
     cfg = settings()
@@ -967,6 +1075,271 @@ def list_clients():
         with open(clients_path, encoding="utf-8") as f:
             clients = json.load(f)
         return {"clients": clients}
-    except Exception as e:
+    except (OSError, json.JSONDecodeError) as e:
         logger.error(f"Error reading clients file: {e}", exc_info=True)
         return {"clients": []}
+
+
+# ──────────────────────────────────────────────────────────
+# Cancelación de pipeline en curso
+# ──────────────────────────────────────────────────────────
+
+@app.post("/api/pipeline/cancel")
+def cancel_pipeline():
+    """
+    Solicita la cancelación del pipeline en curso. La cancelación es cooperativa:
+    deja que la factura actual termine y aborta la siguiente.
+    """
+    if not is_pipeline_locked():
+        raise HTTPException(status_code=409, detail="No hay pipeline en ejecución")
+    try:
+        _cancel_path().parent.mkdir(parents=True, exist_ok=True)
+        _cancel_path().write_text(
+            json.dumps({"requested_at": datetime.now(timezone.utc).isoformat()}),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.error("[cancel] No se pudo escribir flag de cancelación: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="No se pudo solicitar la cancelación")
+    return {"status": "cancel_requested"}
+
+
+# ──────────────────────────────────────────────────────────
+# Logs recientes (para tab de Diagnóstico en UI)
+# ──────────────────────────────────────────────────────────
+
+@app.get("/api/logs/recent")
+def get_recent_logs(n: int = 200):
+    """
+    Devuelve las últimas N líneas del log estructurado del pipeline.
+    Cada línea es un objeto JSON. Se acotan parámetros para evitar abusos.
+    """
+    n = max(1, min(n, 1000))
+    cfg = settings()
+    log_path = Path(cfg.logs_path) / "pipeline.jsonl"
+    if not log_path.exists():
+        return {"lines": [], "total": 0}
+
+    try:
+        # Leemos las últimas N líneas con deque (memoria O(N))
+        with log_path.open("r", encoding="utf-8") as f:
+            tail = deque(f, maxlen=n)
+        parsed = []
+        for raw in tail:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                parsed.append(json.loads(raw))
+            except json.JSONDecodeError:
+                parsed.append({"raw": raw})
+        return {"lines": parsed, "total": len(parsed)}
+    except OSError as exc:
+        logger.error("[logs] Error leyendo %s: %s", log_path, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="No se pudieron leer los logs")
+
+
+# ──────────────────────────────────────────────────────────
+# Versionado y comprobación de actualización
+# ──────────────────────────────────────────────────────────
+
+_latest_version_cache: dict = {}
+_LATEST_VERSION_TTL = 3600  # 1h
+
+
+@app.get("/api/system/version")
+def get_system_version():
+    """Versión instalada del sistema (inyectada en build via env)."""
+    return {
+        "version": APP_VERSION,
+        "gestoria_nif": GESTORIA_NIF,
+        "gestoria_nombre": GESTORIA_NOMBRE,
+    }
+
+
+@app.get("/api/system/latest-version")
+def get_latest_version():
+    """
+    Consulta el JSON estático con la versión más reciente publicada.
+    Cacheado 1h para evitar martillear el endpoint.
+    """
+    now = time.time()
+    if _latest_version_cache and (now - _latest_version_cache.get("ts", 0)) < _LATEST_VERSION_TTL:
+        return _latest_version_cache["data"]
+
+    try:
+        req = urllib.request.Request(
+            LATEST_VERSION_URL,
+            headers={"User-Agent": f"AIWAF/{APP_VERSION}"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, OSError) as exc:
+        logger.warning("[system] No se pudo obtener latest-version: %s", exc)
+        return {
+            "version": None,
+            "update_available": False,
+            "current": APP_VERSION,
+            "error": "No se pudo contactar con el servidor de versiones",
+        }
+
+    latest = data.get("version")
+    update_available = bool(latest and latest != APP_VERSION)
+    payload = {
+        "version": latest,
+        "update_available": update_available,
+        "current": APP_VERSION,
+        "changelog": data.get("changelog", ""),
+        "released_at": data.get("released_at"),
+    }
+    _latest_version_cache["data"] = payload
+    _latest_version_cache["ts"] = now
+    return payload
+
+
+# ──────────────────────────────────────────────────────────
+# Feedback: "Enviar Problema o Recomendación" → webhook Discord
+# ──────────────────────────────────────────────────────────
+
+class FeedbackPayload(BaseModel):
+    tipo: str  # "problema" | "recomendacion" | "pregunta"
+    descripcion: str
+    incluir_logs: bool = False
+    navegador: Optional[str] = None
+
+
+_FEEDBACK_TIPOS = {"problema", "recomendacion", "pregunta"}
+_FEEDBACK_COLORS = {
+    "problema": 0xE74C3C,       # rojo
+    "recomendacion": 0xF1C40F,  # amarillo
+    "pregunta": 0x3498DB,       # azul
+}
+_FEEDBACK_LABELS = {
+    "problema": "Problema",
+    "recomendacion": "Recomendación",
+    "pregunta": "Pregunta",
+}
+
+
+def _persist_feedback(record: dict) -> None:
+    """Guarda copia local del feedback en data/feedback/feedback.jsonl."""
+    cfg = settings()
+    feedback_dir = Path(cfg.output_path).parent / "feedback"
+    feedback_dir.mkdir(parents=True, exist_ok=True)
+    target = feedback_dir / "feedback.jsonl"
+    with target.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _post_to_discord(payload: dict) -> Optional[str]:
+    """Envía el feedback como Discord embed. Devuelve mensaje de error si falla."""
+    if not FEEDBACK_WEBHOOK_URL:
+        return "FEEDBACK_WEBHOOK_URL no configurada"
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            FEEDBACK_WEBHOOK_URL,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"AIWAF/{APP_VERSION}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status >= 300:
+                return f"Webhook respondió HTTP {resp.status}"
+        return None
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+        return str(exc)
+
+
+@app.post("/api/feedback")
+def submit_feedback(payload: FeedbackPayload):
+    """
+    Recibe feedback del contable y lo reenvía al canal Discord configurado.
+    Persiste copia local en data/feedback/feedback.jsonl.
+    """
+    tipo = payload.tipo.strip().lower()
+    if tipo not in _FEEDBACK_TIPOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tipo inválido. Permitidos: {sorted(_FEEDBACK_TIPOS)}",
+        )
+    descripcion = payload.descripcion.strip()
+    if not descripcion or len(descripcion) > 4000:
+        raise HTTPException(status_code=400, detail="La descripción debe tener entre 1 y 4000 caracteres")
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    log_excerpt: list[str] = []
+    if payload.incluir_logs:
+        cfg = settings()
+        log_path = Path(cfg.logs_path) / "pipeline.jsonl"
+        if log_path.exists():
+            try:
+                with log_path.open("r", encoding="utf-8") as f:
+                    log_excerpt = [line.rstrip() for line in deque(f, maxlen=50)]
+            except OSError as exc:
+                logger.warning("[feedback] No se pudo leer log: %s", exc)
+
+    record = {
+        "tipo": tipo,
+        "descripcion": descripcion,
+        "navegador": payload.navegador,
+        "version": APP_VERSION,
+        "gestoria_nif": GESTORIA_NIF,
+        "gestoria_nombre": GESTORIA_NOMBRE,
+        "timestamp": timestamp,
+        "log_excerpt": log_excerpt if payload.incluir_logs else None,
+    }
+
+    # Construir embed Discord
+    fields = [
+        {"name": "Versión", "value": APP_VERSION, "inline": True},
+    ]
+    if GESTORIA_NOMBRE or GESTORIA_NIF:
+        fields.append({
+            "name": "Gestoría",
+            "value": f"{GESTORIA_NOMBRE} ({GESTORIA_NIF})".strip() or "—",
+            "inline": True,
+        })
+    if payload.navegador:
+        fields.append({"name": "Navegador", "value": payload.navegador[:200], "inline": True})
+
+    discord_payload = {
+        "embeds": [{
+            "title": f"AIWAF · {_FEEDBACK_LABELS[tipo]}",
+            "description": descripcion[:1900],
+            "color": _FEEDBACK_COLORS[tipo],
+            "fields": fields,
+            "timestamp": timestamp,
+        }]
+    }
+    if log_excerpt:
+        # Discord limita a 2000 chars por content; lo metemos en un segundo embed
+        joined = "\n".join(log_excerpt)[-1800:]
+        discord_payload["embeds"].append({
+            "title": "Últimas 50 líneas de log",
+            "description": f"```\n{joined}\n```",
+            "color": 0x95A5A6,
+        })
+
+    err = _post_to_discord(discord_payload)
+    delivered = err is None
+
+    try:
+        record["delivered_to_discord"] = delivered
+        record["delivery_error"] = err
+        _persist_feedback(record)
+    except OSError as exc:
+        logger.error("[feedback] No se pudo persistir feedback localmente: %s", exc, exc_info=True)
+
+    if not delivered:
+        logger.warning("[feedback] No se entregó a Discord: %s", err)
+
+    return {
+        "status": "ok",
+        "delivered": delivered,
+        "delivery_error": err,
+    }

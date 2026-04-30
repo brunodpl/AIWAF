@@ -120,7 +120,7 @@ if (-not (Test-Path ".env")) {
     Add-Content ".env" ""
     Add-Content ".env" "# Origenes CORS permitidos (separados por coma)"
     Add-Content ".env" "# Para red local: agregar http://192.168.x.x:3000"
-    Add-Content ".env" "ALLOWED_ORIGINS=http://localhost:3000,http://interfaz-asientos:3000"
+    Add-Content ".env" "ALLOWED_ORIGINS=http://localhost:3003,http://interfaz-asientos:3000"
     Write-Host "      OK: .env creado" -ForegroundColor Green
 } else {
     Write-Host "      OK: .env ya existe, no se sobreescribe" -ForegroundColor Green
@@ -191,7 +191,7 @@ $ready   = $false
 
 while ($waited -lt $maxWait) {
     try {
-        $response = Invoke-WebRequest -Uri "http://localhost:8000/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri "http://localhost:8003/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
         if ($response.StatusCode -eq 200) {
             $ready = $true
             break
@@ -207,7 +207,7 @@ if (-not $ready) {
     Write-Host "      AVISO: El sistema no responde tras ${maxWait}s. Comprueba los logs:" -ForegroundColor Yellow
     Write-Host "        docker compose logs pipeline-api" -ForegroundColor Yellow
 } else {
-    Write-Host "      OK: API activa en http://localhost:8000/health" -ForegroundColor Green
+    Write-Host "      OK: API activa en http://localhost:8003/health" -ForegroundColor Green
 }
 
 # ---------------------------------------------------------------
@@ -243,9 +243,9 @@ Write-Host "============================================================" -Foreg
 Write-Host "  Sistema instalado correctamente" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Interfaz de revision:    http://localhost:3000" -ForegroundColor Cyan
+Write-Host "  Interfaz de revision:    http://localhost:3003" -ForegroundColor Cyan
 Write-Host "  Gestion de contenedores: http://localhost:9000  (Portainer)" -ForegroundColor Cyan
-Write-Host "  API del pipeline:        http://localhost:8000" -ForegroundColor Cyan
+Write-Host "  API del pipeline:        http://localhost:8003" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Comandos utiles:" -ForegroundColor White
 Write-Host "    make start       -> iniciar servicios" -ForegroundColor Gray
@@ -254,5 +254,5 @@ Write-Host "    make logs        -> ver logs en tiempo real" -ForegroundColor Gr
 Write-Host "    make status      -> estado de los contenedores" -ForegroundColor Gray
 Write-Host "    .\verify.ps1     -> verificar que todo funciona" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  SIGUIENTE PASO: Abre http://localhost:3000 en el navegador" -ForegroundColor Yellow
+Write-Host "  SIGUIENTE PASO: Abre http://localhost:3003 en el navegador" -ForegroundColor Yellow
 Write-Host ""

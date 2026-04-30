@@ -8,6 +8,8 @@ import { BooksManager } from "@/components/books-manager";
 import { PipelineProgress } from "@/components/pipeline-progress";
 import { InvoiceReviewer } from "@/components/invoice-reviewer";
 import { ExportStage } from "@/components/export-stage";
+import { FeedbackButton } from "@/components/feedback-button";
+import { UpdateBanner } from "@/components/update-banner";
 import { ApprovedInvoiceData, FiscalLine, Libro } from "@/lib/types";
 import { resetPipeline, fetchInvoices } from "@/lib/api";
 
@@ -136,6 +138,7 @@ export default function Home() {
 
   return (
     <div className="w-full h-screen bg-slate-50 overflow-hidden flex flex-col">
+      <UpdateBanner />
       <div className="flex-shrink-0 px-6 py-2 bg-white border-b border-slate-100">
         <StageIndicator
           stage={stage}
@@ -154,6 +157,7 @@ export default function Home() {
           <PipelineProgress
             onComplete={() => setStage("review")}
             onBack={() => setStage("books")}
+            onJumpToReview={() => setStage("review")}
           />
         )}
 
@@ -175,6 +179,7 @@ export default function Home() {
         )}
       </div>
 
+      <FeedbackButton />
       <Toaster position="bottom-right" closeButton richColors />
     </div>
   );

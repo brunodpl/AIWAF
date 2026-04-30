@@ -107,7 +107,7 @@ CREDENTIALS_PATH=$ABSOLUTE_CREDENTIALS
 
 # Origenes CORS permitidos (separados por coma)
 # Para red local: añade http://192.168.x.x:3000
-ALLOWED_ORIGINS=http://localhost:3000,http://interfaz-asientos:3000
+ALLOWED_ORIGINS=http://localhost:3003,http://interfaz-asientos:3000
 EOF
     echo -e "${GREEN}      OK: .env creado${NC}"
 else
@@ -175,7 +175,7 @@ WAITED=0
 READY=false
 
 while [ "$WAITED" -lt "$MAX_WAIT" ]; do
-    if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+    if curl -sf http://localhost:8003/health > /dev/null 2>&1; then
         READY=true
         break
     fi
@@ -188,7 +188,7 @@ if [ "$READY" = false ]; then
     echo -e "${YELLOW}      AVISO: El sistema no responde tras ${MAX_WAIT}s. Comprueba los logs:${NC}"
     echo "        docker compose logs pipeline-api"
 else
-    echo -e "${GREEN}      OK: API activa en http://localhost:8000/health${NC}"
+    echo -e "${GREEN}      OK: API activa en http://localhost:8003/health${NC}"
 fi
 
 # ---------------------------------------------------------------
@@ -237,9 +237,9 @@ echo -e "${GREEN}============================================================${N
 echo -e "${GREEN}  Sistema instalado correctamente${NC}"
 echo -e "${GREEN}============================================================${NC}"
 echo ""
-echo -e "  ${CYAN}Interfaz de revision:    http://localhost:3000${NC}"
+echo -e "  ${CYAN}Interfaz de revision:    http://localhost:3003${NC}"
 echo -e "  ${CYAN}Gestion de contenedores: http://localhost:9000  (Portainer)${NC}"
-echo -e "  ${CYAN}API del pipeline:        http://localhost:8000${NC}"
+echo -e "  ${CYAN}API del pipeline:        http://localhost:8003${NC}"
 echo ""
 echo "  Comandos utiles:"
 echo "    make start       — iniciar servicios"
@@ -248,5 +248,5 @@ echo "    make logs        — ver logs en tiempo real"
 echo "    make status      — estado de los contenedores"
 echo "    bash verify.sh   — verificar que todo funciona"
 echo ""
-echo -e "  ${YELLOW}SIGUIENTE PASO: Abre http://localhost:3000 en el navegador${NC}"
+echo -e "  ${YELLOW}SIGUIENTE PASO: Abre http://localhost:3003 en el navegador${NC}"
 echo ""

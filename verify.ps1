@@ -20,26 +20,26 @@ Write-Host ""
 
 # --- API backend ---
 try {
-    $res = Invoke-WebRequest -Uri "http://localhost:8000/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    $res = Invoke-WebRequest -Uri "http://localhost:8003/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
     if ($res.StatusCode -eq 200) {
-        Check-OK "API activa en http://localhost:8000"
+        Check-OK "API activa en http://localhost:8003"
     } else {
         Check-FAIL "API responde con status $($res.StatusCode)"
     }
 } catch {
-    Check-FAIL "API no responde en http://localhost:8000/health — ejecuta: docker compose up -d"
+    Check-FAIL "API no responde en http://localhost:8003/health — ejecuta: docker compose up -d"
 }
 
 # --- Frontend ---
 try {
-    $res = Invoke-WebRequest -Uri "http://localhost:3000" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    $res = Invoke-WebRequest -Uri "http://localhost:3003" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
     if ($res.StatusCode -eq 200) {
-        Check-OK "Interfaz activa en http://localhost:3000"
+        Check-OK "Interfaz activa en http://localhost:3003"
     } else {
         Check-FAIL "Interfaz responde con status $($res.StatusCode)"
     }
 } catch {
-    Check-FAIL "Interfaz no responde en http://localhost:3000 — ejecuta: docker compose up -d"
+    Check-FAIL "Interfaz no responde en http://localhost:3003 — ejecuta: docker compose up -d"
 }
 
 # --- Portainer ---
@@ -105,6 +105,35 @@ if (Test-Path $clientsFile) {
     Check-WARN "data/clients.json no existe — el pipeline no podra resolver clientes destino"
 }
 
+# --- Versión instalada (endpoint /api/system/version) ---
+try {
+    $resp = Invoke-WebRequest -Uri "http://localhost:8003/api/system/version" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    $info = $resp.Content | ConvertFrom-Json
+    if ($info.version -and $info.version -ne "0.0.0-dev") {
+        Check-OK "Versión instalada: $($info.version)"
+    } else {
+        Check-WARN "Versión instalada: $($info.version) — define AIWAF_VERSION en docker-compose.yml para releases"
+    }
+    if ($info.gestoria_nombre) {
+        Check-OK "Gestoría identificada: $($info.gestoria_nombre)"
+    } else {
+        Check-WARN "AIWAF_GESTORIA_NOMBRE no configurado — los reportes de feedback no incluirán identificación"
+    }
+} catch {
+    Check-WARN "No se pudo leer /api/system/version (¿reinicia el contenedor tras configurar?)"
+}
+
+# --- Webhook feedback configurado ---
+$envRoot = ".env"
+if (Test-Path $envRoot) {
+    $webhookLine = (Get-Content $envRoot | Select-String "FEEDBACK_WEBHOOK_URL=") -replace "FEEDBACK_WEBHOOK_URL=", ""
+    if ($webhookLine -and $webhookLine.Trim() -ne "") {
+        Check-OK "Webhook de feedback configurado"
+    } else {
+        Check-WARN "FEEDBACK_WEBHOOK_URL vacío — los reportes solo se guardarán localmente"
+    }
+}
+
 # --- Maestros ---
 $maestros = @(
     "sistema-de-asientos-automatizado\data\maestros\maestro_clientes.yaml",
@@ -136,6 +165,6 @@ if ($fail -gt 0) {
     exit 0
 } else {
     Write-Host "  Todo en orden. El sistema esta listo para usar." -ForegroundColor Green
-    Write-Host "  Abre http://localhost:3000 en el navegador." -ForegroundColor Cyan
+    Write-Host "  Abre http://localhost:3003 en el navegador." -ForegroundColor Cyan
     exit 0
 }
