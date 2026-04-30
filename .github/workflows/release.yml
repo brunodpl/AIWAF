@@ -117,11 +117,11 @@ jobs:
           cat _release/latest.json
 
       - name: Deploy latest.json to Cloudflare Pages
-        if: ${{ CF_API_TOKEN != '' }}
+        if: ${{ env.CF_API_TOKEN != '' }}
         uses: cloudflare/pages-action@v1
         with:
-          apiToken: ${{ CF_API_TOKEN }}
-          accountId: ${{ CF_ACCOUNT_ID }}
+          apiToken: ${{ env.CF_API_TOKEN }}
+          accountId: ${{ env.CF_ACCOUNT_ID }}
           projectName: aiwaf-releases
           directory: _release
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
