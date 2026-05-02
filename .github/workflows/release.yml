@@ -113,12 +113,12 @@ jobs:
           if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
             PREV_TAG=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || echo "")
             if [ -n "$PREV_TAG" ]; then
-              CHANGELOG=$(git log --pretty=format:'- %s' "$PREV_TAG..v${VERSION}" | head -10)
+              CHANGELOG=$(git log --pretty=format:'- %s' --max-count=10 "$PREV_TAG..v${VERSION}")
             else
-              CHANGELOG=$(git log --pretty=format:'- %s' "v${VERSION}" | head -10)
+              CHANGELOG=$(git log --pretty=format:'- %s' --max-count=10 "v${VERSION}")
             fi
           else
-            CHANGELOG=$(git log --pretty=format:'- %s' HEAD | head -10)
+            CHANGELOG=$(git log --pretty=format:'- %s' --max-count=10 HEAD)
           fi
 
           cat > _release/latest.json <<EOF
