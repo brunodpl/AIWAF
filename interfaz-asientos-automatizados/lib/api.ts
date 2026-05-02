@@ -528,6 +528,31 @@ export async function fetchLatestVersion(): Promise<LatestVersion> {
 }
 
 /**
+ * Solicita la instalación de la última versión publicada.
+ * El backend escribe un flag que recoge una tarea programada de Windows
+ * que ejecuta `docker compose pull && up -d`.
+ */
+export interface UpdateRequestResponse {
+  status: "requested";
+  eta_seconds: number;
+  message: string;
+}
+
+export async function requestSystemUpdate(): Promise<UpdateRequestResponse> {
+  const response = await fetchWithTimeout(`${API_URL}/api/system/update`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    if (response.status === 409) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || "Pipeline en curso");
+    }
+    throw new Error(`No se pudo solicitar la actualización (${response.status})`);
+  }
+  return response.json();
+}
+
+/**
  * Submit feedback (Problema/Recomendación/Pregunta) — backend forwards to Discord.
  */
 export type FeedbackTipo = "problema" | "recomendacion" | "pregunta";

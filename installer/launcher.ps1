@@ -17,7 +17,7 @@
 
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('start', 'stop', 'status', 'update', 'register-autostart')]
+  [ValidateSet('start', 'stop', 'status', 'update', 'register-autostart', 'register-update-task')]
   [string]$Action
 )
 
@@ -60,6 +60,20 @@ function Register-Autostart {
   Write-Host "Tarea programada AIWAF-Autostart registrada."
 }
 
+function Register-UpdateTask {
+  $taskName = "AIWAF-Update"
+  $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSScriptRoot\update-task.ps1`""
+  # Cada 2 minutos a partir de 1 min después de registrar, indefinidamente
+  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 2)
+  $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+    -Settings $settings -RunLevel Highest -Force | Out-Null
+  Write-Host "Tarea programada AIWAF-Update registrada (intervalo 2 min)."
+}
+
 switch ($Action) {
   'start' {
     Ensure-DockerRunning
@@ -83,6 +97,10 @@ switch ($Action) {
   }
   'register-autostart' {
     Register-Autostart
+    exit 0
+  }
+  'register-update-task' {
+    Register-UpdateTask
     exit 0
   }
 }

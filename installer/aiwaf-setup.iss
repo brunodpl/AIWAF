@@ -415,6 +415,12 @@ begin
     Page.SetProgress(98, 100);
     RunPowerShellSilent(
       '& ''' + AppDir + '\installer\launcher.ps1'' -Action register-autostart');
+
+    // ---- Paso 6: Registrar tarea de actualizaciones (cada 2 min) ----
+    Page.SetText('Configurando actualizaciones automáticas...', '');
+    Page.SetProgress(99, 100);
+    RunPowerShellSilent(
+      '& ''' + AppDir + '\installer\launcher.ps1'' -Action register-update-task');
     Page.SetProgress(100, 100);
 
     Page.SetText('AIWAF está listo. Pulsa Siguiente para abrir la interfaz.', '');

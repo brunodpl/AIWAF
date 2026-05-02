@@ -1197,6 +1197,44 @@ def get_latest_version():
     return payload
 
 
+@app.post("/api/system/update")
+def request_system_update():
+    """
+    Crea el flag data/output/.update_request que la tarea programada
+    AIWAF-Update consume cada 2 min para ejecutar docker compose pull && up -d.
+    El backend NO ejecuta docker (corre dentro del propio contenedor).
+    """
+    output_dir = get_output_dir()
+    status_path = output_dir / "pipeline_status.json"
+    if status_path.exists():
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if status.get("state") == "running":
+                raise HTTPException(
+                    status_code=409,
+                    detail="No se puede actualizar mientras se procesan facturas. Espera a que termine el pipeline.",
+                )
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    flag_path = output_dir / ".update_request"
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        flag_path.write_text(
+            json.dumps({"requested_at": datetime.now(timezone.utc).isoformat()}),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.error("[system] No se pudo crear flag de update: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo solicitar la actualización")
+
+    return {
+        "status": "requested",
+        "eta_seconds": 120,
+        "message": "Actualización solicitada. La descarga e instalación tardará ~2-5 minutos.",
+    }
+
+
 # ──────────────────────────────────────────────────────────
 # Feedback: "Enviar Problema o Recomendación" → webhook Discord
 # ──────────────────────────────────────────────────────────

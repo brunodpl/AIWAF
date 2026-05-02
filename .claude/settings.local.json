@@ -62,7 +62,11 @@
       "Bash(git -C \"C:\\\\Users\\\\bruno\\\\Desktop\\\\despliegue-proyecto-horeca\" status --short)",
       "Bash(git -C \"C:\\\\Users\\\\bruno\\\\Desktop\\\\despliegue-proyecto-horeca\" add interfaz-asientos-automatizados/components/export-stage.tsx interfaz-asientos-automatizados/lib/csv.ts)",
       "Bash(git -C 'C:\\\\Users\\\\bruno\\\\Desktop\\\\despliegue-proyecto-horeca' commit -m ' *)",
-      "Bash(git -C \"C:\\\\Users\\\\bruno\\\\Desktop\\\\despliegue-proyecto-horeca\" push origin main)"
+      "Bash(git -C \"C:\\\\Users\\\\bruno\\\\Desktop\\\\despliegue-proyecto-horeca\" push origin main)",
+      "Bash(gh run *)",
+      "Bash(powershell -Command \"\\(Get-ScheduledTaskInfo -TaskName AIWAF-Update\\).LastRunTime\")",
+      "Read(//c/AIWAF/sistema-de-asientos-automatizado/logs/**)",
+      "PowerShell(Start-ScheduledTask -TaskName AIWAF-Update; Start-Sleep -Seconds 2; \\(Get-ScheduledTaskInfo -TaskName AIWAF-Update\\).LastRunTime)"
     ]
   }
 }
