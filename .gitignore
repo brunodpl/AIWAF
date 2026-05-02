@@ -22,5 +22,6 @@ Desktop.ini
 *.swp
 *~
 
-# Git worktrees
+# Git worktrees / [AI assistant] Code worktrees
 .worktrees/
+.[AI assistant]/worktrees/
