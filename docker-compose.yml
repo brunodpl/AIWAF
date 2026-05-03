@@ -82,14 +82,15 @@ services:
   # Vigila solo contenedores con label `com.centurylinklabs.watchtower.enable=true`.
   # Lee credenciales de pull desde ~/.docker/config.json (poblado por `docker login` que hace el instalador).
   watchtower:
-    image: containrrr/watchtower:1.7.1
+    image: containrrr/watchtower:latest
     container_name: aiwaf-watchtower
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Auth GHCR — el instalador hace `docker login ghcr.io` y deja el token en config.json.
-      # En Windows con Docker Desktop, USERPROFILE existe; en Linux, HOME existe.
-      - ${USERPROFILE:-${HOME}}/.docker/config.json:/config.json:ro
+      # Auth GHCR — el instalador escribe ./.docker/config.json con auth base64 explícito
+      # (no se puede reusar ~/.docker/config.json porque Docker Desktop en Windows usa
+      # credential helper, que un contenedor Linux no puede leer).
+      - ./.docker/config.json:/config.json:ro
     environment:
       - WATCHTOWER_LABEL_ENABLE=true
       - WATCHTOWER_CLEANUP=true
@@ -97,6 +98,9 @@ services:
       - WATCHTOWER_HTTP_API_UPDATE=true
       - WATCHTOWER_HTTP_API_PERIODIC_POLLS=false
       - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_HTTP_API_TOKEN:?WATCHTOWER_HTTP_API_TOKEN must be set in .env}
+      # Forzar versión moderna del cliente API. Docker Desktop 4.30+ requiere 1.44+;
+      # Watchtower mainline aún negocia 1.25 por defecto.
+      - DOCKER_API_VERSION=1.44
     networks:
       - asientos-network
 

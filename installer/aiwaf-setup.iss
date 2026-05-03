@@ -53,6 +53,7 @@ Source: "..\docker-compose.yml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Makefile"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\verify.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "launcher.ps1";   DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "write-docker-auth.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 ; Iconos y assets visuales (favicon usado por los accesos directos)
 Source: "assets\*"; DestDir: "{app}\installer\assets"; Flags: ignoreversion skipifsourcedoesntexist
 
@@ -431,14 +432,16 @@ begin
         mbInformation, MB_OK);
     end;
 
-    // ---- Paso 4b: docker login GHCR (necesario para que Watchtower y los pulls iniciales funcionen) ----
-    // Usamos --password directamente: el PAT ya está embebido en el .exe, esconderlo del
-    // proceso PowerShell no aporta seguridad real. PowerShell pipe a --password-stdin
-    // exigiría manejo cuidadoso de comillas y heredocs que no aporta valor aquí.
+    // ---- Paso 4b: docker login GHCR (host) + escribir config.json explícito para Watchtower ----
+    // - `docker login` deja el token en credential manager (Watchtower no puede leerlo).
+    // - El script write-docker-auth.ps1 escribe {app}\.docker\config.json con auth base64
+    //   plano, que Watchtower monta y usa para pullear de GHCR.
     Page.SetText('Conectando con el servidor de actualizaciones AIWAF...', '');
     Page.SetProgress(97, 100);
     RunPowerShellSilent(
       'docker login ghcr.io -u brunodpl --password ''{#GhcrPullToken}''');
+    RunPowerShellSilent(
+      '& ''' + AppDir + '\installer\write-docker-auth.ps1'' -Token ''{#GhcrPullToken}'' -ConfigDir ''' + AppDir + '\.docker''');
 
     // ---- Paso 5: Registrar autostart Windows ----
     Page.SetText('Configurando inicio automático con Windows...', '');
