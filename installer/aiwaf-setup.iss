@@ -11,6 +11,13 @@
 #define MyAppExeName    "AIWAF Iniciar"
 #define InstallDir      "C:\AIWAF"
 
+; PAT read-only (scope read:packages) para que el cliente pueda pullear de GHCR.
+; Inyectado por build.ps1 desde $env:AIWAF_GHCR_PULL_PAT. Si se omite (build de prueba),
+; el cliente fallará el primer pull — esto es intencional, evita publicar instaladores rotos.
+#ifndef GhcrPullToken
+  #define GhcrPullToken "MISSING_TOKEN"
+#endif
+
 [Setup]
 AppId={{8A4F2D7B-3C9E-4A1B-B5D2-7E8F9A0B1C2D}
 AppName={#MyAppName}
@@ -423,6 +430,15 @@ begin
         '  docker compose logs',
         mbInformation, MB_OK);
     end;
+
+    // ---- Paso 4b: docker login GHCR (necesario para que Watchtower y los pulls iniciales funcionen) ----
+    // Usamos --password directamente: el PAT ya está embebido en el .exe, esconderlo del
+    // proceso PowerShell no aporta seguridad real. PowerShell pipe a --password-stdin
+    // exigiría manejo cuidadoso de comillas y heredocs que no aporta valor aquí.
+    Page.SetText('Conectando con el servidor de actualizaciones AIWAF...', '');
+    Page.SetProgress(97, 100);
+    RunPowerShellSilent(
+      'docker login ghcr.io -u brunodpl --password ''{#GhcrPullToken}''');
 
     // ---- Paso 5: Registrar autostart Windows ----
     Page.SetText('Configurando inicio automático con Windows...', '');

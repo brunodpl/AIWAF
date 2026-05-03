@@ -20,7 +20,8 @@
 #>
 param(
   [Parameter(Mandatory = $true)] [string]$Version,
-  [string]$Webhook = $env:AIWAF_FEEDBACK_WEBHOOK
+  [string]$Webhook = $env:AIWAF_FEEDBACK_WEBHOOK,
+  [string]$GhcrPat  = $env:AIWAF_GHCR_PULL_PAT
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,11 +44,16 @@ if ($Webhook) {
   Write-Warning "No se proporcionó webhook. El feedback solo se guardará localmente."
 }
 
+# PAT read-only para pullear de GHCR. Sin esto, el cliente no puede actualizar.
+if (-not $GhcrPat) {
+  throw "Falta el PAT de GHCR. Define `$env:AIWAF_GHCR_PULL_PAT con un Personal Access Token (classic) con scope read:packages, o pasa -GhcrPat a este script."
+}
+
 # Pasar versión al .iss via /D
 $out = Join-Path (Split-Path -Parent $here) 'dist'
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 
-& $iscc /Q "/DMyAppVersion=$Version" $iss
+& $iscc /Q "/DMyAppVersion=$Version" "/DGhcrPullToken=$GhcrPat" $iss
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup falló con código $LASTEXITCODE" }
 
 $exe = Join-Path $out "aiwaf-setup-$Version.exe"
