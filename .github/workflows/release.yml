@@ -88,6 +88,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/aiwaf-interfaz:${{ steps.version.outputs.value }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/aiwaf-interfaz:latest
+          build-args: |
+            AIWAF_VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha,scope=interfaz
           cache-to: type=gha,scope=interfaz,mode=max
 
