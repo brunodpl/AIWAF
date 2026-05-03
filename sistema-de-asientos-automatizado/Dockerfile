@@ -29,5 +29,9 @@ EXPOSE 8000
 # Ejecutar como usuario no-root
 USER app
 
+# Versión inyectada por la GitHub Action en build time. Default 0.0.0-dev para builds locales.
+ARG AIWAF_VERSION=0.0.0-dev
+ENV AIWAF_VERSION=${AIWAF_VERSION}
+
 # Comando por defecto: iniciar API server
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
