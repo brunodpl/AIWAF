@@ -46,7 +46,6 @@ Source: "..\docker-compose.yml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Makefile"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\verify.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "launcher.ps1";   DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "update-task.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 ; Iconos y assets visuales (favicon usado por los accesos directos)
 Source: "assets\*"; DestDir: "{app}\installer\assets"; Flags: ignoreversion skipifsourcedoesntexist
 
@@ -427,15 +426,9 @@ begin
 
     // ---- Paso 5: Registrar autostart Windows ----
     Page.SetText('Configurando inicio automático con Windows...', '');
-    Page.SetProgress(98, 100);
-    RunPowerShellSilent(
-      '& ''' + AppDir + '\installer\launcher.ps1'' -Action register-autostart');
-
-    // ---- Paso 6: Registrar tarea de actualizaciones (cada 2 min) ----
-    Page.SetText('Configurando actualizaciones automáticas...', '');
     Page.SetProgress(99, 100);
     RunPowerShellSilent(
-      '& ''' + AppDir + '\installer\launcher.ps1'' -Action register-update-task');
+      '& ''' + AppDir + '\installer\launcher.ps1'' -Action register-autostart');
     Page.SetProgress(100, 100);
 
     Page.SetText('AIWAF está listo. Pulsa Siguiente para abrir la interfaz.', '');

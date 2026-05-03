@@ -6,18 +6,17 @@
   start              — arranca contenedores con docker compose up -d
   stop               — para contenedores con docker compose stop
   status             — docker compose ps
-  update             — descarga última imagen GHCR y reinicia
   register-autostart — registra la tarea programada que arranca AIWAF al iniciar Windows
 
 .NOTES
-  El primer arranque (build + up + espera de salud) lo hace el instalador
-  directamente desde aiwaf-setup.iss con barra de progreso visible. Este
-  script ya no expone "first-run" — sólo gestiona ciclo de vida posterior.
+  Las actualizaciones las maneja Watchtower (servicio del docker-compose).
+  El backend dispara updates on-demand via su HTTP API; este launcher ya no
+  participa en el flujo de actualización.
 #>
 
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('start', 'stop', 'status', 'update', 'register-autostart', 'register-update-task')]
+  [ValidateSet('start', 'stop', 'status', 'register-autostart')]
   [string]$Action
 )
 
@@ -60,20 +59,6 @@ function Register-Autostart {
   Write-Host "Tarea programada AIWAF-Autostart registrada."
 }
 
-function Register-UpdateTask {
-  $taskName = "AIWAF-Update"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSScriptRoot\update-task.ps1`""
-  # Cada 2 minutos a partir de 1 min después de registrar, indefinidamente
-  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes 2)
-  $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-    -Settings $settings -RunLevel Highest -Force | Out-Null
-  Write-Host "Tarea programada AIWAF-Update registrada (intervalo 2 min)."
-}
-
 switch ($Action) {
   'start' {
     Ensure-DockerRunning
@@ -88,19 +73,8 @@ switch ($Action) {
     docker compose ps
     exit $LASTEXITCODE
   }
-  'update' {
-    Ensure-DockerRunning
-    docker compose pull
-    if ($LASTEXITCODE -ne 0) { throw "docker compose pull falló: $LASTEXITCODE" }
-    docker compose up -d
-    exit $LASTEXITCODE
-  }
   'register-autostart' {
     Register-Autostart
-    exit 0
-  }
-  'register-update-task' {
-    Register-UpdateTask
     exit 0
   }
 }
