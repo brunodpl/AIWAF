@@ -236,7 +236,6 @@ begin
     '# Generado automaticamente por aiwaf-setup' + #13#10 +
     'CREDENTIALS_PATH=' + CredentialsDest + #13#10 +
     'ALLOWED_ORIGINS=' + AllowedOrigins + #13#10 +
-    'AIWAF_VERSION=' + Version + #13#10 +
     'AIWAF_GESTORIA_NIF=' + GestoriaNif + #13#10 +
     'AIWAF_GESTORIA_NOMBRE=' + GestoriaNombre + #13#10 +
     'FEEDBACK_WEBHOOK_URL=' + WebhookUrl + #13#10 +

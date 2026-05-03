@@ -32,8 +32,8 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service_account.json
       # CORS: configurar en .env raíz
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3003,http://interfaz-asientos:3000}
-      # Versión instalada (inyectada por el instalador / GitHub Action)
-      - AIWAF_VERSION=${AIWAF_VERSION:-0.0.0-dev}
+      # AIWAF_VERSION ya viene como ENV embebido en la imagen (build-arg de la GH Action).
+      # No inyectarlo desde .env aquí — lo sobreescribiría con un valor obsoleto tras docker compose pull.
       # URL del JSON con la última versión publicada (default = Cloudflare Pages oficial)
       - AIWAF_LATEST_VERSION_URL=${AIWAF_LATEST_VERSION_URL:-https://aiwaf-releases.pages.dev/latest.json}
       # Webhook Discord para feedback (configurado por el instalador)
