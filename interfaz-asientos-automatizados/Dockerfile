@@ -26,6 +26,11 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Versión inyectada por la GitHub Action en build time.
+ARG AIWAF_VERSION=0.0.0-dev
+ENV AIWAF_VERSION=${AIWAF_VERSION}
+ENV NEXT_PUBLIC_AIWAF_VERSION=${AIWAF_VERSION}
+
 # Crear usuario non-root
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
