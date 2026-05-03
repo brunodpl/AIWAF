@@ -1,11 +1,11 @@
 services:
   # Pipeline API - Python backend
   pipeline-api:
-    image: ${AIWAF_PIPELINE_IMAGE:-aiwaf-pipeline:local}
-    build:
-      context: ./sistema-de-asientos-automatizado
-      dockerfile: Dockerfile
+    image: ${AIWAF_PIPELINE_IMAGE:-ghcr.io/brunodpl/aiwaf-pipeline:latest}
     container_name: pipeline-api
+    labels:
+      # Watchtower vigila este contenedor y lo reemplaza cuando hay imagen nueva.
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       # Host:Container — puerto del host elegido para no chocar con otros servicios
       # típicos (3000/8000 los usan muchas apps). El puerto interno sigue siendo 8000.
@@ -41,6 +41,9 @@ services:
       # Identificación de la gestoría — aparece en cada feedback
       - AIWAF_GESTORIA_NIF=${AIWAF_GESTORIA_NIF:-}
       - AIWAF_GESTORIA_NOMBRE=${AIWAF_GESTORIA_NOMBRE:-}
+      # Watchtower: el backend llama a este endpoint para forzar update on-demand
+      - WATCHTOWER_URL=${WATCHTOWER_URL:-http://watchtower:8080}
+      - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_HTTP_API_TOKEN:-}
     networks:
       - asientos-network
     restart: unless-stopped
@@ -56,11 +59,10 @@ services:
   # redirige /api/* a pipeline-api:8000 dentro de la red Docker.
   # Cambiar la IP del servidor NO requiere reconstruir esta imagen.
   interfaz:
-    image: ${AIWAF_INTERFAZ_IMAGE:-aiwaf-interfaz:local}
-    build:
-      context: ./interfaz-asientos-automatizados
-      dockerfile: Dockerfile
+    image: ${AIWAF_INTERFAZ_IMAGE:-ghcr.io/brunodpl/aiwaf-interfaz:latest}
     container_name: interfaz-asientos
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "3003:3000"
     depends_on:
@@ -75,6 +77,28 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # Watchtower — actualiza imágenes Docker on-demand cuando recibe POST en su HTTP API.
+  # Vigila solo contenedores con label `com.centurylinklabs.watchtower.enable=true`.
+  # Lee credenciales de pull desde ~/.docker/config.json (poblado por `docker login` que hace el instalador).
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    container_name: aiwaf-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Auth GHCR — el instalador hace `docker login ghcr.io` y deja el token en config.json.
+      # En Windows con Docker Desktop, USERPROFILE existe; en Linux, HOME existe.
+      - ${USERPROFILE:-${HOME}}/.docker/config.json:/config.json:ro
+    environment:
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_RESTARTING=true
+      - WATCHTOWER_HTTP_API_UPDATE=true
+      - WATCHTOWER_HTTP_API_PERIODIC_POLLS=false
+      - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_HTTP_API_TOKEN:?WATCHTOWER_HTTP_API_TOKEN must be set in .env}
+    networks:
+      - asientos-network
 
   # Portainer CE - Gestión visual de contenedores
   # Acceder en: http://localhost:9000

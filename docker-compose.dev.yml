@@ -1,0 +1,22 @@
+# Override de desarrollo. Reconstruye las imágenes localmente en lugar de pullear de GHCR.
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# El cliente NO recibe este archivo — el instalador empaqueta sólo docker-compose.yml,
+# así que los clientes siempre tiran de las imágenes publicadas en GHCR.
+services:
+  pipeline-api:
+    build:
+      context: ./sistema-de-asientos-automatizado
+      dockerfile: Dockerfile
+      args:
+        AIWAF_VERSION: 0.0.0-dev
+    image: aiwaf-pipeline:local
+
+  interfaz:
+    build:
+      context: ./interfaz-asientos-automatizados
+      dockerfile: Dockerfile
+      args:
+        AIWAF_VERSION: 0.0.0-dev
+    image: aiwaf-interfaz:local
