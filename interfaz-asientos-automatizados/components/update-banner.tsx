@@ -11,7 +11,7 @@ import {
 
 const DISMISS_KEY = "aiwaf_update_dismissed_for_version";
 const POLL_INTERVAL_MS = 5_000;
-const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 type State =
   | { phase: "idle" }
@@ -150,7 +150,7 @@ export function UpdateBanner() {
         {state.phase === "in_progress" && (
           <span className="flex items-center gap-1 text-emerald-800">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Actualizando… (puede tardar hasta 5 min, no cierres esta ventana)
+            Actualizando… (1-3 min, no cierres esta ventana)
           </span>
         )}
         {state.phase === "success" && (
