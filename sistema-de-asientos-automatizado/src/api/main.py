@@ -23,6 +23,8 @@ from typing import List, Optional, Tuple
 import urllib.request
 import urllib.error
 
+import httpx
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -1197,12 +1199,16 @@ def get_latest_version():
     return payload
 
 
+WATCHTOWER_URL = os.getenv("WATCHTOWER_URL", "http://watchtower:8080")
+WATCHTOWER_TOKEN = os.getenv("WATCHTOWER_HTTP_API_TOKEN", "")
+
+
 @app.post("/api/system/update")
 def request_system_update():
     """
-    Crea el flag data/output/.update_request que la tarea programada
-    AIWAF-Update consume cada 2 min para ejecutar docker compose pull && up -d.
-    El backend NO ejecuta docker (corre dentro del propio contenedor).
+    Dispara una actualización on-demand vía Watchtower HTTP API.
+    Watchtower hace pull de las imágenes con label
+    `com.centurylinklabs.watchtower.enable=true` y recrea los contenedores.
     """
     output_dir = get_output_dir()
     status_path = output_dir / "pipeline_status.json"
@@ -1217,21 +1223,36 @@ def request_system_update():
         except (json.JSONDecodeError, OSError):
             pass
 
-    flag_path = output_dir / ".update_request"
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        flag_path.write_text(
-            json.dumps({"requested_at": datetime.now(timezone.utc).isoformat()}),
-            encoding="utf-8",
+    if not WATCHTOWER_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="Servicio de actualizaciones no configurado (falta WATCHTOWER_HTTP_API_TOKEN).",
         )
-    except OSError as exc:
-        logger.error("[system] No se pudo crear flag de update: %s", exc)
-        raise HTTPException(status_code=500, detail="No se pudo solicitar la actualización")
+
+    try:
+        resp = httpx.post(
+            f"{WATCHTOWER_URL}/v1/update",
+            headers={"Authorization": f"Bearer {WATCHTOWER_TOKEN}"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+    except httpx.ConnectError as exc:
+        logger.error("[system] Watchtower unreachable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo contactar con el servicio de actualizaciones.",
+        )
+    except httpx.HTTPStatusError as exc:
+        logger.error("[system] Watchtower returned %s: %s", exc.response.status_code, exc.response.text)
+        raise HTTPException(
+            status_code=502,
+            detail=f"El servicio de actualizaciones devolvió error {exc.response.status_code}.",
+        )
 
     return {
         "status": "requested",
-        "eta_seconds": 120,
-        "message": "Actualización solicitada. La descarga e instalación tardará ~2-5 minutos.",
+        "eta_seconds": 90,
+        "message": "Actualización iniciada. Tardará 1-3 minutos.",
     }
 
 
