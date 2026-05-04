@@ -5,7 +5,9 @@
 ; ============================================================================
 
 #define MyAppName       "AIWAF"
-#define MyAppVersion    "0.1.0"
+#ifndef MyAppVersion
+  #define MyAppVersion  "0.1.0"
+#endif
 #define MyAppPublisher  "estimula"
 #define MyAppURL        "https://estimula.es"
 #define MyAppExeName    "AIWAF Iniciar"
@@ -111,15 +113,10 @@ var
   WebhookUrl: string;
   PreInstallPage: TOutputMsgWizardPage;
 
-function GenerateRandomHex(Length: Integer): string;
-var
-  i: Integer;
-  Charset: string;
+function GetWatchtowerToken: string;
 begin
-  Charset := '0123456789abcdef';
-  Result := '';
-  for i := 1 to Length do
-    Result := Result + Charset[Random(16) + 1];
+  // Token generado en build.ps1 e inyectado via /DWatchtowerToken=...
+  Result := '{#WatchtowerToken}';
 end;
 
 function IsDockerInstalled(): Boolean;
@@ -250,8 +247,6 @@ begin
 
   // Token aleatorio para autenticar las llamadas del backend al HTTP API de Watchtower.
   // Se genera una sola vez en la instalación. Nunca sale del docker-compose interno.
-  Randomize;
-
   // .env raíz — usado por docker-compose
   EnvRoot := ExpandConstant('{app}\.env');
   Lines :=
@@ -262,7 +257,7 @@ begin
     'AIWAF_GESTORIA_NOMBRE=' + GestoriaNombre + #13#10 +
     'FEEDBACK_WEBHOOK_URL=' + WebhookUrl + #13#10 +
     'AIWAF_LATEST_VERSION_URL=https://aiwaf-releases.pages.dev/latest.json' + #13#10 +
-    'WATCHTOWER_HTTP_API_TOKEN=' + GenerateRandomHex(32) + #13#10;
+    'WATCHTOWER_HTTP_API_TOKEN=' + GetWatchtowerToken + #13#10;
   SaveStringToFile(EnvRoot, Lines, False);
 
   // .env.docker — copia desde .env.docker.example (ya copiado por [Files])
