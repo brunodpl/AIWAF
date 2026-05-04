@@ -148,4 +148,8 @@ jobs:
           accountId: ${{ env.CF_ACCOUNT_ID }}
           projectName: aiwaf-releases
           directory: _release
+          # Sin esto el deploy va a una URL preview (XXXX.aiwaf-releases.pages.dev) y la
+          # producción (aiwaf-releases.pages.dev/latest.json) queda congelada en una versión
+          # vieja → los clientes nunca se enteran de nuevas versiones.
+          branch: main
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
