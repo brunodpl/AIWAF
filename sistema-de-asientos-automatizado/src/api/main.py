@@ -1146,7 +1146,29 @@ def get_recent_logs(n: int = 200):
 # ──────────────────────────────────────────────────────────
 
 _latest_version_cache: dict = {}
-_LATEST_VERSION_TTL = 3600  # 1h
+_LATEST_VERSION_TTL = 300  # 5 min — balance entre no martillear Cloudflare y permitir iteración razonable
+
+
+def _is_newer_version(latest: str, current: str) -> bool:
+    """
+    True si latest > current en sentido semver (X.Y.Z).
+    Soporta sufijos comunes (-dev, -rc.N) tratándolos como pre-releases.
+    Si current == "0.0.0-dev" (build local sin tag), cualquier latest publicada cuenta como newer.
+    Si parsing falla, devuelve latest != current (fallback conservador).
+    """
+    if not latest or not current:
+        return False
+    try:
+        def parse(v: str) -> tuple[int, int, int, int]:
+            # "0.2.5-rc.1" → (0, 2, 5, 0); "0.2.5" → (0, 2, 5, 1)
+            base, _, suffix = v.partition("-")
+            parts = base.split(".")
+            major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+            is_release = 0 if suffix else 1
+            return (major, minor, patch, is_release)
+        return parse(latest) > parse(current)
+    except (ValueError, IndexError):
+        return latest != current
 
 
 @app.get("/api/system/version")
@@ -1160,14 +1182,20 @@ def get_system_version():
 
 
 @app.get("/api/system/latest-version")
-def get_latest_version():
+def get_latest_version(force: bool = False):
     """
     Consulta el JSON estático con la versión más reciente publicada.
-    Cacheado 1h para evitar martillear el endpoint.
+    Cacheado 5 min para evitar martillear el endpoint. Pasar ?force=true para
+    saltarse el cache (útil para botón "Comprobar ahora" + tests).
     """
     now = time.time()
-    if _latest_version_cache and (now - _latest_version_cache.get("ts", 0)) < _LATEST_VERSION_TTL:
-        return _latest_version_cache["data"]
+    if not force and _latest_version_cache and (now - _latest_version_cache.get("ts", 0)) < _LATEST_VERSION_TTL:
+        cached = _latest_version_cache["data"]
+        logger.info(
+            "[system] latest-version (cache hit): latest=%s current=%s update_available=%s",
+            cached.get("version"), APP_VERSION, cached.get("update_available"),
+        )
+        return cached
 
     try:
         req = urllib.request.Request(
@@ -1186,7 +1214,11 @@ def get_latest_version():
         }
 
     latest = data.get("version")
-    update_available = bool(latest and latest != APP_VERSION)
+    update_available = _is_newer_version(latest, APP_VERSION)
+    logger.info(
+        "[system] latest-version (fetched): latest=%s current=%s update_available=%s force=%s",
+        latest, APP_VERSION, update_available, force,
+    )
     payload = {
         "version": latest,
         "update_available": update_available,

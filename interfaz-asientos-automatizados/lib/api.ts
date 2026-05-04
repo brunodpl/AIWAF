@@ -521,8 +521,11 @@ export interface LatestVersion {
   error?: string;
 }
 
-export async function fetchLatestVersion(): Promise<LatestVersion> {
-  const response = await fetchWithTimeout(`${API_URL}/api/system/latest-version`);
+export async function fetchLatestVersion(opts?: { force?: boolean }): Promise<LatestVersion> {
+  const url = opts?.force
+    ? `${API_URL}/api/system/latest-version?force=true`
+    : `${API_URL}/api/system/latest-version`;
+  const response = await fetchWithTimeout(url);
   if (!response.ok) throw new Error("No se pudo comprobar actualizaciones");
   return response.json();
 }

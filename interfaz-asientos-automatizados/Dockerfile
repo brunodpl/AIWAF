@@ -27,9 +27,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Versión inyectada por la GitHub Action en build time.
+# Disponible para server components vía process.env.AIWAF_VERSION.
+# (No exponer como NEXT_PUBLIC_*: el bundle JS cliente NO la usa — la versión
+# real la sirve el backend pipeline-api desde su propia ENV. Setearla aquí
+# como NEXT_PUBLIC_ tampoco funcionaría: Next.js inlinea esas vars en build,
+# y el ARG llega después de pnpm build.)
 ARG AIWAF_VERSION=0.0.0-dev
 ENV AIWAF_VERSION=${AIWAF_VERSION}
-ENV NEXT_PUBLIC_AIWAF_VERSION=${AIWAF_VERSION}
 
 # Crear usuario non-root
 RUN addgroup --system --gid 1001 nodejs
