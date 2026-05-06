@@ -1247,18 +1247,26 @@ def request_system_update():
     if status_path.exists():
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
-            if status.get("state") == "running":
+            # pipeline_status.json usa la clave "status" (ver función _write_status del runner).
+            if status.get("status") == "running":
                 raise HTTPException(
                     status_code=409,
-                    detail="No se puede actualizar mientras se procesan facturas. Espera a que termine el pipeline.",
+                    detail={
+                        "code": "pipeline_busy",
+                        "message": "No se puede actualizar mientras se procesan facturas. Espera a que termine el pipeline.",
+                    },
                 )
         except (json.JSONDecodeError, OSError):
             pass
 
     if not WATCHTOWER_TOKEN:
+        logger.error("[system] WATCHTOWER_HTTP_API_TOKEN no configurado en .env")
         raise HTTPException(
             status_code=500,
-            detail="Servicio de actualizaciones no configurado (falta WATCHTOWER_HTTP_API_TOKEN).",
+            detail={
+                "code": "not_configured",
+                "message": "Servicio de actualizaciones no configurado (falta WATCHTOWER_HTTP_API_TOKEN). Reinstala el paquete.",
+            },
         )
 
     try:
@@ -1269,18 +1277,45 @@ def request_system_update():
         )
         resp.raise_for_status()
     except httpx.ConnectError as exc:
-        logger.error("[system] Watchtower unreachable: %s", exc)
+        logger.error("[system] Watchtower unreachable at %s: %s", WATCHTOWER_URL, exc)
         raise HTTPException(
             status_code=503,
-            detail="No se pudo contactar con el servicio de actualizaciones.",
+            detail={
+                "code": "watchtower_unreachable",
+                "message": "El servicio de actualizaciones no responde. Reinicia Docker Desktop y reintenta.",
+            },
         )
     except httpx.HTTPStatusError as exc:
-        logger.error("[system] Watchtower returned %s: %s", exc.response.status_code, exc.response.text)
+        body_snippet = (exc.response.text or "")[:500]
+        logger.error("[system] Watchtower returned %s: %s", exc.response.status_code, body_snippet)
+        if exc.response.status_code in (401, 403):
+            code = "auth_failed"
+            message = (
+                "Token Watchtower rechazado. La instalación está corrupta — contacta soporte."
+            )
+        else:
+            code = "watchtower_error"
+            message = f"El servicio de actualizaciones devolvió error {exc.response.status_code}."
         raise HTTPException(
             status_code=502,
-            detail=f"El servicio de actualizaciones devolvió error {exc.response.status_code}.",
+            detail={
+                "code": code,
+                "message": message,
+                "watchtower_status": exc.response.status_code,
+                "watchtower_body": body_snippet,
+            },
+        )
+    except httpx.HTTPError as exc:
+        logger.error("[system] Watchtower request error: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "watchtower_error",
+                "message": f"Fallo comunicando con el servicio de actualizaciones: {exc.__class__.__name__}.",
+            },
         )
 
+    logger.info("[system] Watchtower update triggered OK (status=%s)", resp.status_code)
     return {
         "status": "requested",
         "eta_seconds": 90,

@@ -1,24 +1,40 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, X, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Download, X, Loader2, CheckCircle2, AlertTriangle, RotateCw } from "lucide-react";
 import {
   fetchLatestVersion,
   fetchSystemVersion,
   requestSystemUpdate,
+  UpdateError,
   type LatestVersion,
+  type UpdateErrorCode,
 } from "@/lib/api";
 
 const DISMISS_KEY = "aiwaf_update_dismissed_for_version";
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
+const ERROR_MESSAGES: Record<UpdateErrorCode, string> = {
+  watchtower_unreachable:
+    "El servicio de actualizaciones no responde. Reinicia Docker Desktop y reintenta.",
+  auth_failed:
+    "Credenciales caducadas en el servicio de actualizaciones. Contacta a soporte.",
+  pipeline_busy:
+    "Hay facturas procesándose. Espera a que termine el pipeline y reintenta.",
+  watchtower_error:
+    "Error en el servicio de actualizaciones. Revisa los logs en Diagnóstico.",
+  not_configured:
+    "El sistema de actualizaciones no está configurado. Reinstala el paquete.",
+  unknown: "Error desconocido al actualizar. Revisa los logs en Diagnóstico.",
+};
+
 type State =
   | { phase: "idle" }
   | { phase: "requesting" }
   | { phase: "in_progress"; startedAt: number }
   | { phase: "success" }
-  | { phase: "error"; message: string };
+  | { phase: "error"; code: UpdateErrorCode; message: string };
 
 export function UpdateBanner() {
   const [info, setInfo] = useState<LatestVersion | null>(null);
@@ -63,6 +79,7 @@ export function UpdateBanner() {
       if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
         setState({
           phase: "error",
+          code: "unknown",
           message:
             "La actualización está tardando más de lo esperado. Comprueba el estado en la pestaña Diagnóstico.",
         });
@@ -103,15 +120,29 @@ export function UpdateBanner() {
       await requestSystemUpdate();
       setState({ phase: "in_progress", startedAt: Date.now() });
     } catch (err) {
-      setState({
-        phase: "error",
-        message: err instanceof Error ? err.message : "Error desconocido",
-      });
+      if (err instanceof UpdateError) {
+        setState({
+          phase: "error",
+          code: err.code,
+          message: ERROR_MESSAGES[err.code] ?? err.message,
+        });
+      } else {
+        setState({
+          phase: "error",
+          code: "unknown",
+          message: err instanceof Error ? err.message : ERROR_MESSAGES.unknown,
+        });
+      }
     }
   };
 
+  const handleRetry = () => setState({ phase: "idle" });
+
   return (
-    <div className="bg-emerald-50 border-b border-emerald-200 px-4 py-2 flex items-center justify-between text-xs">
+    <div
+      data-testid="update-banner"
+      className="bg-emerald-50 border-b border-emerald-200 px-4 py-2 flex items-center justify-between text-xs"
+    >
       <div className="flex items-center gap-2 text-emerald-900">
         <Download className="h-4 w-4" />
         <span className="font-medium">
@@ -160,10 +191,24 @@ export function UpdateBanner() {
           </span>
         )}
         {state.phase === "error" && (
-          <span className="flex items-center gap-1 text-red-700">
-            <AlertTriangle className="h-4 w-4" />
-            {state.message}
-          </span>
+          <div className="flex items-center gap-2">
+            <span
+              className="flex items-center gap-1 text-red-700"
+              data-testid="update-error"
+              data-error-code={state.code}
+            >
+              <AlertTriangle className="h-4 w-4" />
+              {state.message}
+            </span>
+            {state.code !== "auth_failed" && state.code !== "not_configured" && (
+              <button
+                onClick={handleRetry}
+                className="flex items-center gap-1 font-semibold uppercase tracking-wider text-red-800 border border-red-700 rounded px-2 py-0.5 hover:bg-red-50 text-[10px]"
+              >
+                <RotateCw className="h-3 w-3" /> Reintentar
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

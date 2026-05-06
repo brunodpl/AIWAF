@@ -541,16 +541,68 @@ export interface UpdateRequestResponse {
   message: string;
 }
 
+export type UpdateErrorCode =
+  | "watchtower_unreachable"
+  | "auth_failed"
+  | "pipeline_busy"
+  | "watchtower_error"
+  | "not_configured"
+  | "unknown";
+
+export class UpdateError extends Error {
+  code: UpdateErrorCode;
+  httpStatus: number;
+  watchtowerStatus?: number;
+  watchtowerBody?: string;
+
+  constructor(opts: {
+    code: UpdateErrorCode;
+    message: string;
+    httpStatus: number;
+    watchtowerStatus?: number;
+    watchtowerBody?: string;
+  }) {
+    super(opts.message);
+    this.name = "UpdateError";
+    this.code = opts.code;
+    this.httpStatus = opts.httpStatus;
+    this.watchtowerStatus = opts.watchtowerStatus;
+    this.watchtowerBody = opts.watchtowerBody;
+  }
+}
+
 export async function requestSystemUpdate(): Promise<UpdateRequestResponse> {
   const response = await fetchWithTimeout(`${API_URL}/api/system/update`, {
     method: "POST",
   });
   if (!response.ok) {
-    if (response.status === 409) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || "Pipeline en curso");
+    const data = await response.json().catch(() => ({} as Record<string, unknown>));
+    const detail = (data as { detail?: unknown }).detail;
+    // El backend devuelve detail como objeto discriminado {code, message, ...} desde 0.2.6.
+    // Para compatibilidad con backends antiguos, también aceptamos detail string.
+    if (detail && typeof detail === "object" && "code" in detail) {
+      const d = detail as {
+        code: UpdateErrorCode;
+        message?: string;
+        watchtower_status?: number;
+        watchtower_body?: string;
+      };
+      throw new UpdateError({
+        code: d.code,
+        message: d.message || "Error en la actualización",
+        httpStatus: response.status,
+        watchtowerStatus: d.watchtower_status,
+        watchtowerBody: d.watchtower_body,
+      });
     }
-    throw new Error(`No se pudo solicitar la actualización (${response.status})`);
+    throw new UpdateError({
+      code: response.status === 409 ? "pipeline_busy" : "unknown",
+      message:
+        typeof detail === "string"
+          ? detail
+          : `No se pudo solicitar la actualización (${response.status})`,
+      httpStatus: response.status,
+    });
   }
   return response.json();
 }

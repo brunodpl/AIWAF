@@ -36,13 +36,15 @@ if (-not $iscc) {
 }
 if (-not $iscc) { throw "ISCC.exe no encontrado. Instala Inno Setup 6 desde https://jrsoftware.org/isdl.php" }
 
-# Inyectar Webhook como variable de entorno (lo lee el .iss en CurStepChanged)
-if ($Webhook) {
-  $env:AIWAF_FEEDBACK_WEBHOOK = $Webhook
-  Write-Host "Webhook embebido en el instalador."
-} else {
-  Write-Warning "No se proporcionó webhook. El feedback solo se guardará localmente."
+# Inyectar Webhook como variable de entorno (lo expande el preprocesador del .iss en compile-time vía {#GetEnv})
+if (-not $Webhook) {
+  throw "Falta el webhook Discord. Define `$env:AIWAF_FEEDBACK_WEBHOOK o pasa -Webhook 'https://discord.com/api/webhooks/.../...'."
 }
+if ($Webhook -notmatch '^https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+$') {
+  throw "El webhook no parece una URL válida de Discord: $Webhook"
+}
+$env:AIWAF_FEEDBACK_WEBHOOK = $Webhook
+Write-Host "Webhook Discord embebido en el instalador." -ForegroundColor Green
 
 # PAT read-only para pullear de GHCR. Sin esto, el cliente no puede actualizar.
 if (-not $GhcrPat) {

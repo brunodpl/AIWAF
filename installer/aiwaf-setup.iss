@@ -20,6 +20,13 @@
   #define GhcrPullToken "MISSING_TOKEN"
 #endif
 
+; Webhook Discord para feedback. El preprocesador lo expande con GetEnv en compile-time
+; (línea de WebhookUrl en CurStepChanged). Si el build no exporta la variable, fallar
+; ruidosamente — un .exe sin webhook deja a Bruno sin feedback.
+#if GetEnv("AIWAF_FEEDBACK_WEBHOOK") == ""
+  #error "AIWAF_FEEDBACK_WEBHOOK no definido en compile-time. Usa installer/build.ps1 que lo exporta antes de invocar ISCC."
+#endif
+
 [Setup]
 AppId={{8A4F2D7B-3C9E-4A1B-B5D2-7E8F9A0B1C2D}
 AppName={#MyAppName}

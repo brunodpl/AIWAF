@@ -25,3 +25,15 @@ Desktop.ini
 # Git worktrees / [AI assistant] Code worktrees
 .worktrees/
 .[AI assistant]/worktrees/
+
+# Playwright artifacts
+test-results/
+playwright-report/
+interfaz-asientos-automatizados/test-results/
+interfaz-asientos-automatizados/playwright-report/
+
+# Pytest MagicMock leftover dirs (when tests escape sandboxing)
+sistema-de-asientos-automatizado/MagicMock/
+
+# Local [AI assistant] Code settings (user-specific)
+.[AI assistant]/settings.local.json
