@@ -379,6 +379,18 @@ begin
     end;
     Page.SetProgress(10, 100);
 
+    // ---- Paso 1b: docker login GHCR + escribir config.json ANTES de tocar compose ----
+    // Crítico: si compose levanta primero, Watchtower monta ./.docker/config.json
+    // como bind. Si el archivo no existe aún, Docker crea un DIRECTORIO en su lugar
+    // y el Set-Content posterior falla silenciosamente → Watchtower nunca puede
+    // pullear y "Actualizar" se queda colgado. Por eso este paso va aquí, no al final.
+    Page.SetText('Configurando credenciales del servidor de actualizaciones...', '');
+    Page.SetProgress(12, 100);
+    RunPowerShellSilent(
+      'docker login ghcr.io -u brunodpl --password ''{#GhcrPullToken}''');
+    RunPowerShellSilent(
+      '& ''' + AppDir + '\installer\write-docker-auth.ps1'' -Token ''{#GhcrPullToken}'' -ConfigDir ''' + AppDir + '\.docker''');
+
     // ---- Paso 2: Pull de imágenes (puede fallar silenciosamente si no están en GHCR; OK) ----
     Page.SetText('Descargando imágenes Docker (puede tardar varios minutos)...', '');
     Page.SetProgress(15, 100);
@@ -433,17 +445,6 @@ begin
         '  docker compose logs',
         mbInformation, MB_OK);
     end;
-
-    // ---- Paso 4b: docker login GHCR (host) + escribir config.json explícito para Watchtower ----
-    // - `docker login` deja el token en credential manager (Watchtower no puede leerlo).
-    // - El script write-docker-auth.ps1 escribe {app}\.docker\config.json con auth base64
-    //   plano, que Watchtower monta y usa para pullear de GHCR.
-    Page.SetText('Conectando con el servidor de actualizaciones AIWAF...', '');
-    Page.SetProgress(97, 100);
-    RunPowerShellSilent(
-      'docker login ghcr.io -u brunodpl --password ''{#GhcrPullToken}''');
-    RunPowerShellSilent(
-      '& ''' + AppDir + '\installer\write-docker-auth.ps1'' -Token ''{#GhcrPullToken}'' -ConfigDir ''' + AppDir + '\.docker''');
 
     // ---- Paso 5: Registrar autostart Windows ----
     Page.SetText('Configurando inicio automático con Windows...', '');

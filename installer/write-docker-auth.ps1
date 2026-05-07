@@ -18,5 +18,16 @@ $ErrorActionPreference = 'Stop'
 $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$Username`:$Token"))
 $json = '{"auths":{"ghcr.io":{"auth":"' + $auth + '"}}}'
 New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
-Set-Content -Path (Join-Path $ConfigDir 'config.json') -Value $json -Encoding ascii -NoNewline
-Write-Host "Docker auth para Watchtower escrito en $ConfigDir\config.json"
+
+# Defensivo: si docker compose se levantó antes que este script, Watchtower
+# montó ./.docker/config.json como bind y Docker creó un DIRECTORIO vacío en
+# esa ruta cuando el archivo no existía aún. Detectarlo y borrarlo antes de
+# intentar escribir el archivo, o el Set-Content fallará silenciosamente.
+$ConfigPath = Join-Path $ConfigDir 'config.json'
+if ((Test-Path $ConfigPath) -and ((Get-Item $ConfigPath).PSIsContainer)) {
+  Write-Warning "config.json existe como directorio (probablemente Watchtower lo creó al arrancar antes que este script). Eliminándolo."
+  Remove-Item -Recurse -Force $ConfigPath
+}
+
+Set-Content -Path $ConfigPath -Value $json -Encoding ascii -NoNewline
+Write-Host "Docker auth para Watchtower escrito en $ConfigPath"
