@@ -2,12 +2,37 @@
  * API client for communicating with the pipeline backend.
  */
 
-import type { InvoiceDocument, FieldDecision, Book, PipelineStatus, Client, Libro } from "./types";
+import type {
+  InvoiceDocument,
+  FieldDecision,
+  Book,
+  PipelineStatus,
+  Client,
+  Libro,
+  DocStatus,
+  LibroShort,
+} from "./types";
 
-const LIBRO_MAP: Record<string, Libro> = {
+/**
+ * Mapeo libro largo (`20_COMPRAS_GASTOS`) → libro frontend (`gastos`).
+ * Se conserva como fallback para `metadata.libro` (legacy). El backend
+ * trazabilidad 2.0 ya devuelve directamente la forma corta en `invoice.libro`
+ * (`compras`/`ventas`/`bienes`), que mapeamos abajo a la forma frontend.
+ */
+const LIBRO_LONG_MAP: Record<string, Libro> = {
   "20_COMPRAS_GASTOS": "gastos",
   "21_VENTAS_INGRESOS": "ingresos",
   "22_BIENES_INVERSION": "bienes",
+};
+
+/**
+ * Mapeo libro corto del filesystem (`compras`) → libro del frontend (`gastos`).
+ * Es el contrato nuevo del API trazabilidad 2.0.
+ */
+const LIBRO_SHORT_MAP: Record<LibroShort, Libro> = {
+  compras: "gastos",
+  ventas: "ingresos",
+  bienes: "bienes",
 };
 
 /**
@@ -59,28 +84,48 @@ interface ApiFiscalLine {
   decision_linea?: string;
 }
 
+export interface InvoiceListItem {
+  id: string;
+  /** Nombre actual de la carpeta de asiento (operario-friendly tras rename). */
+  folder_name?: string;
+  /** Forma corta del libro (`compras`/`ventas`/`bienes`). */
+  libro?: LibroShort | null;
+  /** Estado actual del documento (último evento del sidecar). */
+  status?: DocStatus | null;
+  decision_global: string;
+  timestamp: string;
+  nif_entidad: string;
+  nombre_entidad: string;
+  numero_factura: string;
+  total_euros: number;
+}
+
 export interface InvoiceListResponse {
-  invoices: Array<{
-    id: string;
-    decision_global: string;
-    timestamp: string;
-    nif_entidad: string;
-    nombre_entidad: string;
-    numero_factura: string;
-    total_euros: number;
-  }>;
+  invoices: InvoiceListItem[];
   total: number;
+}
+
+/** Evento de la línea de vida del documento (sidecar `.state.json`). */
+export interface DocEvent {
+  ts: string;
+  status: DocStatus;
+  [key: string]: unknown;
 }
 
 export interface InvoiceDetailResponse {
   id: string;
+  folder_name?: string;
+  libro?: LibroShort | null;
+  status?: DocStatus | null;
   decision_global: string;
-  metadata: any;
+  metadata: { fecha_ensamblado?: string; libro?: string } & Record<string, unknown>;
   fields: Record<string, FieldStatus>;
   fiscal_lines: ApiFiscalLine[];
   artifacts: string[];
   file_url?: string;
   invoice_filename?: string;
+  /** Línea de vida del documento (orden cronológico, append-only). */
+  events?: DocEvent[];
 }
 
 /**
@@ -205,8 +250,16 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
   const filename = detail.invoice_filename || "";
   const fileType: "pdf" | "image" = filename.toLowerCase().endsWith(".pdf") ? "pdf" : "image";
 
-  const libroRaw = detail.metadata?.libro as string | undefined;
-  const libro = libroRaw ? LIBRO_MAP[libroRaw] : undefined;
+  // Trazabilidad 2.0: el backend ya devuelve `libro` en forma corta
+  // (`compras`/`ventas`/`bienes`). Fallback al mapping legacy desde
+  // `metadata.libro` (`20_COMPRAS_GASTOS`) para compatibilidad.
+  const libroShort = detail.libro ?? null;
+  const libroLegacy = detail.metadata?.libro as string | undefined;
+  const libro: Libro | undefined = libroShort
+    ? LIBRO_SHORT_MAP[libroShort]
+    : libroLegacy
+      ? LIBRO_LONG_MAP[libroLegacy]
+      : undefined;
 
   return {
     id: detail.id,
@@ -214,6 +267,8 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
     imageUrl: imageUrl || fileUrl,
     fileType,
     decision_global: detail.decision_global as InvoiceDocument["decision_global"],
+    doc_status: detail.status ?? undefined,
+    folder_name: detail.folder_name,
     fields,
     fiscalLines,
     libro,
@@ -222,7 +277,19 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
 
 /**
  * Send an action (approve/reject) for an invoice.
+ *
+ * Trazabilidad 2.0: el backend registra la acción como evento en el
+ * sidecar `.state.json` del asiento; no se mueve el PDF. La respuesta
+ * incluye `new_status` (``done`` para approve, ``review`` para reject).
  */
+export interface InvoiceActionResponse {
+  status: "success";
+  message: string;
+  doc_id: string;
+  folder_name: string;
+  new_status: DocStatus;
+}
+
 export async function sendInvoiceAction(
   docId: string,
   action: "approve" | "reject",
@@ -230,7 +297,7 @@ export async function sendInvoiceAction(
     fields?: Record<string, string>;
     fiscalLines?: Array<{ base: number; tipo_iva: number | null; cuota: number; total: number }>;
   }
-): Promise<{ status: string; message: string; action: string }> {
+): Promise<InvoiceActionResponse> {
   const payload: Record<string, any> = {
     action,
     document_id: docId,
@@ -441,9 +508,16 @@ export async function runPipeline(): Promise<PipelineRunResponse> {
 }
 
 /**
- * Reset pipeline: devuelve archivos a PENDIENTES, limpia artefactos.
+ * Reset pipeline (trazabilidad 2.0): borra todas las carpetas de asiento
+ * y el estado runtime. Los PDFs originales no se tocan — siguen en su inbox
+ * permanente listos para reproceso.
  */
-export async function resetPipeline(): Promise<{ status: string; files_restored: number; doc_ids_deleted: number }> {
+export interface ResetPipelineResponse {
+  status: string;
+  asientos_deleted: number;
+}
+
+export async function resetPipeline(): Promise<ResetPipelineResponse> {
   try {
     const response = await fetchWithTimeout(`${API_URL}/api/pipeline/reset`, {
       method: "POST",

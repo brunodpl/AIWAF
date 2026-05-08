@@ -82,8 +82,11 @@ export default function Home() {
   const handleReset = useCallback(async () => {
     setResetting(true);
     try {
-      await resetPipeline();
-      toast.success("Sesión reseteada. Archivos devueltos a sus carpetas originales.");
+      const result = await resetPipeline();
+      toast.success(
+        `Sesión reseteada. ${result.asientos_deleted} asiento(s) limpiados. ` +
+        `Las facturas originales siguen en su inbox y se pueden reprocesar.`
+      );
     } catch (err) {
       console.error("Reset backend failed:", err);
       toast.warning("No se pudo contactar el backend. Se limpia solo el estado local.");

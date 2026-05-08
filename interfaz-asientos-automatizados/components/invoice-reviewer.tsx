@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Check, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
-import { ApprovedInvoiceData, FiscalLine, InvoiceDocument, Libro } from "@/lib/types";
+import { ApprovedInvoiceData, DocStatus, FiscalLine, InvoiceDocument, Libro, LibroShort } from "@/lib/types";
 import {
   fetchInvoices,
   fetchInvoiceDetail,
@@ -38,6 +38,12 @@ const HEADER_FIELDS = new Set(["nif_cliente", "nombre_cliente"]);
 
 interface InvoiceSummary {
   id: string;
+  /** Nombre actual de la carpeta (operario-friendly tras rename). */
+  folder_name?: string;
+  /** Forma corta del libro: compras / ventas / bienes. */
+  libro?: LibroShort | null;
+  /** Estado actual del documento (último evento del sidecar). */
+  status?: DocStatus | null;
   decision_global: string;
   timestamp: string;
   nif_entidad: string;
@@ -445,12 +451,34 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
         {/* Right side */}
         <div className="flex items-center gap-3">
+           {invoiceSummaries[currentIdx]?.folder_name && (
+             <span
+               className="text-[10px] text-slate-500 font-mono truncate max-w-[280px]"
+               title={invoiceSummaries[currentIdx].folder_name}
+             >
+               {invoiceSummaries[currentIdx].folder_name}
+             </span>
+           )}
            <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest font-mono">
              #{invoiceSummaries[currentIdx]?.id}
              {loadingDetail && (
                <Loader2 className="h-3 w-3 animate-spin inline ml-1 text-slate-400" />
              )}
            </span>
+           {invoice?.doc_status && (
+             <span className={cn(
+               "text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider",
+               invoice.doc_status === "done" && "bg-emerald-50 text-emerald-700 border border-emerald-200",
+               invoice.doc_status === "review" && "bg-amber-50 text-amber-700 border border-amber-200",
+               invoice.doc_status === "blocked" && "bg-red-50 text-red-700 border border-red-200",
+               invoice.doc_status === "error" && "bg-red-50 text-red-700 border border-red-200",
+               invoice.doc_status === "processing" && "bg-slate-50 text-slate-600 border border-slate-200",
+             )}
+             title="Estado del documento (sidecar .state.json)"
+             >
+               {invoice.doc_status}
+             </span>
+           )}
            {invoice && (
              <span className={cn(
                "text-[10px] font-bold px-2 py-1 rounded-full",
@@ -458,7 +486,9 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                invoice.decision_global === "warn" && "bg-amber-100 text-amber-700",
                invoice.decision_global === "block" && "bg-red-100 text-red-700",
                invoice.decision_global === "pendiente" && "bg-slate-100 text-slate-600",
-             )}>
+             )}
+             title="Decisión automática del pipeline"
+             >
                {invoice.decision_global?.toUpperCase()}
              </span>
            )}
