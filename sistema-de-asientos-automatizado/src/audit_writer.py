@@ -45,10 +45,18 @@ class AuditWriter:
         Inicializar escritor para una ejecución concreta.
 
         Args:
-            logs_path: Directorio base de logs (Settings.logs_path).
-            libro:     Nombre del libro contable (e.g. "20_COMPRAS_GASTOS").
+            logs_path: Directorio donde aterriza el JSONL de auditoría.
+
+                Trazabilidad 2.0: pasar directamente ``cfg.audit_path()``
+                (ej. ``libros/logs/audit``). El parámetro conserva el nombre
+                ``logs_path`` por compatibilidad con código y tests legacy.
+                Si se pasa un directorio que no acaba en ``audit/``, se asume
+                legacy y se anexa ``/audit`` automáticamente.
+            libro: Nombre del libro contable (e.g. "20_COMPRAS_GASTOS").
         """
-        audit_dir = Path(logs_path) / "audit"
+        audit_dir = Path(logs_path)
+        if audit_dir.name != "audit":
+            audit_dir = audit_dir / "audit"
         audit_dir.mkdir(parents=True, exist_ok=True)
 
         fecha_hoy = datetime.now(timezone.utc).strftime("%Y-%m-%d")

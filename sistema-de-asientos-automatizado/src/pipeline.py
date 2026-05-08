@@ -56,13 +56,21 @@ import re as _re
 _SLUG_RE = _re.compile(r"[^A-Za-z0-9-]+")
 
 
+def _campo_valor(validacion: dict, nombre: str) -> object:
+    """Lee ``campos[nombre].valor_final`` de un resultado_validacion.json."""
+    campos = validacion.get("campos") or {}
+    return (campos.get(nombre) or {}).get("valor_final")
+
+
 def _try_rename(folder: Path, libro_short: str, validacion: dict) -> Path:
     """Renombra la carpeta de asiento al esquema descriptivo si procede.
 
-    Reglas:
+    Reglas (trazabilidad 2.0):
         - Solo si ``decision_global ∈ {auto, warn, pendiente}``.
-        - Y si están presentes ``fecha_expedicion``, ``nif_cliente_gestoria``
-          (o ``nif_cliente``) y ``numero_factura``.
+        - Y si están presentes ``fecha_expedicion``, ``nif_cliente``
+          (NIF del cliente de la gestoría, resuelto por phase4_customer)
+          y ``numero_factura`` — los tres dentro de
+          ``validacion["campos"][nombre]["valor_final"]``.
 
     En caso contrario devuelve la carpeta sin cambios (señal visual de
     "necesita atención humana").
@@ -71,14 +79,14 @@ def _try_rename(folder: Path, libro_short: str, validacion: dict) -> Path:
     if decision not in {"auto", "warn", "pendiente"}:
         return folder
 
-    fecha = validacion.get("fecha_expedicion")
-    nif = (
-        validacion.get("nif_cliente_gestoria")
-        or validacion.get("nif_cliente")
-        or (validacion.get("metadata") or {}).get("nif_cliente")
-    )
-    num = validacion.get("numero_factura")
+    fecha = _campo_valor(validacion, "fecha_expedicion")
+    nif = _campo_valor(validacion, "nif_cliente")
+    num = _campo_valor(validacion, "numero_factura")
     if not all([fecha, nif, num]):
+        logger.info(
+            "[pipeline] rename omitido (faltan datos): fecha=%s nif_cliente=%s num=%s",
+            fecha, nif, num,
+        )
         return folder
 
     num_slug = _SLUG_RE.sub("-", str(num)).strip("-")
@@ -247,8 +255,10 @@ def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -
     stats = ProcessingStats()
     summary = {"total": 0, "ok": 0, "warn": 0, "error": 0}
 
-    # Inicializar escritor de auditoría para esta ejecución
-    audit = AuditWriter(cfg.logs_path, libro)
+    # Inicializar escritor de auditoría para esta ejecución.
+    # Trazabilidad 2.0: el audit JSONL vive bajo `libros/logs/audit/`,
+    # no bajo el LOGS_PATH legacy.
+    audit = AuditWriter(cfg.audit_path(), libro)
 
     logger.info(f"[pipeline] Iniciando carpeta={folder_path} libro={libro}")
 

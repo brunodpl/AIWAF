@@ -14,6 +14,109 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.phase2_ocr.file_queue_service import run_ocr
+from src import state_writer
+from src.pipeline import _try_rename
+
+
+# ──────────────────────────────────────────────────────────
+# Tests de _try_rename — regresión: leer campos.{name}.valor_final
+# ──────────────────────────────────────────────────────────
+
+
+def _seed_asiento(tmp_path: Path, name: str = "compras_factura_test") -> Path:
+    folder = tmp_path / "asientos" / name
+    folder.mkdir(parents=True)
+    state_writer.init(folder, doc_id="factura_test", file_origin="x.pdf")
+    return folder
+
+
+def _validacion(decision: str = "auto", **valor_final_por_campo) -> dict:
+    """Construye un resultado_validacion.json mínimo con la forma del ensamblador."""
+    campos = {
+        nombre: {"valor_final": valor}
+        for nombre, valor in valor_final_por_campo.items()
+    }
+    return {"decision_global": decision, "campos": campos}
+
+
+def test_try_rename_uses_campos_valor_final(tmp_path):
+    """Regresión: los campos viven bajo `campos.{name}.valor_final`,
+    no en el top-level. La carpeta DEBE renombrarse al esquema descriptivo."""
+    folder = _seed_asiento(tmp_path, "compras_factura_test")
+    validacion = _validacion(
+        decision="auto",
+        fecha_expedicion="2026-04-15",
+        nif_cliente="A12345678",
+        numero_factura="F-2025-001",
+    )
+
+    new_folder = _try_rename(folder, "compras", validacion)
+
+    assert new_folder.name == "compras_2026-04-15_A12345678_F-2025-001"
+    assert new_folder.exists()
+    assert not folder.exists()
+
+
+def test_try_rename_skips_when_decision_block(tmp_path):
+    folder = _seed_asiento(tmp_path)
+    validacion = _validacion(
+        decision="block",
+        fecha_expedicion="2026-04-15",
+        nif_cliente="A12345678",
+        numero_factura="F-2025-001",
+    )
+    result = _try_rename(folder, "compras", validacion)
+    assert result == folder  # sin renombrar
+
+
+def test_try_rename_skips_when_field_missing(tmp_path):
+    folder = _seed_asiento(tmp_path)
+    # Sin nif_cliente → no se renombra, queda como señal visual.
+    validacion = _validacion(
+        decision="warn",
+        fecha_expedicion="2026-04-15",
+        numero_factura="F-2025-001",
+    )
+    result = _try_rename(folder, "compras", validacion)
+    assert result == folder
+
+
+def test_try_rename_slugifies_numero_factura(tmp_path):
+    folder = _seed_asiento(tmp_path, "compras_x")
+    validacion = _validacion(
+        decision="auto",
+        fecha_expedicion="2026-04-15",
+        nif_cliente="A12345678",
+        numero_factura="FAC/2025/001",
+    )
+    new_folder = _try_rename(folder, "compras", validacion)
+    assert new_folder.name == "compras_2026-04-15_A12345678_FAC-2025-001"
+
+
+# ──────────────────────────────────────────────────────────
+# Tests de AuditWriter — regresión: audit_path explícito
+# ──────────────────────────────────────────────────────────
+
+
+def test_audit_writer_accepts_explicit_audit_dir(tmp_path):
+    """Regresión: cuando se le pasa cfg.audit_path() (que ya es .../audit),
+    NO debe duplicar el sufijo `audit/audit/`."""
+    from src.audit_writer import AuditWriter
+
+    explicit = tmp_path / "libros" / "logs" / "audit"
+    writer = AuditWriter(str(explicit), libro="20_COMPRAS_GASTOS")
+    assert writer._file_path.parent == explicit  # no audit/audit/
+    assert writer._file_path.name.startswith("20_COMPRAS_GASTOS_")
+
+
+def test_audit_writer_legacy_logs_path_appends_audit(tmp_path):
+    """Compat: si se pasa el LOGS_PATH legacy, anexa `audit/`."""
+    from src.audit_writer import AuditWriter
+
+    legacy_logs = tmp_path / "logs"
+    writer = AuditWriter(str(legacy_logs), libro="20_COMPRAS_GASTOS")
+    assert writer._file_path.parent == legacy_logs / "audit"
+
 
 
 # ──────────────────────────────────────────────────────────
