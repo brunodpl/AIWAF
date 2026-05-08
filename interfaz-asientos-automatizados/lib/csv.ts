@@ -60,12 +60,16 @@ function sanitizeNIF(raw: string): string {
     .toUpperCase();
 }
 
-function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
+export function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
   const f = invoice.formData;
   const fecha = formatDateDDMMYYYY(f.fecha_expedicion || "");
   const total = toSpanishDecimal(normalizeNumber(f.total_euros));
-  const nombreCliente = f.nombre_cliente || f.nombre_receptor || "";
-  const nifCliente = sanitizeNIF(f.nif_cliente || f.nif_receptor || "");
+  // CLI-PRO is ALWAYS the counterpart of our gestoria's client:
+  //   - emitidas (libro=ingresos): counterpart = receptor (final customer)
+  //   - recibidas (libro=gastos|bienes|undefined): counterpart = entidad (supplier)
+  const isEmitida = invoice.libro === "ingresos";
+  const nombreCliPro = isEmitida ? (f.nombre_receptor || "") : (f.nombre_entidad || "");
+  const nifCliPro = sanitizeNIF(isEmitida ? (f.nif_receptor || "") : (f.nif_entidad || ""));
   const concepto = f.concepto || "";
 
   return invoice.fiscalLines.map((line) => {
@@ -75,8 +79,8 @@ function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
       fecha,
       "",                                      // SERIE
       f.numero_factura || "",
-      nombreCliente,
-      nifCliente,
+      nombreCliPro,
+      nifCliPro,
       concepto,
       toSpanishDecimal(normalizeNumber(line.base)),
       pctIVA,
