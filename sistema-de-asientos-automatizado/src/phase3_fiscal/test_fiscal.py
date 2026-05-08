@@ -343,6 +343,44 @@ class TestSafeDecimal:
     def test_empty_string(self):
         assert _safe_decimal("") is None
 
+    # ── Sanitización de símbolos espurios del OCR ───────────────────────
+    # Replica el comportamiento de phase4_ensamblador._limpiar_valor pero
+    # aplicado YA en fase 3 fiscal, antes de validar aritmética. Si no se
+    # limpia aquí, los signos espurios sobreviven al CSV de Intermega
+    # porque la aritmética con negativos es internamente coherente.
+
+    def test_strips_leading_minus_string(self):
+        # OCR a veces lee un guion del layout como signo
+        assert _safe_decimal("-1313.94") == Decimal("1313.94")
+
+    def test_strips_leading_plus_string(self):
+        assert _safe_decimal("+131.00") == Decimal("131.00")
+
+    def test_strips_leading_percent_string(self):
+        # "%" delante aparece cuando el OCR pega el símbolo al número
+        assert _safe_decimal("%21") == Decimal("21")
+
+    def test_strips_whitespace_around_signed_string(self):
+        assert _safe_decimal("  -275.93  ") == Decimal("275.93")
+
+    def test_placeholder_dash_returns_none(self):
+        # Guion solo = OCR no encontró valor
+        assert _safe_decimal("-") is None
+
+    def test_placeholder_double_dash_returns_none(self):
+        assert _safe_decimal("--") is None
+
+    def test_placeholder_na_returns_none(self):
+        assert _safe_decimal("n/a") is None
+        assert _safe_decimal("NA") is None
+
+    def test_negative_numeric_becomes_positive(self):
+        # Defensa adicional: si llega un float/Decimal negativo (no string),
+        # también lo neutralizamos. Las facturas que procesa la gestoría
+        # nunca llevan importes negativos en su desglose de IVA.
+        assert _safe_decimal(-1313.94) == Decimal("1313.94")
+        assert _safe_decimal(Decimal("-275.93")) == Decimal("275.93")
+
 
 class TestClasificarLinea:
     def test_gravada(self):

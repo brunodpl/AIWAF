@@ -29,14 +29,44 @@ class ClasificacionLinea(str, Enum):
 
 # ── Utilidades ───────────────────────────────────────────────────────────────
 
+# Strings que el OCR devuelve cuando no encuentra un valor numérico real.
+# Replica `_PLACEHOLDERS_VACIOS` de phase4_ensamblador.ensamblador para que
+# fase 3 fiscal limpie el dato ANTES de validar aritmética y NO escriba el
+# símbolo espurio en resultado_fiscal.json (de donde viaja al CSV Intermega).
+_PLACEHOLDERS_VACIOS = {"-", "+", "%", "--", "N/A", "n/a", "na", "NA", ""}
+
+
 def _safe_decimal(valor: Any) -> Optional[Decimal]:
-    """Convierte float/int/str a Decimal. Retorna None si no parseable."""
+    """
+    Convierte float/int/str a Decimal NO NEGATIVO. None si no parseable.
+
+    Sanitización aplicada para neutralizar ruido del OCR:
+      - String solo con placeholder ("-", "N/A", "%"…)        → None
+      - String con signo/símbolo delantero ("+", "-", "%")    → se elimina
+      - Espacios en blanco                                    → strip
+      - Resultado numérico negativo (cualquier fuente)        → abs()
+
+    El último paso (abs) es defensa contra rutas que ya hayan coercionado
+    el string a float/Decimal antes de llegar aquí. Las facturas que
+    procesa la gestoría nunca llevan importes negativos en su desglose de
+    IVA; las rectificativas se modelan con `tipo_factura`, no con signos.
+    """
     if valor is None:
         return None
+    if isinstance(valor, str):
+        stripped = valor.strip()
+        if stripped in _PLACEHOLDERS_VACIOS:
+            return None
+        if stripped and stripped[0] in ("+", "-", "%"):
+            stripped = stripped[1:].strip()
+        if not stripped:
+            return None
+        valor = stripped
     try:
-        return Decimal(str(valor))
+        d = Decimal(str(valor))
     except (InvalidOperation, ValueError, TypeError):
         return None
+    return abs(d)
 
 
 def _format_importe(valor: Optional[Decimal]) -> Optional[str]:
