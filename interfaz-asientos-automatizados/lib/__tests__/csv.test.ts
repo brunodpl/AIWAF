@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { intermegaRowsFor } from "../csv";
+import { intermegaRowsFor, generateIntermegaCSVsByCliente } from "../csv";
+import type { IntermegaCsvFile } from "../csv";
 import type { ApprovedInvoiceData } from "../types";
 
 function makeInvoice(over: Partial<ApprovedInvoiceData> & { libro?: "ingresos" | "gastos" | "bienes" }): ApprovedInvoiceData {
@@ -87,5 +88,95 @@ describe("intermegaRowsFor — CLI-PRO is the counterpart, never our client", ()
     const cells = rows[0].split(";");
     expect(cells[3]).not.toBe("NEVER USE THIS");
     expect(cells[4]).not.toBe("B99999999");
+  });
+});
+
+function inv(libro: "ingresos" | "gastos" | "bienes", over: Record<string, string>): ApprovedInvoiceData {
+  return {
+    libro,
+    cuenta_contable: "",
+    fiscalLines: [{ id: "l1", base: 100, vatRate: 21, vatAmount: 21, total: 121 }],
+    formData: {
+      nif_entidad: "", nombre_entidad: "",
+      nif_receptor: "", nombre_receptor: "",
+      numero_factura: "F1", fecha_expedicion: "2026-05-08",
+      total_euros: "121", concepto: "x",
+      ...over,
+    },
+  };
+}
+
+describe("generateIntermegaCSVsByCliente", () => {
+  const FECHA = new Date("2026-05-08T12:00:00Z");
+
+  it("produces one file per (NIF cliente × tipo); ordered alpha, emitidas before recibidas", () => {
+    const invoices = new Map<string, ApprovedInvoiceData>([
+      // Cliente B222: ingresos (entidad = our client)
+      ["d1", inv("ingresos", { nif_entidad: "B222", nombre_entidad: "BETA SL", nif_receptor: "X1", nombre_receptor: "Cust1" })],
+      // Cliente B111: gastos (receptor = our client)
+      ["d2", inv("gastos",   { nif_receptor: "B111", nombre_receptor: "ACME SL", nif_entidad: "P1", nombre_entidad: "Prov1" })],
+      // Cliente B111: ingresos
+      ["d3", inv("ingresos", { nif_entidad: "B111", nombre_entidad: "ACME SL", nif_receptor: "X2", nombre_receptor: "Cust2" })],
+    ]);
+    const files = generateIntermegaCSVsByCliente(invoices, FECHA);
+    expect(files.map(f => f.filename)).toEqual([
+      "20260508_B111_01_emitidas.csv",
+      "20260508_B111_02_recibidas.csv",
+      "20260508_B222_03_emitidas.csv",
+    ]);
+    expect(files[0].nifCliente).toBe("B111");
+    expect(files[0].nombreCliente).toBe("ACME SL");
+    expect(files[0].tipo).toBe("emitidas");
+    expect(files[0].rowCount).toBe(1);
+  });
+
+  it("groups invoices with empty derived NIF under SIN_CLIENTE", () => {
+    const invoices = new Map([
+      ["d1", inv("ingresos", { /* no nif_entidad */ nif_receptor: "Cust" })],
+    ]);
+    const files = generateIntermegaCSVsByCliente(invoices, FECHA);
+    expect(files).toHaveLength(1);
+    expect(files[0].filename).toBe("20260508_SIN_CLIENTE_01_emitidas.csv");
+    expect(files[0].nifCliente).toBe("SIN_CLIENTE");
+  });
+
+  it("CSV content has BOM, CRLF, header, and one data row per fiscal line", () => {
+    const invoices = new Map([
+      ["d1", inv("gastos", { nif_receptor: "B111", nombre_receptor: "ACME", nif_entidad: "P1", nombre_entidad: "PROV" })],
+    ]);
+    const files = generateIntermegaCSVsByCliente(invoices, FECHA);
+    const csv = files[0].content;
+    expect(csv.charCodeAt(0)).toBe(0xFEFF);                          // BOM
+    expect(csv).toMatch(/FECHA;SERIE;Nº FACTURA;NOMBRE CLI-PRO/);    // header
+    expect(csv).toContain("\r\n");                                   // CRLF
+    expect(csv).toContain("PROV");                                   // CLI-PRO = entidad on gastos
+    expect(csv).toContain("P1");
+  });
+
+  it("derives NIF from live formData, ignoring stale formData.nif_cliente", () => {
+    // Operator edited nif_receptor; the stale nif_cliente snapshot must NOT be used.
+    const invoices = new Map([
+      ["d1", inv("gastos", {
+        nif_cliente: "STALE_OLD",                  // must be ignored
+        nombre_cliente: "STALE NAME",
+        nif_receptor: "B111", nombre_receptor: "ACME",
+        nif_entidad: "P1", nombre_entidad: "PROV",
+      })],
+    ]);
+    const files = generateIntermegaCSVsByCliente(invoices, FECHA);
+    expect(files[0].nifCliente).toBe("B111");
+    expect(files[0].nombreCliente).toBe("ACME");
+  });
+
+  it("sanitizes NIF for filename: uppercases, strips non-alphanumeric", () => {
+    const invoices = new Map([
+      ["d1", inv("gastos", { nif_receptor: " b-111/22 ", nombre_receptor: "X" })],
+    ]);
+    const files = generateIntermegaCSVsByCliente(invoices, FECHA);
+    expect(files[0].filename).toBe("20260508_B11122_01_recibidas.csv");
+  });
+
+  it("empty invoice map → empty array", () => {
+    expect(generateIntermegaCSVsByCliente(new Map(), FECHA)).toEqual([]);
   });
 });

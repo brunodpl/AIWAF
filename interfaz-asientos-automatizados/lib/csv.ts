@@ -1,4 +1,5 @@
 import type { ApprovedInvoiceData } from "./types";
+import { resolveClienteGestoria } from "./cliente-gestoria";
 
 /**
  * Escape a CSV field for semicolon-delimited format (Spanish Excel locale).
@@ -158,4 +159,98 @@ export function downloadIntermegaEmitidas(csv: string): void {
 
 export function downloadIntermegaRecibidas(csv: string): void {
   downloadBlob(csv, `facturas_recibidas_${todayTag()}.csv`);
+}
+
+export interface IntermegaCsvFile {
+  filename: string;
+  content: string;
+  nifCliente: string;        // sanitized; "SIN_CLIENTE" if unresolved
+  nombreCliente: string;
+  tipo: "emitidas" | "recibidas";
+  rowCount: number;          // number of invoices, not fiscal lines
+}
+
+function dateTag(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+function sanitizeNifForFilename(nif: string): string {
+  const clean = (nif || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  return clean || "SIN_CLIENTE";
+}
+
+/**
+ * Build Intermega CSVs partitioned by (gestoría client NIF × tipo).
+ *
+ * - Tipo derived from libro: "ingresos" → emitidas; otherwise → recibidas.
+ * - Cliente NIF derived in real time via `resolveClienteGestoria` (NOT from
+ *   the stale `formData.nif_cliente` snapshot).
+ * - Invoices with no resolvable NIF are grouped under "SIN_CLIENTE".
+ *
+ * Filename pattern: `{YYYYMMDD}_{NIF}_{NN}_{tipo}.csv`. Sequence (`NN`) is
+ * batch-local, ordered by NIF alphabetically with emitidas before recibidas
+ * for the same NIF.
+ */
+export function generateIntermegaCSVsByCliente(
+  approvedInvoices: Map<string, ApprovedInvoiceData>,
+  date: Date = new Date()
+): IntermegaCsvFile[] {
+  type Group = {
+    nifSan: string;                    // sanitized for filename
+    nombre: string;
+    tipo: "emitidas" | "recibidas";
+    invoices: ApprovedInvoiceData[];
+  };
+  const groups = new Map<string, Group>();
+
+  for (const inv of approvedInvoices.values()) {
+    const cliente = resolveClienteGestoria(inv.libro, inv.formData);
+    const nifSan = sanitizeNifForFilename(cliente.nif);
+    const tipo: "emitidas" | "recibidas" = inv.libro === "ingresos" ? "emitidas" : "recibidas";
+    const key = `${nifSan}__${tipo}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { nifSan, nombre: cliente.nombre, tipo, invoices: [] };
+      groups.set(key, g);
+    } else if (!g.nombre && cliente.nombre) {
+      // first non-empty name wins
+      g.nombre = cliente.nombre;
+    }
+    g.invoices.push(inv);
+  }
+
+  // Stable sort: by NIF alpha, then emitidas < recibidas
+  const sorted = [...groups.values()].sort((a, b) => {
+    if (a.nifSan !== b.nifSan) return a.nifSan < b.nifSan ? -1 : 1;
+    return a.tipo === b.tipo ? 0 : (a.tipo === "emitidas" ? -1 : 1);
+  });
+
+  const tag = dateTag(date);
+  const bom = "﻿";
+
+  return sorted.map((g, idx) => {
+    const seq = String(idx + 1).padStart(2, "0");
+    const filename = `${tag}_${g.nifSan}_${seq}_${g.tipo}.csv`;
+    // Sort invoices within the group by date then numero_factura for stability
+    const invs = [...g.invoices].sort((a, b) => {
+      const da = a.formData.fecha_expedicion || "";
+      const db = b.formData.fecha_expedicion || "";
+      if (da !== db) return da.localeCompare(db);
+      return (a.formData.numero_factura || "").localeCompare(b.formData.numero_factura || "");
+    });
+    const lines: string[] = [INTERMEGA_HEADER];
+    for (const i of invs) lines.push(...intermegaRowsFor(i));
+    const content = bom + lines.join("\r\n") + "\r\n";
+    return {
+      filename,
+      content,
+      nifCliente: g.nifSan,
+      nombreCliente: g.nombre,
+      tipo: g.tipo,
+      rowCount: g.invoices.length,
+    };
+  });
 }
