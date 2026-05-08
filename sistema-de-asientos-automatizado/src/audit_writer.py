@@ -63,6 +63,7 @@ class AuditWriter:
         results: list,
         decision: str,
         output_base_path: str,
+        folder_name: Optional[str] = None,
     ) -> None:
         """
         Escribir un registro de auditoría para un documento procesado.
@@ -76,10 +77,17 @@ class AuditWriter:
             file_path:        Ruta original del fichero de entrada.
             results:          Lista de PhaseResult del pipeline.
             decision:         Decisión global ("auto", "warn", "pendiente", "block", "error").
-            output_base_path: Ruta base de artefactos (Settings.output_path).
+            output_base_path: Raíz de carpetas de asiento (típicamente
+                              ``cfg.asientos_path()``).
+            folder_name:      Nombre actual de la carpeta de asiento dentro
+                              de ``output_base_path``. Si se omite, se usa
+                              ``doc_id`` (compatibilidad con la estructura
+                              legacy ``data/output/{doc_id}/``).
         """
         try:
-            record = self._build_record(doc_id, file_path, results, decision, output_base_path)
+            record = self._build_record(
+                doc_id, file_path, results, decision, output_base_path, folder_name
+            )
             line = json.dumps(record, ensure_ascii=False)
             with open(self._file_path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -101,6 +109,7 @@ class AuditWriter:
         results: list,
         decision: str,
         output_base_path: str,
+        folder_name: Optional[str] = None,
     ) -> dict:
         """
         Construir el dict del registro de auditoría.
@@ -120,13 +129,19 @@ class AuditWriter:
                 "motivo": r.motivo if r.motivo else None,
             }
 
+        # ── Localizar carpeta del documento ───────────────────────────────
+        # Trazabilidad 2.0: la carpeta puede tener nombre distinto al doc_id
+        # (libro_doc_id en provisional, esquema descriptivo tras rename).
+        # Preferir folder_name si se proporciona, fallback a doc_id (legacy).
+        carpeta_nombre = folder_name or doc_id
+
         # ── Leer resultado_validacion.json para campos y motivos ──────────
         campos_criticos: dict = {}
         motivos_revision: list = []
         verificaciones: dict = {}
 
-        if doc_id:
-            validacion = _leer_resultado_validacion(doc_id, output_base_path)
+        if carpeta_nombre:
+            validacion = _leer_resultado_validacion(carpeta_nombre, output_base_path)
             if validacion:
                 campos_criticos = _extraer_campos_criticos(validacion)
                 motivos_revision = validacion.get("motivos_revision", [])
@@ -134,8 +149,8 @@ class AuditWriter:
 
         # ── Artefactos generados ──────────────────────────────────────────
         artefactos: dict[str, Optional[str]] = {"resultado_validacion": None}
-        if doc_id:
-            base = Path(output_base_path) / doc_id
+        if carpeta_nombre:
+            base = Path(output_base_path) / carpeta_nombre
             artefactos = {
                 "documento_extraido":           str(base / "documento_extraido.json"),
                 "resultado_identidad_cabecera": str(base / "resultado_identidad_cabecera.json"),
@@ -143,12 +158,14 @@ class AuditWriter:
                 "resultado_semantica":          str(base / "resultado_semantica.json"),
                 "resultado_cliente":            str(base / "resultado_cliente.json"),
                 "resultado_validacion":         str(base / "resultado_validacion.json"),
+                "state":                        str(base / ".state.json"),
             }
 
         return {
             "schema_v":        SCHEMA_VERSION,
             "ts_proceso":      datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "doc_id":          doc_id or "UNKNOWN",
+            "folder_name":     folder_name,
             "libro":           self._libro,
             "archivo_origen":  archivo_origen,
             "fases":           fases,
@@ -177,9 +194,14 @@ _CAMPOS_A_EXTRAER = (
 )
 
 
-def _leer_resultado_validacion(doc_id: str, output_base_path: str) -> Optional[dict]:
-    """Leer resultado_validacion.json. Devuelve None si no existe o está corrupto."""
-    path = Path(output_base_path) / doc_id / "resultado_validacion.json"
+def _leer_resultado_validacion(carpeta: str, output_base_path: str) -> Optional[dict]:
+    """Leer resultado_validacion.json. Devuelve None si no existe o está corrupto.
+
+    ``carpeta`` es el nombre de la carpeta dentro de ``output_base_path``.
+    Coincide con ``doc_id`` en la estructura legacy y con ``folder_name``
+    en la estructura nueva (libros/asientos/{libro}_{doc_id}/).
+    """
+    path = Path(output_base_path) / carpeta / "resultado_validacion.json"
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)

@@ -28,19 +28,62 @@ from src.audit_writer import AuditWriter
 from src.phase2_ocr.file_queue_service import (
     run_ocr,
     scan_folder,
-    move_file,
     ProcessingStats,
 )
 from src.phase2_ocr.invoice_parser_client import VisionOcrClient
 from src.phase2_ocr.mapper_document_ai_to_json import _init_gemini_model
-from src.config import settings as get_settings
+from src.config import LIBRO_SHORT, settings as get_settings
 from src.phase3_identidad_cabecera.main import run_identidad
 from src.phase3_fiscal.main import run_fiscal
 from src.phase3_semantica.main import run_semantica
 from src.phase4_customer.main import run_cliente
 from src.phase4_ensamblador.ensamblador import run_ensamblador
+from src import state_writer
 
 logger = logging.getLogger("pipeline")
+
+# Mapeo decision_global → status del sidecar `.state.json`.
+DECISION_TO_STATUS = {
+    "auto": "done",
+    "warn": "review",
+    "pendiente": "review",
+    "block": "blocked",
+    "error": "error",
+}
+
+# Slug para `numero_factura` al construir el nombre de carpeta renombrado.
+import re as _re
+_SLUG_RE = _re.compile(r"[^A-Za-z0-9-]+")
+
+
+def _try_rename(folder: Path, libro_short: str, validacion: dict) -> Path:
+    """Renombra la carpeta de asiento al esquema descriptivo si procede.
+
+    Reglas:
+        - Solo si ``decision_global ∈ {auto, warn, pendiente}``.
+        - Y si están presentes ``fecha_expedicion``, ``nif_cliente_gestoria``
+          (o ``nif_cliente``) y ``numero_factura``.
+
+    En caso contrario devuelve la carpeta sin cambios (señal visual de
+    "necesita atención humana").
+    """
+    decision = validacion.get("decision_global")
+    if decision not in {"auto", "warn", "pendiente"}:
+        return folder
+
+    fecha = validacion.get("fecha_expedicion")
+    nif = (
+        validacion.get("nif_cliente_gestoria")
+        or validacion.get("nif_cliente")
+        or (validacion.get("metadata") or {}).get("nif_cliente")
+    )
+    num = validacion.get("numero_factura")
+    if not all([fecha, nif, num]):
+        return folder
+
+    num_slug = _SLUG_RE.sub("-", str(num)).strip("-")
+    new_name = f"{libro_short}_{fecha}_{nif}_{num_slug}"
+    return state_writer.rename(folder, new_name)
 
 
 @dataclass
@@ -58,21 +101,53 @@ def process_document(
     libro: str,
     output_base_path: str,
     status_file: str | None = None,
-) -> tuple[str | None, list[PhaseResult]]:
-    """Ejecuta OCR → Identidad → Ensamblador para un documento."""
+) -> tuple[str | None, str | None, list[PhaseResult]]:
+    """Ejecuta OCR → Identidad → Ensamblador para un documento.
+
+    Devuelve ``(doc_id, doc_dir, results)``. ``doc_dir`` puede usarse
+    para renombrar la carpeta de asiento o leer artefactos posteriores.
+    """
     results: list[PhaseResult] = []
+    libro_short = LIBRO_SHORT.get(libro, libro)
 
     # ── Fase 2: OCR ──────────────────────────────────────────────────────
     try:
         doc_id, doc_dir, is_valid, motivos = run_ocr(
-            file_path, folder_name, vision_client, gemini_model, output_base_path
+            file_path,
+            folder_name,
+            vision_client,
+            gemini_model,
+            output_base_path,
+            libro=libro_short,
         )
         results.append(PhaseResult("ocr", ok=True))
         logger.info(f"[pipeline] OCR completado: {doc_id} (valid={is_valid})")
     except Exception as e:
         logger.error(f"[pipeline] OCR falló para {file_path}: {e}", exc_info=True)
         results.append(PhaseResult("ocr", ok=False, motivo=str(e)))
-        return None, results  # Sin OCR no tiene sentido continuar
+        # Fallback: registrar el error en un sidecar usando el basename
+        # como doc_id si la carpeta se llegó a crear, para mantener trazabilidad.
+        basename = os.path.splitext(os.path.basename(file_path))[0]
+        fallback_dir = Path(output_base_path) / f"{libro_short}_{basename}"
+        try:
+            if not fallback_dir.exists():
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                state_writer.init(
+                    fallback_dir,
+                    doc_id=basename,
+                    file_origin=os.path.relpath(file_path).replace(os.sep, "/"),
+                )
+            state_writer.append(
+                fallback_dir,
+                {"status": "error", "motivo": f"{type(e).__name__}: {e}"},
+            )
+        except Exception:
+            logger.critical(
+                "[pipeline] no se pudo registrar evento error en sidecar para %s",
+                file_path,
+                exc_info=True,
+            )
+        return None, str(fallback_dir), results  # Sin OCR no tiene sentido continuar
 
     # ── Fase 3: Resolución de campos (en paralelo) ────────────────────────
     # Los módulos de fase 3 son independientes entre sí:
@@ -158,7 +233,7 @@ def process_document(
             phases=[{"fase": r.fase, "ok": r.ok, "motivo": r.motivo} for r in results],
         )
 
-    return doc_id, results
+    return doc_id, doc_dir, results
 
 
 def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -> dict:
@@ -217,19 +292,53 @@ def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -
     vision_client = VisionOcrClient()
     gemini_model = _init_gemini_model()
     folder_name = os.path.basename(os.path.normpath(folder_path))
+    libro_short = LIBRO_SHORT.get(libro, libro)
+    asientos_root = cfg.asientos_path()
 
     try:
         for file_path in files:
             if status_file:
                 _update_status_file(status_file, current_file=os.path.basename(file_path))
 
-            doc_id, results = process_document(
-                file_path, folder_name, vision_client, gemini_model, libro, cfg.output_path,
+            doc_id, doc_dir, results = process_document(
+                file_path, folder_name, vision_client, gemini_model, libro, asientos_root,
                 status_file=status_file,
             )
 
             # Determinar decisión final desde resultado_validacion.json
-            decision = _leer_decision_global(doc_id, cfg.output_path) if doc_id else "error"
+            decision = _leer_decision_global(doc_dir) if doc_id else "error"
+
+            # ── Registrar estado en el sidecar y renombrar si procede ──
+            #
+            # Trazabilidad 2.0: el PDF NO se mueve. El estado del documento
+            # vive en `.state.json` dentro de su carpeta de asiento, y la
+            # carpeta se renombra al esquema operario-friendly si hay datos
+            # suficientes.
+            folder_final = Path(doc_dir) if doc_dir else None
+            if folder_final and folder_final.exists():
+                validacion = _leer_validacion(folder_final)
+                status = DECISION_TO_STATUS.get(decision, "error")
+                event: dict = {"status": status, "decision": decision}
+                motivos = validacion.get("motivos_revision") if validacion else None
+                if motivos:
+                    event["motivos"] = motivos
+                try:
+                    state_writer.append(folder_final, event)
+                except Exception:
+                    logger.error(
+                        "[pipeline] no se pudo registrar status=%s en sidecar para %s",
+                        status, doc_id, exc_info=True,
+                    )
+
+                # Rename si la decisión y los campos lo permiten.
+                if validacion:
+                    try:
+                        folder_final = _try_rename(folder_final, libro_short, validacion)
+                    except Exception:
+                        logger.warning(
+                            "[pipeline] rename falló para %s; carpeta queda como %s",
+                            doc_id, folder_final.name, exc_info=True,
+                        )
 
             # Registrar en auditoría de negocio (nunca interrumpe el pipeline)
             audit.write(
@@ -237,37 +346,16 @@ def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -
                 file_path=file_path,
                 results=results,
                 decision=decision,
-                output_base_path=cfg.output_path,
+                output_base_path=asientos_root,
+                folder_name=folder_final.name if folder_final else None,
             )
 
+            # Contadores de resumen
             if decision == "auto":
-                try:
-                    move_file(file_path, cfg.get_folder_path(cfg.folder_procesadas))
-                    summary["ok"] += 1
-                except Exception as e:
-                    logger.error(
-                        "[pipeline] Fallo moviendo archivo %s -> %s: %s",
-                        file_path, cfg.get_folder_path(cfg.folder_procesadas), e, exc_info=True,
-                    )
-                    summary["error"] += 1
+                summary["ok"] += 1
             elif decision in ("warn", "pendiente"):
-                try:
-                    move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
-                    summary["warn"] += 1
-                except Exception as e:
-                    logger.error(
-                        "[pipeline] Fallo moviendo archivo %s -> %s: %s",
-                        file_path, cfg.get_folder_path(cfg.folder_incidencias), e, exc_info=True,
-                    )
-                    summary["error"] += 1
-            else:  # block o error
-                try:
-                    move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
-                except Exception as e:
-                    logger.error(
-                        "[pipeline] Fallo moviendo archivo %s -> %s: %s",
-                        file_path, cfg.get_folder_path(cfg.folder_incidencias), e, exc_info=True,
-                    )
+                summary["warn"] += 1
+            else:
                 summary["error"] += 1
 
             _log_resumen_documento(doc_id, results, decision)
@@ -295,17 +383,25 @@ def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -
             )
         raise
 
+    return summary
 
-def _leer_decision_global(doc_id: str, output_base: str) -> str:
-    """Leer decision_global desde resultado_validacion.json. Devuelve 'error' si no existe."""
-    import json
-    path = Path(output_base) / doc_id / "resultado_validacion.json"
+
+def _leer_validacion(doc_dir: str | Path) -> dict | None:
+    """Lee ``resultado_validacion.json`` de la carpeta de asiento. ``None`` si no existe."""
+    path = Path(doc_dir) / "resultado_validacion.json"
     try:
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("decision_global", "error")
+            return json.load(f)
     except Exception:
+        return None
+
+
+def _leer_decision_global(doc_dir: str | Path) -> str:
+    """Devuelve ``decision_global`` desde la validación o ``'error'`` si no existe."""
+    data = _leer_validacion(doc_dir)
+    if not data:
         return "error"
+    return data.get("decision_global", "error")
 
 
 def _log_resumen_documento(doc_id: str | None, results: list[PhaseResult], decision: str) -> None:

@@ -53,8 +53,10 @@ def test_run_ocr_retorna_doc_id_basename():
                 factura_path, "20_COMPRAS_GASTOS", mock_vision, mock_gemini, tmp_output
             )
 
+        # Trazabilidad 2.0: la carpeta lleva prefijo de libro
+        # ({libro_short}_{doc_id}) hasta que el orquestador la renombre.
         assert doc_id == "factura_proveedor_001"
-        assert doc_dir == os.path.join(tmp_output, "factura_proveedor_001")
+        assert doc_dir == os.path.join(tmp_output, "compras_factura_proveedor_001")
         assert not is_valid
         assert len(motivos) > 0
 
@@ -90,9 +92,10 @@ def test_run_ocr_crea_subcarpeta_por_documento():
                 factura_path, "20_COMPRAS_GASTOS", mock_vision, mock_gemini, tmp_output
             )
 
-        doc_path = Path(tmp_output) / "mi_factura"
+        doc_path = Path(tmp_output) / "compras_mi_factura"
         assert doc_path.is_dir()
         assert (doc_path / "documento_extraido.json").exists()
+        assert (doc_path / ".state.json").exists()  # sidecar inicializado
 
 
 def test_run_ocr_doc_id_sobreescribe_uuid_en_extraido():
@@ -124,7 +127,7 @@ def test_run_ocr_doc_id_sobreescribe_uuid_en_extraido():
 
             run_ocr(factura_path, "20_COMPRAS_GASTOS", mock_vision, mock_gemini, tmp_output)
 
-        extraido_path = Path(tmp_output) / "factura_estable" / "documento_extraido.json"
+        extraido_path = Path(tmp_output) / "compras_factura_estable" / "documento_extraido.json"
         with open(extraido_path, encoding="utf-8") as f:
             extraido = json.load(f)
 
@@ -150,10 +153,10 @@ def test_pipeline_e2e_genera_resultado_validacion():
              patch("src.pipeline._init_gemini_model") as MockGemini, \
              patch("src.pipeline.get_settings") as mock_cfg, \
              patch("src.phase2_ocr.file_queue_service.get_settings") as mock_cfg2, \
+             patch("src.phase2_ocr.file_queue_service.get_global_settings") as mock_cfg3, \
              patch("src.phase2_ocr.file_queue_service.estructurar_factura") as mock_struct, \
              patch("src.phase2_ocr.file_queue_service.construir_documento_extraido") as mock_build, \
-             patch("src.phase2_ocr.file_queue_service.validate_documento_extraido") as mock_val, \
-             patch("src.pipeline.move_file") as mock_move:
+             patch("src.phase2_ocr.file_queue_service.validate_documento_extraido") as mock_val:
 
             # Vision mock
             mock_vision_inst = MagicMock()
@@ -164,11 +167,12 @@ def test_pipeline_e2e_genera_resultado_validacion():
             cfg = MagicMock()
             cfg.output_path = tmp_output
             cfg.extensiones_list = ["pdf"]
-            cfg.get_folder_path.return_value = "/tmp/procesadas"
-            cfg.folder_procesadas = "90_PROCESADAS"
-            cfg.folder_incidencias = "99_INCIDENCIAS"
+            cfg.logs_path = str(Path(tmp_output) / "logs")
+            cfg.asientos_path.return_value = tmp_output
+            cfg.audit_path.return_value = str(Path(tmp_output) / "logs" / "audit")
             mock_cfg.return_value = cfg
             mock_cfg2.return_value = cfg
+            mock_cfg3.return_value = cfg
 
             mock_struct.return_value = {"total_factura": None}
             mock_build.return_value = {
@@ -186,8 +190,12 @@ def test_pipeline_e2e_genera_resultado_validacion():
 
         assert summary["total"] == 1
 
-        resultado_path = Path(tmp_output) / "factura_e2e" / "resultado_validacion.json"
+        # Trazabilidad 2.0: carpeta lleva prefijo de libro
+        carpeta_asiento = Path(tmp_output) / "compras_factura_e2e"
+        resultado_path = carpeta_asiento / "resultado_validacion.json"
+        sidecar_path = carpeta_asiento / ".state.json"
         assert resultado_path.exists(), "resultado_validacion.json no fue generado"
+        assert sidecar_path.exists(), ".state.json no fue generado"
 
         with open(resultado_path, encoding="utf-8") as f:
             resultado = json.load(f)
@@ -197,3 +205,6 @@ def test_pipeline_e2e_genera_resultado_validacion():
         assert resultado["libro"] == "20_COMPRAS_GASTOS"
         assert "decision_global" in resultado
         assert "campos" in resultado
+
+        # PDF original NO se mueve (cero shutil.move en pipeline 2.0)
+        assert Path(factura_path).exists(), "El PDF original no debe moverse"
