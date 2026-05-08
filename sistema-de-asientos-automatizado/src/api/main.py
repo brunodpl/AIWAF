@@ -31,7 +31,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from urllib.parse import quote
 
-from src.config import settings
+from src.config import LIBRO_SHORT, settings
+from src import state_writer
 
 # Versión inyectada en build (.env.docker o ENV en docker-compose)
 APP_VERSION = os.getenv("AIWAF_VERSION", "0.0.0-dev")
@@ -117,24 +118,21 @@ ALLOWED_INVOICE_EXTENSIONS = {
     ".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp", ".bmp"
 }
 
-# Book ID to sandbox folder mapping
+# Mapeo book_id (frontend, hereditario UI) → libro_short (carpeta filesystem)
+# y libro_long (parámetro `libro` que aún espera `pipeline.run_pipeline`).
+#
+# Trazabilidad 2.0: las facturas viven en `libros/facturas/{libro_short}/`.
+# El book_id se conserva como contrato hacia el frontend para no romper el
+# cliente Next.js — el mapeo se centraliza aquí, sin acoplar nombres por todo
+# el código.
 BOOK_CONFIGS = {
-    "gastos": {
-        "label": "Libro de Gastos y Compras",
-        "pendientes_subdir": "PENDIENTES/gastos",
-        "sandbox_folder": "20_COMPRAS_GASTOS",
-    },
-    "ingresos": {
-        "label": "Libro de Ingresos y Ventas",
-        "pendientes_subdir": "PENDIENTES/ingresos",
-        "sandbox_folder": "21_VENTAS_INGRESOS",
-    },
-    "bienes": {
-        "label": "Libro de Bienes de Inversión",
-        "pendientes_subdir": "PENDIENTES/bienes",
-        "sandbox_folder": "22_BIENES_INVERSION",
-    },
+    "gastos":   {"label": "Libro de Gastos y Compras",   "libro_short": "compras", "libro_long": "20_COMPRAS_GASTOS"},
+    "ingresos": {"label": "Libro de Ingresos y Ventas",  "libro_short": "ventas",  "libro_long": "21_VENTAS_INGRESOS"},
+    "bienes":   {"label": "Libro de Bienes de Inversión","libro_short": "bienes",  "libro_long": "22_BIENES_INVERSION"},
 }
+
+# Reverse: libro_short → book_id (para inferir libro desde folder_name).
+_LIBRO_SHORT_TO_BOOK = {cfg["libro_short"]: bid for bid, cfg in BOOK_CONFIGS.items()}
 
 
 # ──────────────────────────────────────────────────────────
@@ -183,9 +181,14 @@ def validate_artifact_name(artifact_name: str) -> None:
 # Helper functions
 # ──────────────────────────────────────────────────────────
 
-def get_output_dir() -> Path:
-    """Obtener directorio de output."""
-    return Path(settings().output_path)
+def get_asientos_dir() -> Path:
+    """Raíz de carpetas de asiento (`libros/asientos/`)."""
+    return Path(settings().asientos_path())
+
+
+def get_runtime_dir() -> Path:
+    """Estado transitorio del orquestador (`libros/.runtime/`)."""
+    return Path(settings().runtime_path())
 
 
 def load_json_file(path: Path) -> dict:
@@ -198,46 +201,76 @@ def load_json_file(path: Path) -> dict:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
 
-def list_document_ids() -> list[str]:
-    """Listar todos los documentos procesados."""
-    output_dir = get_output_dir()
-    if not output_dir.exists():
+def _scan_asiento_folders() -> list[Path]:
+    """Devuelve todas las carpetas de asiento ordenadas por nombre.
+
+    Cada carpeta válida contiene un `.state.json` (si falta, se ignora).
+    """
+    asientos = get_asientos_dir()
+    if not asientos.exists():
         return []
-
-    # Cada documento es un subdirectorio
-    # Acepta IDs alfanuméricos (ej: factura_001) según AGENTS.md glosario
-    doc_ids = []
-    for item in sorted(output_dir.iterdir(), key=lambda x: x.name):
-        if item.is_dir():
-            doc_ids.append(item.name)
-
-    return doc_ids
+    return sorted(
+        (p for p in asientos.iterdir() if p.is_dir() and (p / ".state.json").exists()),
+        key=lambda p: p.name,
+    )
 
 
-def get_validation_result(doc_id: str) -> Optional[dict]:
-    """Obtener resultado de validación de un documento."""
-    output_dir = get_output_dir()
-    validation_path = output_dir / doc_id / "resultado_validacion.json"
-    
-    if not validation_path.exists():
+def _libro_from_folder(folder_name: str) -> Optional[str]:
+    """Infiere el libro corto (compras/ventas/bienes) desde el nombre de carpeta."""
+    prefix = folder_name.split("_", 1)[0] if "_" in folder_name else folder_name
+    return prefix if prefix in _LIBRO_SHORT_TO_BOOK else None
+
+
+def _book_id_from_folder(folder_name: str) -> Optional[str]:
+    """Infiere book_id (gastos/ingresos/bienes) desde el nombre de carpeta."""
+    libro = _libro_from_folder(folder_name)
+    return _LIBRO_SHORT_TO_BOOK.get(libro) if libro else None
+
+
+def get_doc_folder(doc_id: str) -> Optional[Path]:
+    """Localiza la carpeta de asiento que pertenece a ``doc_id``.
+
+    Lee la cabecera del `.state.json` de cada carpeta hasta encontrar coincidencia.
+    """
+    return state_writer.find_folder_by_doc_id(get_asientos_dir(), doc_id)
+
+
+def get_validation_result(folder_or_doc: object) -> Optional[dict]:
+    """Lee resultado_validacion.json. Acepta Path (carpeta) o str (doc_id)."""
+    folder = folder_or_doc if isinstance(folder_or_doc, Path) else get_doc_folder(str(folder_or_doc))
+    if not folder:
         return None
-    
-    return load_json_file(validation_path)
+    path = folder / "resultado_validacion.json"
+    if not path.exists():
+        return None
+    return load_json_file(path)
 
 
-def get_all_artifacts(doc_id: str) -> dict:
-    """Obtener todos los artefactos de un documento."""
-    output_dir = get_output_dir()
-    doc_dir = output_dir / doc_id
-
-    if not doc_dir.exists():
+def get_all_artifacts(folder_or_doc: object) -> dict:
+    """Obtener todos los artefactos JSON de un documento."""
+    folder = folder_or_doc if isinstance(folder_or_doc, Path) else get_doc_folder(str(folder_or_doc))
+    if not folder or not folder.exists():
         return {}
-
     artifacts = {}
-    for json_file in doc_dir.glob("*.json"):
+    for json_file in folder.glob("*.json"):
         artifacts[json_file.stem] = load_json_file(json_file)
-
     return artifacts
+
+
+def get_state(folder_or_doc: object) -> Optional[dict]:
+    """Lee `.state.json` (cabecera + eventos). ``None`` si no existe."""
+    folder = folder_or_doc if isinstance(folder_or_doc, Path) else get_doc_folder(str(folder_or_doc))
+    if not folder:
+        return None
+    try:
+        return state_writer.read(folder)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def current_status_of(folder: Path) -> Optional[str]:
+    """Status del último evento de `.state.json`, o ``None``."""
+    return state_writer.current_status(folder)
 
 
 def safe_float(val: object, default: float = 0.0) -> float:
@@ -259,35 +292,43 @@ def safe_float(val: object, default: float = 0.0) -> float:
 
 
 def find_invoice_file(doc_id: str) -> Optional[Tuple[Path, str]]:
+    """Localiza el PDF/imagen original en `libros/facturas/{libro}/`.
+
+    Trazabilidad 2.0: los PDFs nunca se mueven. La carpeta de asiento
+    contiene en su `.state.json` el `file_origin` registrado al iniciar el
+    procesado — esa es la fuente de verdad. Si no está disponible, hace
+    fallback a buscar `{doc_id}.{ext}` en el inbox del libro inferido por
+    el prefijo de la carpeta.
     """
-    Buscar el archivo de factura (PDF/imagen) en PROCESADAS o INCIDENCIAS.
-    
-    Returns tuple of (ruta_del_archivo, nombre_archivo) si existe, None en caso contrario.
-    """
-    cfg = settings()
-    
-    # Buscar en ambos directorios posibles
-    folders_to_check = [
-        cfg.folder_procesadas,
-        cfg.folder_incidencias
-    ]
-    
-    for folder_name in folders_to_check:
-        folder_path = cfg.get_folder_path(folder_name)
-        if not os.path.exists(folder_path):
-            continue
-            
-        # Buscar archivos con extensiones permitidas
-        for ext in ALLOWED_INVOICE_EXTENSIONS:
-            # Buscar por patrón: doc_id + extensión
-            invoice_file = Path(folder_path) / f"{doc_id}{ext}"
-            if invoice_file.exists():
-                return (invoice_file, invoice_file.name)
-            
-            # Buscar archivos que contengan el doc_id en el nombre
-            for file in Path(folder_path).glob(f"*{doc_id}*{ext}"):
-                return (file, file.name)
-    
+    folder = get_doc_folder(doc_id)
+    if not folder:
+        return None
+
+    # 1) `.state.json[0].file_origin` es la verdad cuando existe.
+    state = get_state(folder)
+    if state:
+        events = state.get("events") or []
+        if events:
+            origin = events[0].get("file_origin")
+            if origin:
+                origin_path = Path(origin)
+                if not origin_path.is_absolute():
+                    origin_path = Path.cwd() / origin_path
+                if origin_path.exists():
+                    return origin_path, origin_path.name
+
+    # 2) Fallback: inbox del libro inferido del prefijo de la carpeta.
+    libro_short = _libro_from_folder(folder.name)
+    if libro_short:
+        inbox = Path(settings().inbox_path(libro_short))
+        if inbox.exists():
+            for ext in ALLOWED_INVOICE_EXTENSIONS:
+                cand = inbox / f"{doc_id}{ext}"
+                if cand.exists():
+                    return cand, cand.name
+            for cand in inbox.glob(f"*{doc_id}*"):
+                if cand.is_file() and cand.suffix.lower() in ALLOWED_INVOICE_EXTENSIONS:
+                    return cand, cand.name
     return None
 
 
@@ -300,28 +341,41 @@ def list_invoices():
     """
     Listar todas las facturas procesadas con su estado.
 
-    Returns una lista de documentos con su decisión global y metadata básica.
+    Para cada carpeta de asiento devuelve:
+    - ``id``        : doc_id estable (basename del PDF original)
+    - ``folder_name``: nombre actual de la carpeta (renombrada o provisional)
+    - ``libro``     : compras / ventas / bienes (prefijo de la carpeta)
+    - ``status``    : último evento del `.state.json` (processing/review/done/...)
+    - ``decision_global`` + campos resumen desde `resultado_validacion.json`.
     """
     now = time.time()
     if _invoices_cache and (now - _invoices_cache.get("ts", 0)) < _CACHE_TTL:
         return _invoices_cache["data"]
 
-    doc_ids = list_document_ids()
     invoices = []
+    for folder in _scan_asiento_folders():
+        state = get_state(folder)
+        if not state:
+            continue
+        doc_id = state.get("doc_id") or folder.name
+        events = state.get("events") or []
+        status = events[-1].get("status") if events else None
 
-    for doc_id in doc_ids:
-        validation = get_validation_result(doc_id)
-        if validation:
-            campos = validation.get("campos", {})
-            invoices.append({
-                "id": doc_id,
-                "decision_global": validation.get("decision_global", "pendiente"),
-                "timestamp": validation.get("fecha_ensamblado", ""),
-                "nif_entidad": campos.get("nif_entidad", {}).get("valor_final", ""),
-                "nombre_entidad": campos.get("nombre_entidad", {}).get("valor_final", ""),
-                "numero_factura": campos.get("numero_factura", {}).get("valor_final", ""),
-                "total_euros": campos.get("total_euros", {}).get("valor_final", 0),
-            })
+        validation = get_validation_result(folder) or {}
+        campos = validation.get("campos", {})
+
+        invoices.append({
+            "id": doc_id,
+            "folder_name": folder.name,
+            "libro": _libro_from_folder(folder.name),
+            "status": status,
+            "decision_global": validation.get("decision_global", "pendiente"),
+            "timestamp": validation.get("fecha_ensamblado", ""),
+            "nif_entidad": campos.get("nif_entidad", {}).get("valor_final", ""),
+            "nombre_entidad": campos.get("nombre_entidad", {}).get("valor_final", ""),
+            "numero_factura": campos.get("numero_factura", {}).get("valor_final", ""),
+            "total_euros": campos.get("total_euros", {}).get("valor_final", 0),
+        })
 
     result = {"invoices": invoices, "total": len(invoices)}
     _invoices_cache["data"] = result
@@ -337,15 +391,16 @@ def get_invoice(doc_id: str):
     Incluye todos los campos validados, desglose fiscal y decisión.
     """
     validate_doc_id(doc_id)
-    
-    validation = get_validation_result(doc_id)
-    
+
+    folder = get_doc_folder(doc_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail=f"Invoice {doc_id} not found")
+    validation = get_validation_result(folder)
     if not validation:
         raise HTTPException(status_code=404, detail=f"Invoice {doc_id} not found")
-    
-    # Construir respuesta completa
+
     campos = validation.get("campos", {})
-    
+
     # Extraer líneas fiscales de campos.lineas_fiscales.valor_final
     lineas_fiscales_raw = campos.get("lineas_fiscales", {}).get("valor_final", [])
     fiscal_lines = []
@@ -360,12 +415,18 @@ def get_invoice(doc_id: str):
             "decision_linea": linea.get("decision_linea", ""),
         })
 
-    # Build response
     inv_file = find_invoice_file(doc_id)
     invoice_filename = inv_file[1] if inv_file else None
 
+    state = get_state(folder) or {}
+    events = state.get("events") or []
+    status = events[-1].get("status") if events else None
+
     return {
         "id": doc_id,
+        "folder_name": folder.name,
+        "libro": _libro_from_folder(folder.name),
+        "status": status,
         "decision_global": validation.get("decision_global"),
         "metadata": {
             "fecha_ensamblado": validation.get("fecha_ensamblado", ""),
@@ -386,8 +447,9 @@ def get_invoice(doc_id: str):
             "nombre_cliente": campos.get("nombre_cliente", {}),
         },
         "fiscal_lines": fiscal_lines,
-        "artifacts": list(get_all_artifacts(doc_id).keys()),
+        "artifacts": list(get_all_artifacts(folder).keys()),
         "invoice_filename": invoice_filename,
+        "events": events,  # línea de vida operativa para la UI
     }
 
 
@@ -396,27 +458,20 @@ def get_artifact(doc_id: str, artifact_name: str):
     """
     Obtener un artefacto específico de un documento.
 
-    Artefactos disponibles:
-    - raw_document_ai
-    - documento_extraido
-    - resultado_identidad_cabecera
-    - resultado_fiscal
-    - resultado_semantica
-    - resultado_cliente
-    - resultado_validacion
+    Artefactos disponibles: ver ALLOWED_ARTIFACTS.
     """
     validate_doc_id(doc_id)
     validate_artifact_name(artifact_name)
-    
-    output_dir = get_output_dir()
-    artifact_path = output_dir / doc_id / f"{artifact_name}.json"
-    
+
+    folder = get_doc_folder(doc_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail=f"Invoice {doc_id} not found")
+    artifact_path = folder / f"{artifact_name}.json"
     if not artifact_path.exists():
         raise HTTPException(
             status_code=404,
             detail=f"Artifact {artifact_name} not found for document {doc_id}"
         )
-    
     return load_json_file(artifact_path)
 
 
@@ -425,64 +480,59 @@ def process_invoice_action(doc_id: str, action: InvoiceAction):
     """
     Procesar acción de usuario sobre una factura (aprobar/rechazar).
 
-    Esta acción registra la decisión del usuario en un log de auditoría.
+    Trazabilidad 2.0:
+    - El PDF NO se mueve (vive permanentemente en `libros/facturas/{libro}/`).
+    - La acción se registra como evento en `.state.json` de la carpeta del
+      asiento. Mapea ``approve`` → status ``done``, ``reject`` → status
+      ``review`` (sigue requiriendo atención humana hasta resolver).
+    - Se eliminan los antiguos `action_log.json` y `shutil.move` — toda la
+      línea de vida del documento queda en un único sitio.
     """
     validate_doc_id(doc_id)
-    
-    validation = get_validation_result(doc_id)
+
+    if action.action not in {"approve", "reject"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid action '{action.action}'. Allowed: approve, reject",
+        )
+
+    folder = get_doc_folder(doc_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail=f"Invoice {doc_id} not found")
+    validation = get_validation_result(folder)
     if not validation:
         raise HTTPException(status_code=404, detail=f"Invoice {doc_id} not found")
-    
-    # Registrar acción en archivo de estado
-    output_dir = get_output_dir()
-    action_log_path = output_dir / doc_id / "action_log.json"
-    
-    action_record = {
+
+    status = "done" if action.action == "approve" else "review"
+    event = {
+        "status": status,
+        "actor": "user",  # placeholder hasta que haya autenticación
         "action": action.action,
-        "document_id": doc_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "notes": action.notes,
-        "decision_global_original": validation.get("decision_global"),
-        "corrections_fields": action.corrections_fields,
-        "corrections_fiscal_lines": action.corrections_fiscal_lines,
+        "decision_original": validation.get("decision_global"),
     }
-    
-    # Guardar log de acción
+    if action.notes:
+        event["notes"] = action.notes
+    if action.corrections_fields:
+        event["corrections_fields"] = action.corrections_fields
+    if action.corrections_fiscal_lines:
+        event["corrections_fiscal_lines"] = action.corrections_fiscal_lines
+
     try:
-        action_log = []
-        if action_log_path.exists():
-            action_log = load_json_file(action_log_path)
-        action_log.append(action_record)
-        
-        with open(action_log_path, "w", encoding="utf-8") as f:
-            json.dump(action_log, f, indent=2, ensure_ascii=False)
-    except OSError as e:
-        logger.error(f"Error saving action log: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error saving action: {str(e)}")
-    
-    # Mover archivo de factura según acción del usuario
-    file_moved = False
-    if action.action == "approve":
-        # Mover de 99_INCIDENCIAS a 90_PROCESADAS
-        cfg = settings()
-        result = find_invoice_file(doc_id)
-        if result:
-            invoice_file, filename = result
-            dest_folder = cfg.get_folder_path(cfg.folder_procesadas)
-            os.makedirs(dest_folder, exist_ok=True)
-            dest_path = os.path.join(dest_folder, filename)
-            try:
-                shutil.move(str(invoice_file), dest_path)
-                file_moved = True
-                logger.info(f"Invoice {doc_id} moved to {dest_folder}")
-            except OSError as e:
-                logger.error(f"Error moving invoice file for {doc_id}: {e}", exc_info=True)
+        state_writer.append(folder, event)
+    except (FileNotFoundError, OSError) as e:
+        logger.error("[action] no se pudo escribir evento en sidecar: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error saving action: {e}")
+
+    # Invalidar cachés para reflejar el nuevo status en /api/invoices y /api/stats.
+    _invoices_cache.clear()
+    _stats_cache.clear()
 
     return {
         "status": "success",
         "message": f"Action '{action.action}' recorded for invoice {doc_id}",
-        "action": action_record,
-        "file_moved": file_moved,
+        "doc_id": doc_id,
+        "folder_name": folder.name,
+        "new_status": status,
     }
 
 
@@ -491,50 +541,37 @@ def get_stats():
     """
     Obtener estadísticas generales del pipeline.
 
-    Returns two dimensions separately:
-    - by_decision: pipeline automatic decisions (auto/warn/pendiente/block)
-    - by_user_action: human review actions (approved/rejected)
+    Dos dimensiones independientes:
+    - ``by_decision``  : decisión automática del pipeline (auto/warn/pendiente/block)
+    - ``by_user_action``: acciones humanas registradas en `.state.json`
+                          (approved/rejected — derivadas del campo `action`).
     """
     now = time.time()
     if _stats_cache and (now - _stats_cache.get("ts", 0)) < _CACHE_TTL:
         return _stats_cache["data"]
 
-    doc_ids = list_document_ids()
-
+    folders = _scan_asiento_folders()
     stats = {
-        "total": len(doc_ids),
-        "by_decision": {
-            "auto": 0,
-            "warn": 0,
-            "pendiente": 0,
-            "block": 0,
-        },
-        "by_user_action": {
-            "approved": 0,
-            "rejected": 0,
-        },
+        "total": len(folders),
+        "by_decision": {"auto": 0, "warn": 0, "pendiente": 0, "block": 0},
+        "by_user_action": {"approved": 0, "rejected": 0},
     }
 
-    for doc_id in doc_ids:
-        validation = get_validation_result(doc_id)
+    for folder in folders:
+        validation = get_validation_result(folder)
         if validation:
             decision = validation.get("decision_global", "pendiente")
             if decision in stats["by_decision"]:
                 stats["by_decision"][decision] += 1
 
-        # Verificar si tiene acciones registradas
-        output_dir = get_output_dir()
-        action_log_path = output_dir / doc_id / "action_log.json"
-        if action_log_path.exists():
-            try:
-                action_log = load_json_file(action_log_path)
-                for action in action_log:
-                    if action.get("action") == "approve":
-                        stats["by_user_action"]["approved"] += 1
-                    elif action.get("action") == "reject":
-                        stats["by_user_action"]["rejected"] += 1
-            except (OSError, json.JSONDecodeError) as exc:
-                logger.warning("[stats] Error leyendo action_log de %s: %s", doc_id, exc)
+        # Acciones humanas viven en los eventos del sidecar.
+        state = get_state(folder) or {}
+        for ev in (state.get("events") or []):
+            action = ev.get("action")
+            if action == "approve":
+                stats["by_user_action"]["approved"] += 1
+            elif action == "reject":
+                stats["by_user_action"]["rejected"] += 1
 
     _stats_cache["data"] = stats
     _stats_cache["ts"] = now
@@ -588,15 +625,19 @@ def get_invoice_file(doc_id: str):
 
 
 # ──────────────────────────────────────────────────────────
-# Pipeline lock (persistido en disco) + cancel flag
+# Pipeline lock + cancel flag + status (libros/.runtime/)
 # ──────────────────────────────────────────────────────────
 
 def _lock_path() -> Path:
-    return Path(settings().output_path) / ".pipeline_lock"
+    return get_runtime_dir() / "pipeline.lock"
 
 
 def _cancel_path() -> Path:
-    return Path(settings().output_path) / ".pipeline_cancel"
+    return get_runtime_dir() / "pipeline.cancel"
+
+
+def _status_path() -> Path:
+    return get_runtime_dir() / "pipeline_status.json"
 
 
 def is_pipeline_locked() -> bool:
@@ -659,8 +700,7 @@ def _recover_stale_pipeline_state() -> None:
     los marcamos como interrumpidos para que la UI no se quede esperando.
     """
     try:
-        cfg = settings()
-        status_path = Path(cfg.output_path) / "pipeline_status.json"
+        status_path = _status_path()
         if not status_path.exists():
             _lock_path().unlink(missing_ok=True)
             _cancel_path().unlink(missing_ok=True)
@@ -685,28 +725,54 @@ def _recover_stale_pipeline_state() -> None:
 # New endpoints: books, upload, pipeline, clients
 # ──────────────────────────────────────────────────────────
 
+def _inbox_for_book(book_id: str) -> Path:
+    """Inbox permanente del libro (`libros/facturas/{libro_short}/`)."""
+    libro_short = BOOK_CONFIGS[book_id]["libro_short"]
+    return Path(settings().inbox_path(libro_short))
+
+
 @app.get("/api/books")
 def list_books():
-    """List accounting books with pending files."""
-    cfg = settings()
-    sandbox_base = cfg.sandbox_base_path
+    """Lista los libros y sus facturas en el inbox permanente.
+
+    Trazabilidad 2.0: las facturas viven en `libros/facturas/{libro}/` y NO se
+    mueven aunque hayan sido procesadas. El campo ``files`` lista cada PDF
+    junto con el ``status`` de su asiento (si existe), para que la UI pueda
+    distinguir "subida nueva" de "ya procesada".
+    """
+    # Construir índice doc_id → status leyendo los sidecars una sola vez.
+    status_by_doc_id: dict[str, str] = {}
+    folder_by_doc_id: dict[str, str] = {}
+    for folder in _scan_asiento_folders():
+        st = get_state(folder) or {}
+        doc_id = st.get("doc_id")
+        events = st.get("events") or []
+        if doc_id and events:
+            status_by_doc_id[doc_id] = events[-1].get("status", "")
+            folder_by_doc_id[doc_id] = folder.name
+
     books = []
-    for book_id, config in BOOK_CONFIGS.items():
-        folder_path = os.path.join(sandbox_base, config["pendientes_subdir"])
+    for book_id, cfg_book in BOOK_CONFIGS.items():
+        inbox = _inbox_for_book(book_id)
         files = []
-        if os.path.isdir(folder_path):
-            for entry in os.scandir(folder_path):
-                if entry.is_file():
-                    stat = entry.stat()
-                    files.append({
-                        "name": entry.name,
-                        "size_kb": round(stat.st_size / 1024, 1),
-                        "added": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                    })
+        if inbox.is_dir():
+            for entry in os.scandir(inbox):
+                if not entry.is_file():
+                    continue
+                stat = entry.stat()
+                doc_id = os.path.splitext(entry.name)[0]
+                files.append({
+                    "name": entry.name,
+                    "size_kb": round(stat.st_size / 1024, 1),
+                    "added": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                    "status": status_by_doc_id.get(doc_id),
+                    "folder_name": folder_by_doc_id.get(doc_id),
+                })
         books.append({
             "id": book_id,
-            "label": config["label"],
-            "folder": folder_path,
+            "label": cfg_book["label"],
+            "libro_short": cfg_book["libro_short"],
+            "folder": str(inbox),
             "files": sorted(files, key=lambda f: f["added"]),
         })
     return {"books": books}
@@ -714,13 +780,16 @@ def list_books():
 
 @app.post("/api/books/{book_id}/upload")
 async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
-    """Upload invoice files to a book's pending folder."""
+    """Sube facturas al inbox permanente del libro (`libros/facturas/{libro}/`).
+
+    No hay paso intermedio en `PENDIENTES/` — el inbox y la "bandeja de entrada"
+    son el mismo sitio (trazabilidad 2.0).
+    """
     if book_id not in BOOK_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}. Valid: {list(BOOK_CONFIGS.keys())}")
 
-    cfg = settings()
-    upload_dir = os.path.join(cfg.sandbox_base_path, BOOK_CONFIGS[book_id]["pendientes_subdir"])
-    os.makedirs(upload_dir, exist_ok=True)
+    upload_dir = _inbox_for_book(book_id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
 
     uploaded = []
     errors = []
@@ -735,20 +804,19 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
             errors.append({"file": file.filename, "error": f"Extension not allowed: {ext}"})
             continue
 
-        # Fix #1: Sanitize filename to prevent path traversal
+        # Sanitize filename to prevent path traversal
         safe_name = pathlib.PurePosixPath(file.filename).name
         if not safe_name or safe_name.startswith(".") or ".." in safe_name:
             errors.append({"file": file.filename, "error": "Invalid filename"})
             continue
 
-        dest = os.path.join(upload_dir, safe_name)
-
-        # Fix #11: Avoid silent overwrite if file already exists
-        if os.path.exists(dest):
+        dest = upload_dir / safe_name
+        # Avoid silent overwrite — sufijo timestamp si colisiona.
+        if dest.exists():
             base, ext_part = os.path.splitext(safe_name)
             ts = int(datetime.now(timezone.utc).timestamp())
             safe_name = f"{base}_{ts}{ext_part}"
-            dest = os.path.join(upload_dir, safe_name)
+            dest = upload_dir / safe_name
 
         try:
             with open(dest, "wb") as f:
@@ -763,41 +831,35 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
 
 @app.delete("/api/books/{book_id}/files/{filename}")
 def delete_book_file(book_id: str, filename: str):
-    """Delete a pending file before pipeline starts."""
+    """Elimina un PDF del inbox permanente del libro.
+
+    Solo borra el archivo de entrada — no toca la carpeta de asiento si ya
+    existe (esa se gestiona vía `/api/pipeline/reset` o eliminación manual).
+    """
     if book_id not in BOOK_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}")
 
-    # Check pipeline is not running
-    cfg = settings()
-    status_path = os.path.join(cfg.output_path, "pipeline_status.json")
-    if os.path.exists(status_path):
-        try:
-            with open(status_path) as f:
-                status = json.load(f)
-            if status.get("status") == "running":
-                raise HTTPException(status_code=409, detail="Pipeline is running — cannot delete files")
-        except (json.JSONDecodeError, KeyError):
-            pass
+    # Bloquear borrado durante un run activo del pipeline.
+    if is_pipeline_locked():
+        raise HTTPException(status_code=409, detail="Pipeline is running — cannot delete files")
 
-    # Sanitize filename to prevent path traversal
     safe_name = pathlib.PurePosixPath(filename).name
     if not safe_name or safe_name.startswith(".") or ".." in safe_name:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    file_path = os.path.join(cfg.sandbox_base_path, BOOK_CONFIGS[book_id]["pendientes_subdir"], safe_name)
-    if not os.path.isfile(file_path):
+    file_path = _inbox_for_book(book_id) / safe_name
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    os.remove(file_path)
+    file_path.unlink()
     return {"deleted": safe_name}
 
 
 @app.get("/api/pipeline/status")
 def pipeline_status():
-    """Read pipeline processing status."""
-    cfg = settings()
-    status_path = os.path.join(cfg.output_path, "pipeline_status.json")
-    if not os.path.exists(status_path):
+    """Lee el estado del pipeline (runtime en `libros/.runtime/`)."""
+    status_path = _status_path()
+    if not status_path.exists():
         return {
             "status": "idle",
             "processed": 0,
@@ -808,7 +870,7 @@ def pipeline_status():
             "error_message": None,
         }
     try:
-        with open(status_path, encoding="utf-8") as f:
+        with status_path.open(encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"Error reading pipeline status: {e}", exc_info=True)
@@ -817,34 +879,45 @@ def pipeline_status():
 
 @app.post("/api/pipeline/run")
 async def run_pipeline_endpoint():
-    """Launch pipeline processing in background."""
+    """Lanza el pipeline en background sobre los inboxes permanentes.
+
+    Trazabilidad 2.0:
+    - Sin copia previa a un sandbox: ``run_pipeline`` escanea directamente
+      ``libros/facturas/{libro}/``.
+    - Sin `file_manifest.json`: el libro se infiere del path del inbox.
+    - Sin borrado de archivos al terminar: los PDFs viven permanentemente
+      en su inbox; el estado de procesado vive en el `.state.json` del
+      asiento correspondiente.
+    """
     if not acquire_pipeline_lock():
         raise HTTPException(status_code=409, detail="Pipeline already running")
 
     cfg = settings()
-    sandbox_base = cfg.sandbox_base_path
 
-    # Count files across all PENDIENTES subfolders
+    # Mapa book_id → (inbox, libro_long, libro_short). Solo libros con archivos.
+    book_inbox_map: dict[str, dict] = {}
     total_files = 0
-    book_file_map = {}  # book_id -> list of file paths
-
-    for book_id, config in BOOK_CONFIGS.items():
-        pendientes_path = os.path.join(sandbox_base, config["pendientes_subdir"])
-        if not os.path.isdir(pendientes_path):
+    for book_id, cfg_book in BOOK_CONFIGS.items():
+        inbox = _inbox_for_book(book_id)
+        if not inbox.is_dir():
             continue
-
-        files = [os.path.join(pendientes_path, f) for f in os.listdir(pendientes_path) if os.path.isfile(os.path.join(pendientes_path, f))]
+        files = [p for p in inbox.iterdir() if p.is_file()]
         if files:
-            book_file_map[book_id] = files
+            book_inbox_map[book_id] = {
+                "inbox": inbox,
+                "libro_long": cfg_book["libro_long"],
+                "libro_short": cfg_book["libro_short"],
+                "count": len(files),
+            }
             total_files += len(files)
 
     if total_files == 0:
         release_pipeline_lock()
         return {"status": "started", "total": 0}
 
-    # Write initial status
-    status_path = os.path.join(cfg.output_path, "pipeline_status.json")
-    os.makedirs(cfg.output_path, exist_ok=True)
+    # Escribir estado inicial en `libros/.runtime/pipeline_status.json`.
+    status_path = _status_path()
+    status_path.parent.mkdir(parents=True, exist_ok=True)
     initial_status = {
         "status": "running",
         "processed": 0,
@@ -855,58 +928,37 @@ async def run_pipeline_endpoint():
         "error_message": None,
     }
     try:
-        with open(status_path, "w", encoding="utf-8") as f:
+        with status_path.open("w", encoding="utf-8") as f:
             json.dump(initial_status, f, indent=2)
     except Exception as e:
         logger.error(f"Error writing pipeline status: {e}", exc_info=True)
 
-    # Launch in background — use run_in_executor to isolate from event loop
     def _run_pipeline_sync():
         try:
-            # Inicializar logging del pipeline (JSONL + console)
-            # Necesario porque la ruta API no pasa por pipeline.main()
+            # Inicializar logging del pipeline (JSONL + console).
             from src.logging_config import setup_logging
             setup_logging(logs_path=cfg.logs_path, level=logging.INFO)
 
-            # Import pipeline module
             from src.pipeline import run_pipeline
 
-            # Persistir manifiesto de archivos para soporte de reset
-            manifest = {"files": {}, "created_at": datetime.now(timezone.utc).isoformat()}
-            for bid, fps in book_file_map.items():
-                for fp in fps:
-                    manifest["files"][os.path.basename(fp)] = {"original_book": bid}
-            manifest_path = os.path.join(cfg.output_path, "file_manifest.json")
-            os.makedirs(cfg.output_path, exist_ok=True)
-            with open(manifest_path, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2, ensure_ascii=False)
-            logger.info("[pipeline] File manifest written: %d files", len(manifest["files"]))
-
-            for book_id, file_paths in book_file_map.items():
+            for book_id, info in book_inbox_map.items():
                 if is_cancel_requested():
                     logger.warning("[pipeline] Cancelación solicitada — abortando libros pendientes")
                     break
 
-                sandbox_folder = os.path.join(sandbox_base, BOOK_CONFIGS[book_id]["sandbox_folder"])
-                os.makedirs(sandbox_folder, exist_ok=True)
+                logger.info(
+                    "[pipeline] Procesando libro=%s (%d archivos) desde %s",
+                    info["libro_long"], info["count"], info["inbox"],
+                )
+                run_pipeline(
+                    str(info["inbox"]),
+                    info["libro_long"],
+                    status_file=str(status_path),
+                )
 
-                # Copy files from PENDIENTES to sandbox
-                for fp in file_paths:
-                    shutil.copy2(fp, sandbox_folder)
-
-                # Run pipeline for this book
-                run_pipeline(sandbox_folder, BOOK_CONFIGS[book_id]["sandbox_folder"], status_file=status_path)
-
-                # Clean up: remove processed files from PENDIENTES
-                for fp in file_paths:
-                    try:
-                        os.remove(fp)
-                    except OSError:
-                        pass
-
-            # Update status on completion
+            # Estado final.
             try:
-                with open(status_path, "r", encoding="utf-8") as f:
+                with status_path.open("r", encoding="utf-8") as f:
                     status = json.load(f)
                 if is_cancel_requested():
                     status["status"] = "cancelled"
@@ -914,24 +966,28 @@ async def run_pipeline_endpoint():
                 else:
                     status["status"] = "completed"
                 status["completed_at"] = datetime.now(timezone.utc).isoformat()
-                with open(status_path, "w", encoding="utf-8") as f:
+                with status_path.open("w", encoding="utf-8") as f:
                     json.dump(status, f, indent=2)
             except (OSError, json.JSONDecodeError) as exc:
                 logger.error("Pipeline background: error escribiendo status final: %s", exc, exc_info=True)
         except Exception as e:
             logger.error(f"Pipeline background task failed: {e}", exc_info=True)
             try:
-                with open(status_path, "r", encoding="utf-8") as f:
+                with status_path.open("r", encoding="utf-8") as f:
                     status = json.load(f)
                 status["status"] = "error"
                 status["error_message"] = str(e)
                 status["completed_at"] = datetime.now(timezone.utc).isoformat()
-                with open(status_path, "w", encoding="utf-8") as f:
+                with status_path.open("w", encoding="utf-8") as f:
                     json.dump(status, f, indent=2)
             except (OSError, json.JSONDecodeError) as exc:
                 logger.error("Pipeline background: error escribiendo status de error: %s", exc, exc_info=True)
         finally:
             release_pipeline_lock()
+            # Invalidar cachés tras un run para que /api/invoices y /api/stats
+            # reflejen los nuevos asientos sin esperar al TTL.
+            _invoices_cache.clear()
+            _stats_cache.clear()
 
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, _run_pipeline_sync)
@@ -940,125 +996,73 @@ async def run_pipeline_endpoint():
 
 
 # ──────────────────────────────────────────────────────────
-# Reset endpoint — devuelve archivos a PENDIENTES, limpia artefactos
+# Reset endpoint — limpia carpetas de asiento y runtime
 # ──────────────────────────────────────────────────────────
-
-# Reverse lookup: sandbox_folder → book_id
-_SANDBOX_TO_BOOK = {v["sandbox_folder"]: k for k, v in BOOK_CONFIGS.items()}
-
 
 @app.post("/api/pipeline/reset")
 def reset_pipeline():
     """
-    Reset completo del pipeline:
-    1. Devuelve archivos procesados a sus carpetas PENDIENTES originales
-    2. Limpia artefactos de output/
-    3. Registra evento en audit log (trazabilidad)
+    Reset operativo del pipeline (trazabilidad 2.0):
+
+    1. Borra TODAS las carpetas de asiento (`libros/asientos/*`) — incluye
+       sus `.state.json` y artefactos JSON.
+    2. Limpia el estado transitorio (`libros/.runtime/*`).
+    3. Los PDFs originales NO se tocan: siguen en su inbox permanente
+       (`libros/facturas/{libro}/`), listos para reproceso.
+    4. Registra el evento en `libros/logs/audit/reset_{fecha}.jsonl` para
+       trazabilidad fiscal.
     """
     if is_pipeline_locked():
         raise HTTPException(status_code=409, detail="Pipeline en ejecución. No se puede resetear.")
 
     cfg = settings()
-    sandbox_base = cfg.sandbox_base_path
-    output_path = Path(cfg.output_path)
+    asientos_root = get_asientos_dir()
+    runtime_root = get_runtime_dir()
 
-    files_restored = 0
-    doc_ids_deleted = 0
-
-    # 1. Leer manifiesto de archivos (si existe)
-    manifest_path = output_path / "file_manifest.json"
-    manifest_files = {}
-    if manifest_path.exists():
-        try:
-            with open(manifest_path, encoding="utf-8") as f:
-                manifest_data = json.load(f)
-            manifest_files = manifest_data.get("files", {})
-        except Exception as e:
-            logger.warning("[reset] Error leyendo file_manifest.json: %s", e)
-
-    # 2. Escanear carpetas de destino y devolver archivos a PENDIENTES
-    # Carpetas donde pueden estar los archivos procesados
-    scan_folders = [
-        cfg.get_folder_path(cfg.folder_procesadas),      # 90_PROCESADAS
-        cfg.get_folder_path(cfg.folder_incidencias),      # 99_INCIDENCIAS
-    ]
-    # También escanear carpetas sandbox (por si pipeline crasheó a mitad)
-    for book_id, config in BOOK_CONFIGS.items():
-        sandbox_folder = os.path.join(sandbox_base, config["sandbox_folder"])
-        if sandbox_folder not in scan_folders:
-            scan_folders.append(sandbox_folder)
-
-    for folder in scan_folders:
-        if not os.path.isdir(folder):
-            continue
-        for entry in os.scandir(folder):
-            if not entry.is_file():
-                continue
-            fname = entry.name
-            # Determinar book_id original
-            original_book = None
-            if fname in manifest_files:
-                original_book = manifest_files[fname].get("original_book")
-            else:
-                # Inferir desde carpeta sandbox si aplica
-                folder_basename = os.path.basename(folder)
-                if folder_basename in _SANDBOX_TO_BOOK:
-                    original_book = _SANDBOX_TO_BOOK[folder_basename]
-
-            if original_book and original_book in BOOK_CONFIGS:
-                dest = os.path.join(sandbox_base, BOOK_CONFIGS[original_book]["pendientes_subdir"])
-                os.makedirs(dest, exist_ok=True)
-                try:
-                    shutil.move(entry.path, os.path.join(dest, fname))
-                    files_restored += 1
-                    logger.info("[reset] Archivo devuelto: %s → %s", fname, dest)
-                except OSError as e:
-                    logger.error("[reset] Error moviendo %s: %s", fname, e, exc_info=True)
-            else:
-                logger.warning("[reset] Archivo %s sin book_id conocido, ignorado", fname)
-
-    # 3. Borrar subcarpetas doc_id de output/
-    if output_path.exists():
-        for entry in output_path.iterdir():
+    # 1. Borrar carpetas de asiento (incluye .state.json + artefactos JSON).
+    asientos_deleted = 0
+    if asientos_root.exists():
+        for entry in asientos_root.iterdir():
             if entry.is_dir():
                 try:
                     shutil.rmtree(entry)
-                    doc_ids_deleted += 1
+                    asientos_deleted += 1
                 except OSError as e:
                     logger.error("[reset] Error borrando %s: %s", entry, e, exc_info=True)
 
-    # 4. Borrar pipeline_status.json y file_manifest.json
-    for fname in ("pipeline_status.json", "file_manifest.json"):
-        fpath = output_path / fname
-        if fpath.exists():
+    # 2. Limpiar runtime (lock, cancel, status). Los PDFs no se tocan.
+    if runtime_root.exists():
+        for entry in runtime_root.iterdir():
             try:
-                fpath.unlink()
-            except OSError:
+                entry.unlink()
+            except (OSError, IsADirectoryError):
                 pass
 
-    # 5. Registrar evento en audit log (trazabilidad)
+    # 3. Registrar evento en audit log para trazabilidad fiscal.
     try:
-        audit_dir = Path(cfg.logs_path) / "audit"
+        audit_dir = Path(cfg.audit_path())
         audit_dir.mkdir(parents=True, exist_ok=True)
         reset_record = {
             "schema_v": 1,
             "ts_proceso": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "event": "reset",
-            "files_restored": files_restored,
-            "doc_ids_deleted": doc_ids_deleted,
+            "event": "reset_batch",
+            "asientos_deleted": asientos_deleted,
         }
         reset_log = audit_dir / f"reset_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
-        with open(reset_log, "a", encoding="utf-8") as f:
+        with reset_log.open("a", encoding="utf-8") as f:
             f.write(json.dumps(reset_record, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.error("[reset] Error escribiendo audit log: %s", e, exc_info=True)
 
-    logger.info("[reset] Completado: %d archivos restaurados, %d doc_ids eliminados", files_restored, doc_ids_deleted)
+    # Invalidar cachés de listado/stats.
+    _invoices_cache.clear()
+    _stats_cache.clear()
+
+    logger.info("[reset] Completado: %d carpetas de asiento eliminadas", asientos_deleted)
 
     return {
         "status": "ok",
-        "files_restored": files_restored,
-        "doc_ids_deleted": doc_ids_deleted,
+        "asientos_deleted": asientos_deleted,
     }
 
 
@@ -1242,8 +1246,7 @@ def request_system_update():
     Watchtower hace pull de las imágenes con label
     `com.centurylinklabs.watchtower.enable=true` y recrea los contenedores.
     """
-    output_dir = get_output_dir()
-    status_path = output_dir / "pipeline_status.json"
+    status_path = _status_path()
     if status_path.exists():
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
