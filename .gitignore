@@ -26,6 +26,10 @@ Desktop.ini
 .worktrees/
 .[AI assistant]/worktrees/
 
+# Trazabilidad 2.0 — datos runtime (inboxes de PDFs, asientos, logs, .runtime).
+# Se crean automáticamente en cada despliegue; nunca deben commitearse.
+libros/
+
 # Playwright artifacts
 test-results/
 playwright-report/

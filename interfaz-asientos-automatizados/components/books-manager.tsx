@@ -285,6 +285,22 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                     {book.files.map((file: BookFile) => {
                       const fileKey = `${book.id}/${file.name}`;
                       const isDeleting = deletingFile === fileKey;
+                      // Trazabilidad 2.0: si ya tiene asiento, mostrar status.
+                      const statusLabel = file.status
+                        ? file.status === "done" ? "procesada"
+                        : file.status === "review" ? "revisar"
+                        : file.status === "blocked" ? "bloqueada"
+                        : file.status === "error" ? "error"
+                        : file.status === "processing" ? "procesando…"
+                        : null
+                        : null;
+                      const statusClass = file.status === "done"
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : file.status === "review"
+                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                        : file.status === "blocked" || file.status === "error"
+                        ? "bg-red-50 text-red-700 border-red-200"
+                        : "bg-slate-50 text-slate-600 border-slate-200";
                       return (
                         <div
                           key={file.name}
@@ -295,6 +311,17 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                             <p className="text-xs font-mono truncate">{file.name}</p>
                             <p className="text-[10px] text-slate-400">{file.size_kb} KB</p>
                           </div>
+                          {statusLabel && (
+                            <span
+                              className={cn(
+                                "text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full border",
+                                statusClass,
+                              )}
+                              title={file.folder_name ?? undefined}
+                            >
+                              {statusLabel}
+                            </span>
+                          )}
                           <button
                             onClick={() => handleDeleteFile(book.id, file.name)}
                             disabled={isDeleting}

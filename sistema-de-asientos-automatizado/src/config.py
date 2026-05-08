@@ -14,6 +14,20 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Mapeo libro largo → corto para nombres de carpeta operario-friendly
+# (trazabilidad 2.0). El audit JSONL sigue usando la forma larga para
+# preservar `schema_v: 1`.
+LIBRO_SHORT = {
+    "20_COMPRAS_GASTOS": "compras",
+    "21_VENTAS_INGRESOS": "ventas",
+    "22_BIENES_INVERSION": "bienes",
+    # Identidad para inputs ya en forma corta.
+    "compras": "compras",
+    "ventas": "ventas",
+    "bienes": "bienes",
+}
+
+
 class Settings(BaseSettings):
     """
     Configuración global del pipeline de facturas.
@@ -68,7 +82,11 @@ class Settings(BaseSettings):
         default=0.80, validation_alias="SEMANTICA_UMBRAL_CONFIANZA_WARN",
     )
 
-    # ── Carpetas locales ──────────────────────────────────────
+    # ── Carpetas locales (legacy — pre-trazabilidad-2.0) ──────
+    # Se conservan por compatibilidad con `.env` existente. El pipeline
+    # nuevo usa exclusivamente ``libros_base`` y los helpers
+    # ``inbox_path``/``asientos_path``/``runtime_path``/``audit_path``.
+    # Tras migración completa pueden eliminarse de `.env`.
     sandbox_base_path: str = Field(
         validation_alias="SANDBOX_BASE_PATH"
     )
@@ -86,6 +104,16 @@ class Settings(BaseSettings):
     )
     folder_incidencias: str = Field(
         validation_alias="FOLDER_INCIDENCIAS"
+    )
+
+    # ── Trazabilidad 2.0: estructura `libros/` ────────────────
+    # Raíz única para inboxes permanentes (`libros/facturas/{libro}/`),
+    # carpetas de asiento (`libros/asientos/{folder_name}/`), logs
+    # (`libros/logs/audit/...`) y estado transitorio del orquestador
+    # (`libros/.runtime/...`). Por defecto vive a la altura del repo.
+    libros_base: str = Field(
+        default="libros",
+        validation_alias="LIBROS_BASE",
     )
 
     # ── Output Paths ──────────────────────────────────────────
@@ -162,7 +190,7 @@ class Settings(BaseSettings):
 
     def get_folder_path(self, folder_name: str) -> str:
         """
-        Construir ruta absoluta para una carpeta del sandbox.
+        Construir ruta absoluta para una carpeta del sandbox (legacy).
 
         Args:
             folder_name: Nombre de la carpeta (e.g., "20_COMPRAS_GASTOS")
@@ -172,28 +200,56 @@ class Settings(BaseSettings):
         """
         return os.path.join(self.sandbox_base_path, folder_name)
 
+    # ── Helpers de trazabilidad 2.0 ───────────────────────────
+
+    def inbox_path(self, libro: str) -> str:
+        """Ruta del inbox permanente para un libro.
+
+        Acepta tanto la forma corta (`compras`/`ventas`/`bienes`) como la
+        larga (`20_COMPRAS_GASTOS`/...) y devuelve siempre el path corto.
+        """
+        return os.path.join(self.libros_base, "facturas", LIBRO_SHORT.get(libro, libro))
+
+    def asientos_path(self) -> str:
+        """Raíz de carpetas de asiento (`libros/asientos/`)."""
+        return os.path.join(self.libros_base, "asientos")
+
+    def runtime_path(self) -> str:
+        """Estado transitorio del orquestador (`libros/.runtime/`)."""
+        return os.path.join(self.libros_base, ".runtime")
+
+    def audit_path(self) -> str:
+        """Raíz de logs de auditoría (`libros/logs/audit/`)."""
+        return os.path.join(self.libros_base, "logs", "audit")
+
     def validate_paths(self) -> None:
         """
-        Validar que las rutas críticas existen o pueden crearse.
+        Crear todas las rutas críticas si no existen (plug & play).
 
-        Crea automáticamente directorios de output, logs y sandbox si no existen.
+        Estructura nueva (trazabilidad 2.0):
+            libros/facturas/{compras,ventas,bienes}/   ← inboxes
+            libros/asientos/                           ← raíz de asientos
+            libros/logs/{,audit/}                      ← logs
+            libros/.runtime/                           ← estado transitorio
+
+        Mantiene compatibilidad con la estructura legacy mientras `.env`
+        siga apuntando al sandbox antiguo.
         """
-        os.makedirs(self.output_path, exist_ok=True)
+        # Estructura nueva.
+        for libro in ("compras", "ventas", "bienes"):
+            os.makedirs(self.inbox_path(libro), exist_ok=True)
+        os.makedirs(self.asientos_path(), exist_ok=True)
+        os.makedirs(self.audit_path(), exist_ok=True)
+        os.makedirs(self.runtime_path(), exist_ok=True)
+
+        # Logs técnicos siguen donde estaban (logs_path puede convivir
+        # apuntando a `libros/logs` o a una ruta externa).
         os.makedirs(self.logs_path, exist_ok=True)
 
-        # Auto-crear sandbox y subdirectorios de libros para plug & play
-        os.makedirs(self.sandbox_base_path, exist_ok=True)
-        for folder in [
-            self.folder_compras_gastos,
-            self.folder_ventas_ingresos,
-            self.folder_bienes_inversion,
-            self.folder_procesadas,
-            self.folder_incidencias,
-        ]:
-            os.makedirs(self.get_folder_path(folder), exist_ok=True)
-        # Crear subdirectorios PENDIENTES para la interfaz de upload
-        for subdir in ["PENDIENTES/gastos", "PENDIENTES/ingresos", "PENDIENTES/bienes"]:
-            os.makedirs(os.path.join(self.sandbox_base_path, subdir), exist_ok=True)
+        # Compatibilidad con el sandbox legacy mientras esté en `.env`.
+        # Cuando se vacíe del entorno, este bloque queda inerte.
+        if self.sandbox_base_path:
+            os.makedirs(self.sandbox_base_path, exist_ok=True)
 
     def __repr__(self) -> str:
         """Representación segura sin exponer credenciales."""

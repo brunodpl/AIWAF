@@ -13,7 +13,6 @@ from unittest.mock import MagicMock, patch
 from src.phase2_ocr.file_queue_service import (
     scan_folder,
     save_json,
-    move_file,
     ProcessingStats,
     run_ocr,
     process_single_file,
@@ -90,58 +89,6 @@ def test_save_json_formats_with_indent(tmp_path):
     content = output_path.read_text(encoding="utf-8")
     assert "\n" in content
     assert "  " in content
-
-
-def test_move_file(tmp_path):
-    """Test movimiento de archivo."""
-    source_dir = tmp_path / "source"
-    dest_dir = tmp_path / "dest"
-    source_dir.mkdir()
-    dest_dir.mkdir()
-
-    source_file = source_dir / "test.pdf"
-    source_file.touch()
-
-    move_file(str(source_file), str(dest_dir))
-
-    assert not source_file.exists()
-    assert (dest_dir / "test.pdf").exists()
-
-
-def test_move_file_handles_collision(tmp_path):
-    """Test manejo de colisión de nombres de archivo."""
-    source_dir = tmp_path / "source"
-    dest_dir = tmp_path / "dest"
-    source_dir.mkdir()
-    dest_dir.mkdir()
-
-    (dest_dir / "test.pdf").touch()
-
-    source_file = source_dir / "test.pdf"
-    source_file.write_text("content")
-
-    move_file(str(source_file), str(dest_dir))
-
-    assert (dest_dir / "test_1.pdf").exists()
-    assert not source_file.exists()
-
-
-def test_move_file_handles_multiple_collisions(tmp_path):
-    """Test múltiples colisiones sucesivas."""
-    source_dir = tmp_path / "source"
-    dest_dir = tmp_path / "dest"
-    source_dir.mkdir()
-    dest_dir.mkdir()
-
-    (dest_dir / "test.pdf").touch()
-    (dest_dir / "test_1.pdf").touch()
-    (dest_dir / "test_2.pdf").touch()
-
-    source_file = source_dir / "test.pdf"
-    source_file.write_text("content")
-
-    move_file(str(source_file), str(dest_dir))
-    assert (dest_dir / "test_3.pdf").exists()
 
 
 def test_processing_stats_initialization():

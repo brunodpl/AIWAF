@@ -2,19 +2,23 @@
 Servicio de cola de archivos y orquestación del pipeline OCR.
 
 Gestiona el procesamiento secuencial de facturas:
-1. Escanear carpeta de entrada
+1. Escanear carpeta de entrada (inbox permanente del libro)
 2. Para cada archivo: Vision OCR → Gemini estructuración → validate → save
-3. Mover archivos (solo en ejecución standalone)
+3. Registrar el estado del documento en su sidecar `.state.json`
 4. Generar resumen de procesamiento
+
+Trazabilidad 2.0: los PDFs nunca se mueven entre carpetas. El estado vive
+en el sidecar de la carpeta de asiento (`libros/asientos/{libro}_{doc_id}/`).
 """
 
 import logging
 import os
-import shutil
 import json
 from pathlib import Path
 from typing import List, Dict, Any
 from .config import settings as get_settings
+from src import state_writer
+from src.config import LIBRO_SHORT, settings as get_global_settings
 from .invoice_parser_client import VisionOcrClient
 from .mapper_document_ai_to_json import (
     _init_gemini_model,
@@ -89,41 +93,22 @@ def save_json(data: Dict[str, Any], output_path: str) -> None:
     logger.debug(f"[ocr] Saved JSON: {output_path}")
 
 
-def move_file(source: str, destination_folder: str) -> None:
-    """
-    Mover archivo a carpeta de destino.
-
-    Maneja colisiones añadiendo sufijo _1, _2, etc.
-    Nunca borra archivos originales.
-    """
-    filename = os.path.basename(source)
-    destination = os.path.join(destination_folder, filename)
-
-    if os.path.exists(destination):
-        base, ext = os.path.splitext(filename)
-        counter = 1
-        while os.path.exists(destination):
-            new_filename = f"{base}_{counter}{ext}"
-            destination = os.path.join(destination_folder, new_filename)
-            counter += 1
-        logger.warning(f"[ocr] Name collision, renamed to: {os.path.basename(destination)}")
-
-    shutil.move(source, destination)
-    logger.info(f"[ocr] Moved: {filename} → {os.path.basename(destination_folder)}")
-
-
 def run_ocr(
     file_path: str,
     input_folder_name: str,
     vision_client: VisionOcrClient,
     gemini_model,
     output_base_path: str,
+    libro: str | None = None,
 ) -> tuple[str, str, bool, list[str]]:
     """
-    Core del pipeline OCR sin mover archivos.
+    Core del pipeline OCR. Los PDFs nunca se mueven (trazabilidad 2.0).
 
     Procesa una factura y guarda los artefactos en una subcarpeta
-    dedicada por documento: {output_base_path}/{documento_id}/
+    dedicada por documento: ``{output_base_path}/{libro_short}_{documento_id}/``
+    (provisional; ``pipeline.py`` la renombra tras validación si procede).
+
+    Inicializa el sidecar ``.state.json`` con un evento ``processing``.
 
     Pasos:
     1. Cloud Vision → texto plano
@@ -136,7 +121,10 @@ def run_ocr(
         input_folder_name: Nombre de la carpeta de entrada (para auditoría)
         vision_client: Cliente de Cloud Vision ya instanciado
         gemini_model: Modelo Gemini ya inicializado
-        output_base_path: Ruta base donde crear subcarpetas por documento
+        output_base_path: Raíz de carpetas de asiento (típicamente
+            ``cfg.asientos_path()``).
+        libro: Nombre corto del libro (``compras``/``ventas``/``bienes``).
+            Si se omite se intenta derivar de ``input_folder_name``.
 
     Returns:
         (documento_id, doc_output_dir, is_valid, motivos)
@@ -145,8 +133,15 @@ def run_ocr(
     basename = os.path.splitext(filename)[0]
     documento_id = basename
 
-    doc_output_dir = os.path.join(output_base_path, documento_id)
+    libro_short = LIBRO_SHORT.get(libro or input_folder_name, libro or input_folder_name)
+    folder_name = f"{libro_short}_{documento_id}"
+    doc_output_dir = os.path.join(output_base_path, folder_name)
     Path(doc_output_dir).mkdir(parents=True, exist_ok=True)
+    state_writer.init(
+        Path(doc_output_dir),
+        doc_id=documento_id,
+        file_origin=os.path.relpath(file_path).replace(os.sep, "/"),
+    )
 
     logger.info(f"[ocr] Iniciando: {filename} doc_id={documento_id}")
 
@@ -198,31 +193,47 @@ def process_single_file(
     stats: ProcessingStats,
     vision_client: VisionOcrClient,
     gemini_model,
+    libro: str | None = None,
 ) -> None:
     """
     Procesar una factura en ejecución standalone (sin pipeline completo).
 
-    Usa run_ocr() internamente y mueve el archivo según el resultado.
-    Solo OCR: no ejecuta identidad ni ensamblador.
+    Trazabilidad 2.0: NO mueve el PDF. El estado se registra en el sidecar
+    ``.state.json`` de la carpeta de asiento. Solo OCR: no ejecuta identidad
+    ni ensamblador. Para pipeline completo, usar ``src/pipeline.py``.
     """
-    cfg = get_settings()
+    cfg = get_global_settings()
     filename = os.path.basename(file_path)
 
     logger.info(f"[ocr] Procesando (standalone): {filename}")
 
+    libro_short = LIBRO_SHORT.get(libro or input_folder_name, libro or input_folder_name)
+    basename = os.path.splitext(filename)[0]
+    folder = Path(cfg.asientos_path()) / f"{libro_short}_{basename}"
+
     try:
         _, _, is_valid, motivos = run_ocr(
-            file_path, input_folder_name, vision_client, gemini_model, cfg.output_path
+            file_path,
+            input_folder_name,
+            vision_client,
+            gemini_model,
+            cfg.asientos_path(),
+            libro=libro_short,
         )
 
         if is_valid:
-            move_file(file_path, cfg.get_folder_path(cfg.folder_procesadas))
+            state_writer.append(folder, {"status": "done", "decision": "auto"})
             stats.procesadas += 1
-            logger.info(f"[ocr] OK: {filename} → PROCESADAS")
+            logger.info(f"[ocr] OK: doc_id={basename} (sidecar=done)")
         else:
-            move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
+            state_writer.append(
+                folder,
+                {"status": "review", "decision": "warn", "motivos": motivos},
+            )
             stats.incidencias += 1
-            logger.warning(f"[ocr] INCIDENCIA: {filename} → INCIDENCIAS. Motivos: {len(motivos)}")
+            logger.warning(
+                f"[ocr] INCIDENCIA: doc_id={basename} motivos={len(motivos)}"
+            )
 
     except Exception as e:
         logger.error(
@@ -230,10 +241,15 @@ def process_single_file(
             exc_info=True,
         )
         try:
-            move_file(file_path, cfg.get_folder_path(cfg.folder_incidencias))
-        except Exception as move_error:
+            # Si la carpeta y sidecar se llegaron a crear, deja constancia.
+            if folder.exists() and (folder / ".state.json").exists():
+                state_writer.append(
+                    folder,
+                    {"status": "error", "motivo": f"{type(e).__name__}: {e}"},
+                )
+        except Exception as state_error:
             logger.critical(
-                f"[ocr] CRÍTICO: no se pudo mover {filename}: {move_error}"
+                f"[ocr] CRÍTICO: no se pudo registrar error de {filename} en state: {state_error}"
             )
         stats.errores_tecnicos += 1
 
