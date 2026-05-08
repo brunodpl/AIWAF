@@ -2,10 +2,18 @@ import type { Libro } from "./types";
 
 /**
  * Maps the libro to which formData fields hold our gestoria's client.
- * Mirrors `LIBRO_A_ROL_CLIENTE` in
+ *
+ * Mirrors the SEMANTICS of `LIBRO_A_ROL_CLIENTE` in
  * sistema-de-asientos-automatizado/src/phase4_customer/resolver.py:20-24.
  *
- * Keep these in sync if a new libro is ever added.
+ * Note the key-naming difference:
+ *   backend keys → "20_COMPRAS_GASTOS" / "21_VENTAS_INGRESOS" / "22_BIENES_INVERSION"
+ *   frontend keys → "gastos"           / "ingresos"           / "bienes"
+ *
+ * If a new libro is added to the backend (e.g. "23_INTRACOMUNITARIAS"):
+ *   1. Add the corresponding member to the `Libro` union in `lib/types.ts`.
+ *   2. Add an entry here mapping it to the right (nifKey, nombreKey).
+ *   3. Confirm the export pipeline (csv.ts → tipo, export-stage banner) handles it.
  */
 const LIBRO_A_ROL: Record<Libro, { nifKey: string; nombreKey: string }> = {
   ingresos: { nifKey: "nif_entidad",  nombreKey: "nombre_entidad" },

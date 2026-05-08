@@ -199,7 +199,7 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
   ];
 
   // --- Single-file download ---
-  const handleFileDowload = useCallback(
+  const handleFileDownload = useCallback(
     (file: IntermegaCsvFile) => {
       // Count invoices in this file that lack cuenta_contable
       let missing = 0;
@@ -405,7 +405,7 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleFileDowload(file)}
+                            onClick={() => handleFileDownload(file)}
                             className="h-6 px-2 text-[10px] rounded-none uppercase tracking-[0.1em] text-slate-600 hover:text-slate-900 hover:bg-slate-100"
                           >
                             <Download className="h-3 w-3 mr-1" />

@@ -229,7 +229,7 @@ export function generateIntermegaCSVsByCliente(
   });
 
   const tag = dateTag(date);
-  const bom = "﻿";
+  const bom = "\uFEFF";
 
   return sorted.map((g, idx) => {
     const seq = String(idx + 1).padStart(2, "0");
