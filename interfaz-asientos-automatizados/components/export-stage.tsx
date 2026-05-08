@@ -18,14 +18,16 @@ import {
   Download,
   ArrowLeft,
   Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import { ApprovedInvoiceData } from "@/lib/types";
 import {
-  generateIntermegaCSV,
-  downloadIntermegaEmitidas,
-  downloadIntermegaRecibidas,
+  generateIntermegaCSVsByCliente,
+  type IntermegaCsvFile,
   normalizeNumber,
 } from "@/lib/csv";
+import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
+import JSZip from "jszip";
 
 type ExportKind = "emitidas" | "recibidas";
 
@@ -52,8 +54,15 @@ interface AsientoRow {
   kind: ExportKind;
 }
 
+// Pending action is either a single-file download or "zip"
+type PendingAction = { type: "file"; file: IntermegaCsvFile } | { type: "zip" };
+
 function invoiceKind(invoice: ApprovedInvoiceData): ExportKind {
   return invoice.libro === "ingresos" ? "emitidas" : "recibidas";
+}
+
+function sanitizeNifKey(nif: string): string {
+  return (nif || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase() || "SIN_CLIENTE";
 }
 
 function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): AsientoRow[] {
@@ -61,8 +70,9 @@ function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): A
 
   for (const [docId, invoice] of approvedInvoices) {
     const fd = invoice.formData;
-    const nifCliente = fd.nif_cliente || fd.nif_receptor || "";
-    const nombreCliente = fd.nombre_cliente || fd.nombre_receptor || "";
+    const cliente = resolveClienteGestoria(invoice.libro, fd);
+    const nifCliente = sanitizeNifKey(cliente.nif);
+    const nombreCliente = cliente.nombre || "Cliente desconocido";
     const totalFactura = normalizeNumber(fd.total_euros).toFixed(2);
     const kind = invoiceKind(invoice);
 
@@ -107,20 +117,61 @@ function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): A
 function groupByCliente(rows: AsientoRow[]): Map<string, { nombre: string; rows: AsientoRow[] }> {
   const groups = new Map<string, { nombre: string; rows: AsientoRow[] }>();
   for (const row of rows) {
-    const key = row.nif_cliente || "SIN_CLIENTE";
+    const key = row.nif_cliente;
     if (!groups.has(key)) {
-      groups.set(key, { nombre: row.nombre_cliente || "Cliente desconocido", rows: [] });
+      groups.set(key, { nombre: row.nombre_cliente, rows: [] });
     }
     groups.get(key)!.rows.push(row);
   }
   return groups;
 }
 
-export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
-  const [downloadingKind, setDownloadingKind] = useState<ExportKind | null>(null);
-  const [pendingKind, setPendingKind] = useState<ExportKind | null>(null);
-  const [missingAccountsCount, setMissingAccountsCount] = useState(0);
+function downloadCsvFile(file: IntermegaCsvFile) {
+  const blob = new Blob([file.content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = file.filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
+async function downloadZip(files: IntermegaCsvFile[]): Promise<void> {
+  const zip = new JSZip();
+  for (const f of files) zip.file(f.filename, f.content);
+  const blob = await zip.generateAsync({ type: "blob" });
+  const today = new Date();
+  const tag = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `intermega_${tag}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
+  const [isZipping, setIsZipping] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [missingAccountsCount, setMissingAccountsCount] = useState(0);
+  const [missingFilesCount, setMissingFilesCount] = useState(0);
+
+  // CSV files grouped by (client × tipo), computed once per render cycle
+  const csvFiles = useMemo(
+    () => generateIntermegaCSVsByCliente(approvedInvoices),
+    [approvedInvoices]
+  );
+
+  const hasSinCliente = useMemo(
+    () => csvFiles.some((f) => f.nifCliente === "SIN_CLIENTE"),
+    [csvFiles]
+  );
+
+  // Preview table rows + grouping (uses resolveClienteGestoria via buildAsientoRows)
   const allRows = useMemo(() => buildAsientoRows(approvedInvoices), [approvedInvoices]);
   const grouped = useMemo(() => groupByCliente(allRows), [allRows]);
 
@@ -132,52 +183,6 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
     }
     return { countEmitidas: e, countRecibidas: r };
   }, [approvedInvoices]);
-
-  const doDownload = useCallback(
-    (kind: ExportKind) => {
-      try {
-        setDownloadingKind(kind);
-        const { emitidas, recibidas } = generateIntermegaCSV(approvedInvoices);
-        if (kind === "emitidas") {
-          downloadIntermegaEmitidas(emitidas);
-          toast.success("Facturas emitidas descargadas");
-        } else {
-          downloadIntermegaRecibidas(recibidas);
-          toast.success("Facturas recibidas descargadas");
-        }
-      } catch (err) {
-        console.error("Error generating Intermega CSV:", err);
-        toast.error("Error generando el CSV Intermega");
-      } finally {
-        setDownloadingKind(null);
-      }
-    },
-    [approvedInvoices]
-  );
-
-  const handleDownload = useCallback(
-    (kind: ExportKind) => {
-      const targetCount = kind === "emitidas" ? countEmitidas : countRecibidas;
-      if (targetCount === 0) {
-        toast.error(`No hay facturas ${kind} aprobadas para exportar`);
-        return;
-      }
-
-      let missing = 0;
-      for (const [, invoice] of approvedInvoices) {
-        if (invoiceKind(invoice) !== kind) continue;
-        if (!invoice.formData.cuenta_contable) missing++;
-      }
-
-      if (missing > 0) {
-        setMissingAccountsCount(missing);
-        setPendingKind(kind);
-      } else {
-        doDownload(kind);
-      }
-    },
-    [approvedInvoices, countEmitidas, countRecibidas, doDownload]
-  );
 
   const COLUMNS = [
     { key: "fecha_operacion", label: "F. Operación", align: "left" as const },
@@ -193,29 +198,104 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
     { key: "total_euros", label: "Total", align: "right" as const },
   ];
 
-  const dialogOpen = pendingKind !== null;
+  // --- Single-file download ---
+  const handleFileDownload = useCallback(
+    (file: IntermegaCsvFile) => {
+      // Count invoices in this file that lack cuenta_contable
+      let missing = 0;
+      for (const [, invoice] of approvedInvoices) {
+        const cliente = resolveClienteGestoria(invoice.libro, invoice.formData);
+        const nifKey = sanitizeNifKey(cliente.nif);
+        const tipo: ExportKind = invoice.libro === "ingresos" ? "emitidas" : "recibidas";
+        if (nifKey === file.nifCliente && tipo === file.tipo && !invoice.formData.cuenta_contable) {
+          missing++;
+        }
+      }
+      if (missing > 0) {
+        setMissingAccountsCount(missing);
+        setMissingFilesCount(1);
+        setPendingAction({ type: "file", file });
+      } else {
+        downloadCsvFile(file);
+        toast.success(`Descargado: ${file.filename}`);
+      }
+    },
+    [approvedInvoices]
+  );
+
+  // --- Bulk ZIP download ---
+  const handleZipDownload = useCallback(async () => {
+    if (csvFiles.length === 0) return;
+
+    // Count all invoices missing cuenta_contable
+    let missing = 0;
+    const affectedFiles = new Set<string>();
+    for (const [, invoice] of approvedInvoices) {
+      if (!invoice.formData.cuenta_contable) {
+        missing++;
+        const cliente = resolveClienteGestoria(invoice.libro, invoice.formData);
+        const nifKey = sanitizeNifKey(cliente.nif);
+        const tipo: ExportKind = invoice.libro === "ingresos" ? "emitidas" : "recibidas";
+        affectedFiles.add(`${nifKey}__${tipo}`);
+      }
+    }
+
+    if (missing > 0) {
+      setMissingAccountsCount(missing);
+      setMissingFilesCount(affectedFiles.size);
+      setPendingAction({ type: "zip" });
+    } else {
+      await doZip();
+    }
+  }, [approvedInvoices, csvFiles]);
+
+  const doZip = useCallback(async () => {
+    try {
+      setIsZipping(true);
+      await downloadZip(csvFiles);
+      toast.success(`ZIP descargado (${csvFiles.length} archivo${csvFiles.length !== 1 ? "s" : ""})`);
+    } catch (err) {
+      console.error("Error generating ZIP:", err);
+      toast.error("Error generando el ZIP");
+    } finally {
+      setIsZipping(false);
+    }
+  }, [csvFiles]);
+
+  // --- AlertDialog confirm action ---
+  const handleConfirmDownload = useCallback(async () => {
+    const action = pendingAction;
+    setPendingAction(null);
+    if (!action) return;
+    if (action.type === "file") {
+      downloadCsvFile(action.file);
+      toast.success(`Descargado: ${action.file.filename}`);
+    } else {
+      await doZip();
+    }
+  }, [pendingAction, doZip]);
+
+  const dialogOpen = pendingAction !== null;
+
+  const dialogDescription =
+    pendingAction?.type === "zip"
+      ? `Hay ${missingAccountsCount} factura(s) sin cuenta contable asignada en ${missingFilesCount} archivo(s). Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.`
+      : `Hay ${missingAccountsCount} factura(s) sin cuenta contable asignada en este archivo. Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.`;
 
   return (
     <div className="flex flex-col h-full bg-white">
-      <AlertDialog open={dialogOpen} onOpenChange={(open) => !open && setPendingKind(null)}>
+      <AlertDialog open={dialogOpen} onOpenChange={(open) => !open && setPendingAction(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Cuentas contables incompletas</AlertDialogTitle>
-            <AlertDialogDescription>
-              Hay {missingAccountsCount} factura(s) {pendingKind} sin cuenta contable asignada.
-              Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.
-            </AlertDialogDescription>
+            <AlertDialogDescription>{dialogDescription}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="rounded-none text-xs uppercase tracking-[0.15em]">
               Volver a revisión
             </AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                const k = pendingKind;
-                setPendingKind(null);
-                if (k) doDownload(k);
-              }}
+              onClick={handleConfirmDownload}
               className="rounded-none text-xs uppercase tracking-[0.15em]"
             >
               Descargar de todas formas
@@ -249,11 +329,111 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
+
+        {/* SIN_CLIENTE warning banner */}
+        {hasSinCliente && (
+          <div className="flex items-start gap-2 mb-6 px-4 py-3 bg-amber-50 border border-amber-200">
+            <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+            <p className="text-xs text-amber-800">
+              <span className="font-black uppercase tracking-[0.1em]">⚠ Hay facturas sin cliente resuelto.</span>{" "}
+              Revisa esas facturas antes de importarlas a Intermega — no podrán vincularse a un libro.
+            </p>
+          </div>
+        )}
+
+        {/* Download summary table */}
+        {csvFiles.length > 0 && (
+          <div className="mb-8">
+            <div className="mb-3 px-1">
+              <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">
+                Archivos a descargar
+              </span>
+            </div>
+            <div className="border border-slate-200 overflow-hidden">
+              <table className="w-full text-xs font-mono border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-100 text-[10px] text-slate-400 uppercase font-black">
+                    <th className="p-2.5 tracking-widest text-left">NIF Cliente</th>
+                    <th className="p-2.5 tracking-widest text-left">Cliente</th>
+                    <th className="p-2.5 tracking-widest text-left">Tipo</th>
+                    <th className="p-2.5 tracking-widest text-right">Nº Facturas</th>
+                    <th className="p-2.5 tracking-widest text-center">Acción</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {csvFiles.map((file) => {
+                    const isSinCliente = file.nifCliente === "SIN_CLIENTE";
+                    return (
+                      <tr
+                        key={file.filename}
+                        className={cn(
+                          "transition-colors",
+                          isSinCliente ? "bg-amber-50 hover:bg-amber-100/60" : "hover:bg-slate-50/30"
+                        )}
+                      >
+                        <td className="p-2.5">
+                          <span
+                            className={cn(
+                              "text-[9px] font-black uppercase tracking-[0.1em] px-1.5 py-0.5",
+                              isSinCliente
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-teal-50 text-teal-700"
+                            )}
+                          >
+                            {isSinCliente ? "SIN CLIENTE" : file.nifCliente}
+                          </span>
+                        </td>
+                        <td className="p-2.5 text-slate-700 max-w-[200px] truncate" title={file.nombreCliente}>
+                          {file.nombreCliente || "—"}
+                        </td>
+                        <td className="p-2.5">
+                          <span
+                            className={cn(
+                              "text-[9px] font-black uppercase tracking-[0.1em] px-1.5 py-0.5",
+                              file.tipo === "emitidas"
+                                ? "bg-emerald-50 text-emerald-700"
+                                : "bg-amber-50 text-amber-700"
+                            )}
+                          >
+                            {file.tipo === "emitidas" ? "Emit." : "Recib."}
+                          </span>
+                        </td>
+                        <td className="p-2.5 text-right text-slate-600">
+                          {file.rowCount}
+                        </td>
+                        <td className="p-2.5 text-center">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleFileDownload(file)}
+                            className="h-6 px-2 text-[10px] rounded-none uppercase tracking-[0.1em] text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                          >
+                            <Download className="h-3 w-3 mr-1" />
+                            Descargar
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Per-client asiento preview */}
         {Array.from(grouped.entries()).map(([nifCliente, group]) => (
           <div key={nifCliente} className="mb-8">
             <div className="flex items-center gap-3 mb-3 px-1">
-              <span className="text-[10px] font-black uppercase tracking-[0.15em] text-teal-700 bg-teal-50 px-2 py-1">
-                {nifCliente}
+              <span
+                className={cn(
+                  "text-[10px] font-black uppercase tracking-[0.15em] px-2 py-1",
+                  nifCliente === "SIN_CLIENTE"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-teal-50 text-teal-700"
+                )}
+              >
+                {nifCliente === "SIN_CLIENTE" ? "SIN CLIENTE" : nifCliente}
               </span>
               <span className="text-xs font-bold text-slate-600">{group.nombre}</span>
               <span className="text-[10px] text-slate-400 font-mono">
@@ -316,7 +496,11 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
                           row.tipo_porcentaje === "EXENTA" && "text-amber-600 text-[10px] font-bold"
                         )}
                       >
-                        {row.tipo_porcentaje === "EXENTA" ? "EXENTA" : row.tipo_porcentaje ? `${row.tipo_porcentaje}%` : "—"}
+                        {row.tipo_porcentaje === "EXENTA"
+                          ? "EXENTA"
+                          : row.tipo_porcentaje
+                          ? `${row.tipo_porcentaje}%`
+                          : "—"}
                       </td>
                       <td className="p-2.5 text-right">{row.cuota}€</td>
                       <td className="p-2.5 text-right font-bold">{row.total_euros}€</td>
@@ -339,35 +523,19 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
       <footer className="h-24 flex items-center justify-center gap-6 px-8 bg-white border-t flex-shrink-0">
         <Button
           size="lg"
-          onClick={() => handleDownload("emitidas")}
-          disabled={countEmitidas === 0 || downloadingKind !== null}
+          onClick={handleZipDownload}
+          disabled={csvFiles.length === 0 || isZipping}
           className={cn(
-            "w-64 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
-            (countEmitidas === 0 || downloadingKind !== null) && "opacity-50 cursor-not-allowed"
+            "h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all px-8",
+            (csvFiles.length === 0 || isZipping) && "opacity-50 cursor-not-allowed"
           )}
         >
-          {downloadingKind === "emitidas" ? (
+          {isZipping ? (
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
           ) : (
             <Download className="h-4 w-4 mr-2" />
           )}
-          Descargar facturas emitidas ({countEmitidas})
-        </Button>
-        <Button
-          size="lg"
-          onClick={() => handleDownload("recibidas")}
-          disabled={countRecibidas === 0 || downloadingKind !== null}
-          className={cn(
-            "w-64 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
-            (countRecibidas === 0 || downloadingKind !== null) && "opacity-50 cursor-not-allowed"
-          )}
-        >
-          {downloadingKind === "recibidas" ? (
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <Download className="h-4 w-4 mr-2" />
-          )}
-          Descargar facturas recibidas ({countRecibidas})
+          Descargar todos en ZIP ({csvFiles.length} archivo{csvFiles.length !== 1 ? "s" : ""})
         </Button>
       </footer>
     </div>

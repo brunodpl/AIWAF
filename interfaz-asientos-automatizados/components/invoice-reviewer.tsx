@@ -32,6 +32,9 @@ import {
   transformToInvoice,
   API_URL,
 } from "@/lib/api";
+import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
+
+const HEADER_FIELDS = new Set(["nif_cliente", "nombre_cliente"]);
 
 interface InvoiceSummary {
   id: string;
@@ -483,8 +486,30 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
               <ScrollArea className="flex-grow">
                 {invoice ? (
                 <div className="p-10 space-y-10 max-w-2xl mx-auto">
+                  {(() => {
+                    const cliente = resolveClienteGestoria(invoice.libro, formData);
+                    const libroLabel =
+                      invoice.libro === "ingresos" ? "Emitida (ventas/ingresos)" :
+                      invoice.libro === "gastos"   ? "Recibida (compras/gastos)" :
+                      invoice.libro === "bienes"   ? "Bienes de inversión" : "—";
+                    return (
+                      <div className="sticky top-0 z-10 -mx-10 -mt-10 mb-4 px-10 py-4 bg-slate-50 border-b border-slate-200">
+                        <div className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">
+                          Procesando factura para — {libroLabel}
+                        </div>
+                        <div className="text-base font-bold text-slate-800 mt-1">
+                          {cliente.nombre || (
+                            <span className="text-amber-600">⚠ Cliente no resuelto</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-500 font-mono mt-0.5">
+                          {cliente.nif || "—"}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   <div className="grid grid-cols-2 gap-x-8 gap-y-6">
-                    {invoice.fields.map((field) => (
+                    {invoice.fields.filter(f => !HEADER_FIELDS.has(f.id)).map((field) => (
                       <div key={field.id} className="space-y-2">
                         <div className="flex items-center gap-2">
                           <Label htmlFor={field.id} className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] pl-1">
