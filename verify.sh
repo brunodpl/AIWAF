@@ -39,13 +39,6 @@ else
     check_fail "Interfaz no responde en http://localhost:3003 — ejecuta: docker compose up -d"
 fi
 
-# --- Portainer ---
-if curl -sf http://localhost:9000 > /dev/null 2>&1; then
-    check_ok "Portainer activo en http://localhost:9000"
-else
-    check_warn "Portainer no responde en http://localhost:9000 (opcional)"
-fi
-
 # --- Credenciales GCP ---
 CRED_FILE="sistema-de-asientos-automatizado/credentials/service_account.json"
 if [ -f "$CRED_FILE" ]; then

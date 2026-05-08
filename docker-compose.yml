@@ -104,24 +104,7 @@ services:
     networks:
       - asientos-network
 
-  # Portainer CE - Gestión visual de contenedores
-  # Acceder en: http://localhost:9000
-  # Primera vez: crear contraseña de administrador
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: portainer
-    ports:
-      - "9000:9000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - portainer_data:/data
-    networks:
-      - asientos-network
-    restart: unless-stopped
-
 networks:
   asientos-network:
     driver: bridge
 
-volumes:
-  portainer_data:

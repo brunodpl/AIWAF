@@ -244,7 +244,6 @@ Write-Host "  Sistema instalado correctamente" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Interfaz de revision:    http://localhost:3003" -ForegroundColor Cyan
-Write-Host "  Gestion de contenedores: http://localhost:9000  (Portainer)" -ForegroundColor Cyan
 Write-Host "  API del pipeline:        http://localhost:8003" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Comandos utiles:" -ForegroundColor White

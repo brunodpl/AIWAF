@@ -42,18 +42,6 @@ try {
     Check-FAIL "Interfaz no responde en http://localhost:3003 — ejecuta: docker compose up -d"
 }
 
-# --- Portainer ---
-try {
-    $res = Invoke-WebRequest -Uri "http://localhost:9000" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-    if ($res.StatusCode -eq 200) {
-        Check-OK "Portainer activo en http://localhost:9000"
-    } else {
-        Check-WARN "Portainer responde con status $($res.StatusCode)"
-    }
-} catch {
-    Check-WARN "Portainer no responde en http://localhost:9000 (opcional)"
-}
-
 # --- Credenciales GCP ---
 $credFile = "sistema-de-asientos-automatizado\credentials\service_account.json"
 if (Test-Path $credFile) {
