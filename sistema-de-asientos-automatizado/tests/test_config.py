@@ -53,13 +53,18 @@ def test_config_loads_with_valid_env(monkeypatch, tmp_path):
 
 
 def test_config_fails_on_missing_required_field(monkeypatch):
-    """Test fail-fast si falta variable requerida."""
+    """Test fail-fast si falta variable requerida.
+
+    Aislamos del `.env` real del repo con ``_env_file=None`` — sin él,
+    pydantic-settings carga todas las variables del fichero y el test
+    no puede verificar el fail-fast.
+    """
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT_ID", "test-project")
 
     from src.config import Settings
 
     with pytest.raises(ValidationError):
-        Settings()
+        Settings(_env_file=None)
 
 
 def test_config_fails_on_nonexistent_credentials_file(monkeypatch):
@@ -96,6 +101,73 @@ def test_extensiones_list_handles_spaces(monkeypatch, tmp_path):
     settings = Settings()
 
     assert settings.extensiones_list == ["pdf", "jpg", "png"]
+
+
+def _set_required_env_only(monkeypatch, tmp_path):
+    """Helper: solo las variables que SIGUEN siendo obligatorias tras la
+    migración trazabilidad 2.0 (sin legacy SANDBOX/FOLDER_*)."""
+    sa_file = tmp_path / "service_account.json"
+    sa_file.write_text('{"type": "service_account"}')
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(sa_file))
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT_ID", "test-project")
+    monkeypatch.setenv("GEMINI_OCR_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_OCR_LOCATION", "europe-west1")
+    monkeypatch.setenv("GEMINI_ARBITRO_MODEL", "gemini-2.0-flash-001")
+    monkeypatch.setenv("GEMINI_ARBITRO_LOCATION", "europe-west1")
+    monkeypatch.setenv("GEMINI_ARBITRO_MAX_RETRIES", "2")
+    monkeypatch.setenv("EXTENSIONES_ADMITIDAS", "pdf,jpg,jpeg,png")
+    monkeypatch.setenv("CONFIANZA_MINIMA", "0.95")
+
+
+def test_config_loads_without_legacy_env_vars(monkeypatch, tmp_path):
+    """Trazabilidad 2.0: las vars SANDBOX_BASE_PATH y FOLDER_* son opcionales.
+    Settings() debe instanciarse sin ellas. ``libros_base`` por defecto
+    queda en ``"libros"``.
+
+    Pasamos ``_env_file=None`` para aislarnos del `.env` real del repo
+    (que sí define las legacy).
+    """
+    _set_required_env_only(monkeypatch, tmp_path)
+
+    from src.config import Settings
+    settings = Settings(_env_file=None)
+
+    assert settings.sandbox_base_path is None
+    assert settings.folder_compras_gastos is None
+    assert settings.libros_base == "libros"
+
+
+def test_get_folder_path_raises_without_sandbox_legacy(monkeypatch, tmp_path):
+    """Llamar a la API legacy sin SANDBOX_BASE_PATH lanza ``RuntimeError``
+    en lugar de devolver un path basura tipo ``None/foo``.
+    """
+    _set_required_env_only(monkeypatch, tmp_path)
+
+    from src.config import Settings
+    settings = Settings(_env_file=None)
+
+    with pytest.raises(RuntimeError, match="SANDBOX_BASE_PATH"):
+        settings.get_folder_path("90_PROCESADAS")
+
+
+def test_validate_paths_creates_libros_structure(monkeypatch, tmp_path):
+    """``validate_paths()`` crea la estructura libros/{facturas,asientos,
+    logs/audit,.runtime} bajo ``libros_base``."""
+    _set_required_env_only(monkeypatch, tmp_path)
+    monkeypatch.setenv("LIBROS_BASE", str(tmp_path / "libros"))
+    monkeypatch.setenv("LOGS_PATH", str(tmp_path / "libros" / "logs"))
+
+    from src.config import Settings
+    settings = Settings(_env_file=None)
+    settings.validate_paths()
+
+    base = tmp_path / "libros"
+    assert (base / "facturas" / "compras").is_dir()
+    assert (base / "facturas" / "ventas").is_dir()
+    assert (base / "facturas" / "bienes").is_dir()
+    assert (base / "asientos").is_dir()
+    assert (base / "logs" / "audit").is_dir()
+    assert (base / ".runtime").is_dir()
 
 
 def test_get_folder_path_builds_correctly(monkeypatch, tmp_path):

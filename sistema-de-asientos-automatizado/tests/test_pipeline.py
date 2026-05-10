@@ -311,3 +311,71 @@ def test_pipeline_e2e_genera_resultado_validacion():
 
         # PDF original NO se mueve (cero shutil.move en pipeline 2.0)
         assert Path(factura_path).exists(), "El PDF original no debe moverse"
+
+
+# ──────────────────────────────────────────────────────────
+# E2E del sidecar — secuencia completa de eventos
+# ──────────────────────────────────────────────────────────
+
+
+def test_state_json_sequence_full_flow(tmp_path):
+    """E2E del sidecar: tras un run completo + acción humana, la secuencia
+    de eventos en `.state.json` debe ser exactamente:
+        processing → review/done → (renamed?) → done(actor=user)
+
+    Usamos directamente las primitivas (sin invocar pipeline real, que
+    requiere GCP) — así el test es determinista y rápido pero verifica el
+    invariante esencial de la línea de vida.
+    """
+    from src import state_writer
+    from src.pipeline import _try_rename, DECISION_TO_STATUS
+
+    folder = tmp_path / "asientos" / "compras_factura_test"
+    folder.mkdir(parents=True)
+
+    # 1) processing al iniciar el procesado
+    state_writer.init(folder, doc_id="factura_test", file_origin="libros/facturas/compras/factura_test.pdf")
+
+    # 2) decisión auto al terminar el ensamblador
+    decision = "auto"
+    state_writer.append(folder, {"status": DECISION_TO_STATUS[decision], "decision": decision})
+
+    # 3) renombrado descriptivo (campos completos)
+    validacion = {
+        "decision_global": "auto",
+        "campos": {
+            "fecha_expedicion": {"valor_final": "2026-04-15"},
+            "nif_cliente":      {"valor_final": "A12345678"},
+            "numero_factura":   {"valor_final": "F-2025-001"},
+        },
+    }
+    final_folder = _try_rename(folder, "compras", validacion)
+    assert final_folder.name == "compras_2026-04-15_A12345678_F-2025-001"
+
+    # 4) acción humana de aprobación tras revisión
+    state_writer.append(
+        final_folder,
+        {"status": "done", "actor": "user:bruno", "action": "approved"},
+    )
+
+    # ── Aserciones sobre la línea de vida completa ──
+    state = state_writer.read(final_folder)
+    assert state["doc_id"] == "factura_test"
+    assert state["schema_v"] == 1
+
+    secuencia = [ev["status"] for ev in state["events"]]
+    assert secuencia == ["processing", "done", "renamed", "done"]
+
+    # Cada evento tiene timestamp ISO-8601
+    for ev in state["events"]:
+        assert "ts" in ev and ev["ts"].endswith("Z")
+
+    # El evento renamed enlaza folder viejo → nuevo
+    rename_ev = state["events"][2]
+    assert rename_ev["from"] == "compras_factura_test"
+    assert rename_ev["to"] == "compras_2026-04-15_A12345678_F-2025-001"
+
+    # El evento humano lleva actor + action
+    user_ev = state["events"][3]
+    assert user_ev["actor"] == "user:bruno"
+    assert user_ev["action"] == "approved"

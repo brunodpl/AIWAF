@@ -14,22 +14,30 @@ services:
       # Ruta al archivo de credenciales definida en .env (CREDENTIALS_PATH)
       # Ejemplo en .env: CREDENTIALS_PATH=/home/usuario/.secrets/sa.json
       - ${CREDENTIALS_PATH}:/app/credentials/service_account.json:ro
-      # Persistir datos de salida — bind mount para trazabilidad visible en host
-      - ./sistema-de-asientos-automatizado/data/output:/app/data/output
       # Persistir feedback recibido desde la UI (audit + reintentos)
       - ./sistema-de-asientos-automatizado/data/feedback:/app/data/feedback
       # Maestros y clients.json — datos de referencia
       - ./sistema-de-asientos-automatizado/data/maestros:/app/data/maestros:ro
       - ./sistema-de-asientos-automatizado/data/clients.json:/app/data/clients.json:ro
-      # Sandbox para procesamiento de facturas
-      - ./sistema-de-asientos-automatizado/horeca_sandbox:/app/horeca_sandbox
-      # Logs — bind mount para trazabilidad visible en host
-      - ./sistema-de-asientos-automatizado/logs:/app/logs
+      # Trazabilidad 2.0: árbol único de datos operativos visible al operario.
+      # Contiene:
+      #   libros/facturas/{compras,ventas,bienes}/  — inboxes permanentes (PDFs no se mueven)
+      #   libros/asientos/{libro}_{...}/            — carpetas de asiento (artefactos JSON + .state.json)
+      #   libros/logs/{audit/, pipeline.jsonl}       — auditoría fiscal + log técnico
+      #   libros/.runtime/                           — lock + status del orquestador (transitorio)
+      - ./sistema-de-asientos-automatizado/libros:/app/libros
     env_file:
       - ./sistema-de-asientos-automatizado/.env.docker
     environment:
       # Credenciales: ruta fija dentro del contenedor, el archivo viene del volumen
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service_account.json
+      # Trazabilidad 2.0: raíz absoluta dentro del contenedor para todos los
+      # paths derivados (inbox_path, asientos_path, runtime_path, audit_path).
+      # Sobrescribe el default relativo "libros" del Settings con uno absoluto
+      # robusto frente a cualquier CWD del proceso.
+      - LIBROS_BASE=/app/libros
+      # Logs técnicos también dentro de libros/ — operario tiene TODO en un solo árbol.
+      - LOGS_PATH=/app/libros/logs
       # CORS: configurar en .env raíz
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3003,http://interfaz-asientos:3000}
       # AIWAF_VERSION ya viene como ENV embebido en la imagen (build-arg de la GH Action).

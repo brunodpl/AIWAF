@@ -8,10 +8,14 @@ Carga y valida todas las variables requeridas desde .env usando pydantic_setting
 Falla rápido si falta alguna variable crítica.
 """
 
+import logging
 import os
-from typing import List, Annotated
+from pathlib import Path
+from typing import List, Annotated, Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("pipeline.config")
 
 
 # Mapeo libro largo → corto para nombres de carpeta operario-friendly
@@ -83,46 +87,35 @@ class Settings(BaseSettings):
     )
 
     # ── Carpetas locales (legacy — pre-trazabilidad-2.0) ──────
-    # Se conservan por compatibilidad con `.env` existente. El pipeline
-    # nuevo usa exclusivamente ``libros_base`` y los helpers
-    # ``inbox_path``/``asientos_path``/``runtime_path``/``audit_path``.
-    # Tras migración completa pueden eliminarse de `.env`.
-    sandbox_base_path: str = Field(
-        validation_alias="SANDBOX_BASE_PATH"
-    )
-    folder_compras_gastos: str = Field(
-        validation_alias="FOLDER_COMPRAS_GASTOS"
-    )
-    folder_ventas_ingresos: str = Field(
-        validation_alias="FOLDER_VENTAS_INGRESOS"
-    )
-    folder_bienes_inversion: str = Field(
-        validation_alias="FOLDER_BIENES_INVERSION"
-    )
-    folder_procesadas: str = Field(
-        validation_alias="FOLDER_PROCESADAS"
-    )
-    folder_incidencias: str = Field(
-        validation_alias="FOLDER_INCIDENCIAS"
-    )
+    # Se conservan SOLO como variables opcionales para no romper despliegues
+    # antiguos cuyo `.env` aún las define. El pipeline nuevo usa
+    # exclusivamente ``libros_base`` y sus helpers
+    # (``inbox_path``/``asientos_path``/``runtime_path``/``audit_path``).
+    # Cuando estas variables ya no existan en ningún `.env` desplegado,
+    # se puede eliminar este bloque entero.
+    sandbox_base_path: Optional[str] = Field(default=None, validation_alias="SANDBOX_BASE_PATH")
+    folder_compras_gastos: Optional[str] = Field(default=None, validation_alias="FOLDER_COMPRAS_GASTOS")
+    folder_ventas_ingresos: Optional[str] = Field(default=None, validation_alias="FOLDER_VENTAS_INGRESOS")
+    folder_bienes_inversion: Optional[str] = Field(default=None, validation_alias="FOLDER_BIENES_INVERSION")
+    folder_procesadas: Optional[str] = Field(default=None, validation_alias="FOLDER_PROCESADAS")
+    folder_incidencias: Optional[str] = Field(default=None, validation_alias="FOLDER_INCIDENCIAS")
 
     # ── Trazabilidad 2.0: estructura `libros/` ────────────────
     # Raíz única para inboxes permanentes (`libros/facturas/{libro}/`),
     # carpetas de asiento (`libros/asientos/{folder_name}/`), logs
     # (`libros/logs/audit/...`) y estado transitorio del orquestador
-    # (`libros/.runtime/...`). Por defecto vive a la altura del repo.
+    # (`libros/.runtime/...`). En Docker se inyecta absoluto (/app/libros);
+    # en local default = "libros" relativo al CWD del proceso.
     libros_base: str = Field(
         default="libros",
         validation_alias="LIBROS_BASE",
     )
 
     # ── Output Paths ──────────────────────────────────────────
-    output_path: str = Field(
-        validation_alias="OUTPUT_PATH"
-    )
-    logs_path: str = Field(
-        validation_alias="LOGS_PATH"
-    )
+    # `output_path` permanece por compatibilidad con módulos auxiliares
+    # (feedback dir, clients.json lookup); el pipeline ya no escribe ahí.
+    output_path: str = Field(default="data/output", validation_alias="OUTPUT_PATH")
+    logs_path: str = Field(default="logs", validation_alias="LOGS_PATH")
 
     # ── OCR Processing ────────────────────────────────────────
     extensiones_admitidas: str = Field(
@@ -192,12 +185,14 @@ class Settings(BaseSettings):
         """
         Construir ruta absoluta para una carpeta del sandbox (legacy).
 
-        Args:
-            folder_name: Nombre de la carpeta (e.g., "20_COMPRAS_GASTOS")
-
-        Returns:
-            Ruta de la carpeta dentro de sandbox_base_path
+        Lanza ``RuntimeError`` si ``sandbox_base_path`` no está configurado
+        (es decir, si se intenta usar la API legacy sin haberla configurado).
         """
+        if not self.sandbox_base_path:
+            raise RuntimeError(
+                "get_folder_path() requiere SANDBOX_BASE_PATH en .env (API legacy "
+                "pre-trazabilidad-2.0). Usar inbox_path/asientos_path en su lugar."
+            )
         return os.path.join(self.sandbox_base_path, folder_name)
 
     # ── Helpers de trazabilidad 2.0 ───────────────────────────
@@ -226,14 +221,15 @@ class Settings(BaseSettings):
         """
         Crear todas las rutas críticas si no existen (plug & play).
 
-        Estructura nueva (trazabilidad 2.0):
+        Estructura trazabilidad 2.0:
             libros/facturas/{compras,ventas,bienes}/   ← inboxes
             libros/asientos/                           ← raíz de asientos
             libros/logs/{,audit/}                      ← logs
             libros/.runtime/                           ← estado transitorio
 
-        Mantiene compatibilidad con la estructura legacy mientras `.env`
-        siga apuntando al sandbox antiguo.
+        Loggea el path absoluto resuelto de ``libros_base`` para que sea
+        trivial diagnosticar si en algún despliegue el CWD desplaza la raíz
+        a un sitio inesperado.
         """
         # Estructura nueva.
         for libro in ("compras", "ventas", "bienes"):
@@ -242,14 +238,17 @@ class Settings(BaseSettings):
         os.makedirs(self.audit_path(), exist_ok=True)
         os.makedirs(self.runtime_path(), exist_ok=True)
 
-        # Logs técnicos siguen donde estaban (logs_path puede convivir
-        # apuntando a `libros/logs` o a una ruta externa).
+        # Logs técnicos: si LOGS_PATH apunta dentro de libros/, el dir ya
+        # existe; si no, se crea aparte (compat con despliegues legacy).
         os.makedirs(self.logs_path, exist_ok=True)
 
-        # Compatibilidad con el sandbox legacy mientras esté en `.env`.
-        # Cuando se vacíe del entorno, este bloque queda inerte.
-        if self.sandbox_base_path:
-            os.makedirs(self.sandbox_base_path, exist_ok=True)
+        # Diagnóstico: path absoluto de libros_base. Al startup se ve en
+        # los logs y permite confirmar dónde van las facturas y asientos.
+        libros_abs = Path(self.libros_base).resolve()
+        logger.info(
+            "[config] libros_base=%s (absoluto: %s) — asientos=%s audit=%s",
+            self.libros_base, libros_abs, self.asientos_path(), self.audit_path(),
+        )
 
     def __repr__(self) -> str:
         """Representación segura sin exponer credenciales."""

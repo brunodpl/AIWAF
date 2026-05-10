@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -25,6 +26,28 @@ logger = logging.getLogger("pipeline.state")
 
 SCHEMA_V = 1
 SIDECAR_NAME = ".state.json"
+
+# Locks por carpeta para serializar lecturas-modificaciones-escrituras del
+# sidecar dentro del mismo proceso. Evita la race "leer→leer→escribir A→
+# escribir B" cuando la API (action endpoint) y el pipeline background corren
+# en threads distintos sobre el mismo documento.
+#
+# El lock NO protege frente a otros procesos — para eso bastaría un lockfile,
+# pero el sistema está diseñado como single-process (un único contenedor
+# pipeline-api). Si en el futuro se escala horizontalmente, sustituir por
+# `fcntl`/`msvcrt.locking` sobre el propio sidecar.
+_locks_global = threading.Lock()
+_locks_per_folder: dict[str, threading.Lock] = {}
+
+
+def _lock_for(folder: Path) -> threading.Lock:
+    key = str(Path(folder).resolve())
+    with _locks_global:
+        lock = _locks_per_folder.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _locks_per_folder[key] = lock
+        return lock
 
 # Valores válidos de ``status`` en cada evento.
 VALID_STATUSES = frozenset(
@@ -67,31 +90,44 @@ def init(folder: Path, doc_id: str, file_origin: str) -> None:
     """
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    sidecar = _sidecar_path(folder)
+    with _lock_for(folder):
+        sidecar = _sidecar_path(folder)
+        if sidecar.exists():
+            # Reproceso: aprovechamos `_append_locked` para no soltar el lock.
+            _append_locked(folder, {
+                "status": "processing", "file_origin": file_origin, "folder": folder.name,
+            })
+            return
 
-    if sidecar.exists():
-        append(folder, {"status": "processing", "file_origin": file_origin, "folder": folder.name})
-        return
-
-    payload = {
-        "schema_v": SCHEMA_V,
-        "doc_id": doc_id,
-        "events": [
-            {
-                "ts": _now_iso(),
-                "status": "processing",
-                "file_origin": file_origin,
-                "folder": folder.name,
-            }
-        ],
-    }
-    _atomic_write(sidecar, payload)
-    logger.info("[state] init doc_id=%s folder=%s", doc_id, folder.name)
+        payload = {
+            "schema_v": SCHEMA_V,
+            "doc_id": doc_id,
+            "events": [
+                {
+                    "ts": _now_iso(),
+                    "status": "processing",
+                    "file_origin": file_origin,
+                    "folder": folder.name,
+                }
+            ],
+        }
+        _atomic_write(sidecar, payload)
+        logger.info("[state] init doc_id=%s folder=%s", doc_id, folder.name)
 
 
 def append(folder: Path, event: dict[str, Any]) -> None:
-    """Añade un evento al final de la lista. Nunca sobreescribe entradas previas."""
+    """Añade un evento al final de la lista. Nunca sobreescribe entradas previas.
+
+    Serializado por ``_lock_for(folder)`` para evitar carreras cuando la API
+    (acción humana) y el pipeline background tocan el mismo asiento.
+    """
     folder = Path(folder)
+    with _lock_for(folder):
+        _append_locked(folder, event)
+
+
+def _append_locked(folder: Path, event: dict[str, Any]) -> None:
+    """Implementación de append que asume lock ya tomado."""
     sidecar = _sidecar_path(folder)
     if not sidecar.exists():
         raise FileNotFoundError(f"Sidecar no existe en {folder}; llama a init() primero.")
@@ -131,39 +167,45 @@ def rename(folder: Path, new_name: str) -> Path:
     Emite un evento ``renamed`` en el sidecar tras el rename. Si hubo colisión,
     el evento incluye ``collision=true`` y el ``to`` final con sufijo.
 
+    Serializado bajo el lock de la carpeta de origen para no chocar con
+    `append()` concurrentes durante el rename.
+
     Devuelve el ``Path`` resultante.
     """
     folder = Path(folder)
     if not folder.exists():
         raise FileNotFoundError(f"Carpeta origen no existe: {folder}")
 
-    parent = folder.parent
-    target = parent / new_name
-    collision = False
-    suffix = 2
-    while target.exists() and target.resolve() != folder.resolve():
-        target = parent / f"{new_name}_{suffix}"
-        suffix += 1
-        collision = True
+    with _lock_for(folder):
+        parent = folder.parent
+        target = parent / new_name
+        collision = False
+        suffix = 2
+        while target.exists() and target.resolve() != folder.resolve():
+            target = parent / f"{new_name}_{suffix}"
+            suffix += 1
+            collision = True
 
-    if target.resolve() == folder.resolve():
-        # ya tiene el nombre deseado; no-op
-        return folder
+        if target.resolve() == folder.resolve():
+            return folder
 
-    os.replace(folder, target)
-    append(
-        target,
-        {
-            "status": "renamed",
-            "from": folder.name,
-            "to": target.name,
-            **({"collision": True} if collision else {}),
-        },
-    )
-    logger.info(
-        "[state] rename %s -> %s collision=%s", folder.name, target.name, collision
-    )
-    return target
+        os.replace(folder, target)
+        # Tras renombrar, el lock por la carpeta nueva apunta a un keypath
+        # distinto. Llamamos a `_append_locked` pasando la nueva carpeta;
+        # como el lock viejo ya cubre la transición, no hay race aquí.
+        _append_locked(
+            target,
+            {
+                "status": "renamed",
+                "from": folder.name,
+                "to": target.name,
+                **({"collision": True} if collision else {}),
+            },
+        )
+        logger.info(
+            "[state] rename %s -> %s collision=%s", folder.name, target.name, collision
+        )
+        return target
 
 
 def find_folder_by_doc_id(asientos_root: Path, doc_id: str) -> Optional[Path]:

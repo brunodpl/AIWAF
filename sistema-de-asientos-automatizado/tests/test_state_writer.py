@@ -215,3 +215,37 @@ def test_no_tmp_files_left_after_writes(tmp_path: Path) -> None:
 
     leftovers = [p for p in folder.iterdir() if p.name.startswith(".state-") and p.suffix == ".tmp"]
     assert leftovers == []
+
+
+# --- concurrencia (lock por carpeta) -------------------------------------
+
+
+def test_concurrent_appends_preserve_all_events(tmp_path: Path) -> None:
+    """Regresión: 16 appends concurrentes desde threads distintos NO deben
+    perder eventos. Sin lock perderíamos algunos por la race
+    leer→leer→escribir A→escribir B. Con el lock por carpeta todos persisten.
+    """
+    import threading
+
+    folder = _make_folder(tmp_path)
+    init(folder, doc_id="x", file_origin="x.pdf")
+
+    N_THREADS = 16
+    barrier = threading.Barrier(N_THREADS)
+
+    def worker(i: int) -> None:
+        barrier.wait()
+        append(folder, {"status": "review", "decision": "warn", "i": i})
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(N_THREADS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    events = read(folder)["events"]
+    # 1 inicial (processing) + N_THREADS reviews
+    assert len(events) == 1 + N_THREADS
+    # Cada `i` debe aparecer exactamente una vez (cero pérdidas).
+    indices = sorted(e["i"] for e in events if e.get("status") == "review")
+    assert indices == list(range(N_THREADS))
