@@ -51,10 +51,17 @@ SetupLogging=yes
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 
 [Files]
-; Proyecto completo (excluyendo carpetas inútiles para el cliente)
+; Proyecto completo (excluyendo carpetas inútiles + datos del usuario)
+;
+; Trazabilidad 2.0 (v0.3.0+): `libros\**` se excluye para PRESERVAR los datos
+; del operario en upgrades — el árbol libros/ contiene PDFs, sidecars,
+; auditoría fiscal (retención 4 años) y NO debe sobrescribirse jamás.
+; `horeca_sandbox\**` se mantiene en excludes por compat: si el cliente
+; viene de v0.2.x, sus PDFs viejos siguen ahí intactos hasta que decida
+; moverlos manualmente a libros/facturas/{compras,ventas,bienes}/.
 Source: "..\sistema-de-asientos-automatizado\*"; DestDir: "{app}\sistema-de-asientos-automatizado"; \
   Flags: ignoreversion recursesubdirs createallsubdirs; \
-  Excludes: "credentials\*,horeca_sandbox\*\*,data\output\*,logs\*,__pycache__,*.pyc,.pytest_cache,.git*,tests\*"
+  Excludes: "credentials\*,horeca_sandbox\*\*,libros\*\*,data\output\*,logs\*,__pycache__,*.pyc,.pytest_cache,.git*,tests\*"
 Source: "..\interfaz-asientos-automatizados\*"; DestDir: "{app}\interfaz-asientos-automatizados"; \
   Flags: ignoreversion recursesubdirs createallsubdirs; \
   Excludes: "node_modules\*,.next\*,.git*,*.log"
@@ -67,19 +74,28 @@ Source: "write-docker-auth.ps1"; DestDir: "{app}\installer"; Flags: ignoreversio
 Source: "assets\*"; DestDir: "{app}\installer\assets"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
+; Credenciales (service_account.json del cliente, ruta fija)
 Name: "{app}\sistema-de-asientos-automatizado\credentials"; Permissions: users-modify
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\PENDIENTES\gastos"
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\PENDIENTES\ingresos"
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\PENDIENTES\bienes"
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\20_COMPRAS_GASTOS"
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\21_VENTAS_INGRESOS"
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\22_BIENES_INVERSION"
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\90_PROCESADAS"
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\99_INCIDENCIAS"
-Name: "{app}\sistema-de-asientos-automatizado\horeca_sandbox\00_PENDIENTE_CLASIFICAR"
-Name: "{app}\sistema-de-asientos-automatizado\data\output"; Permissions: users-modify
+
+; ─── Trazabilidad 2.0: árbol único `libros/` ────────────────────────────
+; Estructura operativa visible al operario de la gestoría. Bind-monteada
+; en docker-compose.yml como `./sistema-de-asientos-automatizado/libros:
+; /app/libros`. Permissions: users-modify para que el operario pueda
+; soltar PDFs sin elevación.
+;
+;   libros/facturas/{compras,ventas,bienes}/   inboxes permanentes
+;   libros/asientos/                            carpetas de asiento (auto)
+;   libros/logs/audit/                          auditoría fiscal (retención 4 años)
+;   libros/.runtime/                            estado transitorio del orquestador
+Name: "{app}\sistema-de-asientos-automatizado\libros\facturas\compras"; Permissions: users-modify
+Name: "{app}\sistema-de-asientos-automatizado\libros\facturas\ventas"; Permissions: users-modify
+Name: "{app}\sistema-de-asientos-automatizado\libros\facturas\bienes"; Permissions: users-modify
+Name: "{app}\sistema-de-asientos-automatizado\libros\asientos"; Permissions: users-modify
+Name: "{app}\sistema-de-asientos-automatizado\libros\logs\audit"; Permissions: users-modify
+Name: "{app}\sistema-de-asientos-automatizado\libros\.runtime"; Permissions: users-modify
+
+; Feedback de la UI (Discord retry queue + audit local)
 Name: "{app}\sistema-de-asientos-automatizado\data\feedback"; Permissions: users-modify
-Name: "{app}\sistema-de-asientos-automatizado\logs\audit"; Permissions: users-modify
 
 [Icons]
 ; Único acceso directo: el sistema arranca solo (autostart Windows + ya queda
