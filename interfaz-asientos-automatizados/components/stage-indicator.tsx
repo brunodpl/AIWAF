@@ -1,7 +1,8 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { Check, RotateCcw, Loader2 } from "lucide-react";
+import Link from "next/link";
+import { Check, RotateCcw, Loader2, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -94,6 +95,22 @@ export function StageIndicator({ stage, className, onStageClick, onReset, resett
         })}
       </div>
 
+      <div className="flex items-center gap-1">
+        {/* Botón HISTORIAL — entrada a la trazabilidad por cliente.
+            Siempre visible: es vía de consulta, no parte del flujo de escaneo. */}
+        <Button
+          asChild
+          variant="ghost"
+          size="sm"
+          className="text-[10px] text-slate-400 hover:text-slate-600 uppercase tracking-[0.15em] h-6 px-2 gap-1 rounded-none"
+          title="Trazabilidad por cliente"
+        >
+          <Link href="/historial">
+            <History className="h-3 w-3" />
+            Historial
+          </Link>
+        </Button>
+
       {/* Botón "Nuevo escaneo" con confirmación AlertDialog */}
       {currentIndex > 0 && onReset && (
         <AlertDialog>
@@ -135,6 +152,7 @@ export function StageIndicator({ stage, className, onStageClick, onReset, resett
           </AlertDialogContent>
         </AlertDialog>
       )}
+      </div>
     </div>
   );
 }
