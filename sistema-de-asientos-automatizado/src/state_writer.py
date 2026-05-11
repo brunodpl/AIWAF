@@ -161,6 +161,16 @@ def current_status(folder: Path) -> Optional[str]:
     return events[-1].get("status") if events else None
 
 
+def is_done(folder: Path) -> bool:
+    """True si el último evento del sidecar es ``status=done``.
+
+    Utilidad para idempotencia: ``POST /api/pipeline/confirm`` lo consulta
+    antes de hacer ``append({"status":"done"})`` para no duplicar eventos
+    cuando el frontend reintenta la confirmación.
+    """
+    return current_status(folder) == "done"
+
+
 def rename(folder: Path, new_name: str) -> Path:
     """Renombra la carpeta a ``new_name``, resolviendo colisiones con sufijo ``_2``, ``_3``...
 

@@ -32,7 +32,14 @@ from pydantic import BaseModel
 from urllib.parse import quote
 
 from src.config import LIBRO_SHORT, settings
-from src import state_writer
+from src import state_writer, final_writer
+from src.phase4_customer.maestro import (
+    cargar_maestro,
+    guardar_maestro,
+    registrar_cliente,
+)
+import base64
+from typing import Any, Dict
 
 # Versión inyectada en build (.env.docker o ENV en docker-compose)
 APP_VERSION = os.getenv("AIWAF_VERSION", "0.0.0-dev")
@@ -853,6 +860,159 @@ def delete_book_file(book_id: str, filename: str):
 
     file_path.unlink()
     return {"deleted": safe_name}
+
+
+# ──────────────────────────────────────────────────────────
+# POST /api/pipeline/confirm — confirmación en lote de asientos
+# ──────────────────────────────────────────────────────────
+
+
+class CampoFinal(BaseModel):
+    """Valor de un campo tras la revisión humana."""
+
+    valor: Any = None
+
+
+class AsientoConfirm(BaseModel):
+    campos_finales: Dict[str, CampoFinal]
+    lineas_asiento: list[dict[str, Any]] = []
+    csv_b64: str = ""
+
+
+class ConfirmBatchPayload(BaseModel):
+    doc_ids: list[str]
+    asientos: Dict[str, AsientoConfirm]
+
+
+def _pending_confirm_path() -> Path:
+    return get_runtime_dir() / ".pending_confirm.json"
+
+
+def _delete_pending_confirm() -> None:
+    p = _pending_confirm_path()
+    try:
+        if p.exists():
+            p.unlink()
+    except OSError as e:
+        logger.warning("[confirm] no se pudo borrar pending_confirm: %s", e)
+
+
+@app.post("/api/pipeline/confirm")
+def confirm_batch(payload: ConfirmBatchPayload):
+    """
+    Confirma en lote un grupo de asientos revisados por el operario.
+
+    Por cada doc_id:
+      1. Localiza la carpeta del asiento (state_writer.find_folder_by_doc_id).
+      2. final_writer escribe resultado_final.json + asiento_{doc_id}.csv +
+         hash. Calcula el diff frente a resultado_validacion.json y marca
+         qué campos llevan `editado: true`.
+      3. Si state aún no es ``done`` (idempotencia), añade evento done al
+         sidecar.
+      4. Acumula la actualización del maestro de clientes.
+
+    Al cierre del lote, guarda el maestro UNA sola vez bajo file-lock y borra
+    `.pending_confirm.json` si existía.
+    """
+    if not payload.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids vacío")
+
+    cfg = settings()
+    maestro = cargar_maestro(cfg.maestro_clientes_path)
+    nifs_antes = set(maestro.get("clientes", {}).keys())
+
+    confirmadas = 0
+    for doc_id in payload.doc_ids:
+        validate_doc_id(doc_id)
+        if doc_id not in payload.asientos:
+            raise HTTPException(
+                status_code=400, detail=f"asientos[{doc_id}] ausente en payload"
+            )
+
+        folder = get_doc_folder(doc_id)
+        if folder is None:
+            raise HTTPException(
+                status_code=404, detail=f"doc_id {doc_id} no encontrado"
+            )
+
+        asiento = payload.asientos[doc_id]
+        try:
+            csv_bytes = base64.b64decode(asiento.csv_b64, validate=False)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"csv_b64 inválido para {doc_id}: {e}",
+            )
+
+        libro_short = _libro_from_folder(folder.name) or ""
+        campos_para_writer = {
+            k: {"valor": v.valor} for k, v in asiento.campos_finales.items()
+        }
+
+        final_writer.write_final(
+            str(folder),
+            doc_id=doc_id,
+            libro=libro_short,
+            campos_finales=campos_para_writer,
+            lineas=asiento.lineas_asiento,
+            csv_bytes=csv_bytes,
+        )
+
+        # Idempotencia: no duplicar evento done si ya está cerrado.
+        if not state_writer.is_done(folder):
+            try:
+                state_writer.append(
+                    folder,
+                    {"status": "done", "actor": "operario", "action": "confirmed"},
+                )
+            except (FileNotFoundError, ValueError, OSError) as e:
+                logger.error(
+                    "[confirm] no se pudo escribir done en sidecar doc_id=%s: %s",
+                    doc_id, e, exc_info=True,
+                )
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # Maestro de clientes: actualizar con los datos confirmados.
+        nif_c = (asiento.campos_finales.get("nif_cliente") or CampoFinal()).valor
+        nombre_c = (asiento.campos_finales.get("nombre_cliente") or CampoFinal()).valor or ""
+        fecha_exp = (asiento.campos_finales.get("fecha_expedicion") or CampoFinal()).valor
+
+        validation = get_validation_result(folder) or {}
+        origen_decision = validation.get("decision_global", "auto")
+
+        if nif_c and libro_short:
+            registrar_cliente(
+                maestro,
+                nif_c,
+                nombre_c,
+                fecha_expedicion=fecha_exp,
+                libro=libro_short,
+                decision=origen_decision,
+            )
+
+        confirmadas += 1
+
+    # Una sola escritura del maestro, bajo lock cross-process.
+    guardar_maestro(cfg.maestro_clientes_path, maestro)
+
+    nifs_despues = set(
+        cargar_maestro(cfg.maestro_clientes_path).get("clientes", {}).keys()
+    )
+    clientes_nuevos = len(nifs_despues - nifs_antes)
+
+    _invoices_cache.clear()
+    _stats_cache.clear()
+    _delete_pending_confirm()
+
+    logger.info(
+        "[confirm] lote confirmado: %d facturas, %d clientes nuevos",
+        confirmadas, clientes_nuevos,
+    )
+    return {
+        "ok": True,
+        "facturas_confirmadas": confirmadas,
+        "clientes_nuevos": clientes_nuevos,
+    }
 
 
 @app.get("/api/pipeline/status")
