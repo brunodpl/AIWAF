@@ -27,6 +27,8 @@ import {
   normalizeNumber,
 } from "@/lib/csv";
 import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
+import { buildCsvBase64, confirmBatch } from "@/lib/api-clients";
+import type { AsientoConfirm, ConfirmBatchPayload, LineaAsiento } from "@/lib/types";
 import JSZip from "jszip";
 
 type ExportKind = "emitidas" | "recibidas";
@@ -137,6 +139,67 @@ function downloadCsvFile(file: IntermegaCsvFile) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+/**
+ * Construye el payload de confirm batch a partir del Map de aprobadas y
+ * envía POST /api/pipeline/confirm. Devuelve la respuesta o null si no hay
+ * facturas que confirmar.
+ *
+ * Persiste por cada doc_id:
+ *   - libros/asientos/{folder}/resultado_final.json (diff con validación)
+ *   - libros/asientos/{folder}/asiento_{doc_id}.csv (CSV físico para Hacienda)
+ *   - .state.json → último evento "done"
+ *   - maestro_clientes.yaml actualizado bajo file-lock
+ */
+async function persistBatchToBackend(
+  approvedInvoices: Map<string, ApprovedInvoiceData>,
+): Promise<{ ok: true; facturas_confirmadas: number; clientes_nuevos: number } | null> {
+  if (approvedInvoices.size === 0) return null;
+
+  const doc_ids: string[] = [];
+  const asientos: Record<string, AsientoConfirm> = {};
+
+  for (const [docId, invoice] of approvedInvoices) {
+    const fd = invoice.formData;
+    const cliente = resolveClienteGestoria(invoice.libro, fd);
+
+    // campos_finales — todo lo que el operario dejó en el form, tal cual.
+    // El backend hace el diff frente a resultado_validacion.json y marca
+    // qué campos llevan editado:true.
+    const camposFinales: Record<string, { valor: string | number | null }> = {};
+    for (const [k, v] of Object.entries(fd)) {
+      camposFinales[k] = { valor: v ?? null };
+    }
+    // Asegurar campos clave para la tarjeta de cliente del grid.
+    camposFinales["nif_cliente"] = { valor: cliente.nif || null };
+    camposFinales["nombre_cliente"] = { valor: cliente.nombre || null };
+    camposFinales["cuenta_contable"] = { valor: fd.cuenta_contable || null };
+
+    const lineas: LineaAsiento[] = invoice.fiscalLines.map((l) => {
+      const base = normalizeNumber(l.base);
+      const cuota = normalizeNumber(l.vatAmount);
+      return {
+        cuenta: fd.cuenta_contable || "",
+        concepto: fd.concepto || "",
+        debe: base + cuota,
+        haber: 0,
+        tipo_iva: l.vatRate ?? 0,
+        base_imponible: base,
+      };
+    });
+
+    asientos[docId] = {
+      campos_finales: camposFinales,
+      lineas_asiento: lineas,
+      csv_b64: buildCsvBase64(lineas),
+    };
+    doc_ids.push(docId);
+  }
+
+  const payload: ConfirmBatchPayload = { doc_ids, asientos };
+  return await confirmBatch(payload);
+}
+
 
 async function downloadZip(files: IntermegaCsvFile[]): Promise<void> {
   const zip = new JSZip();
@@ -252,15 +315,30 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
   const doZip = useCallback(async () => {
     try {
       setIsZipping(true);
+
+      // Persistir batch en backend ANTES del download:
+      // → resultado_final.json + asiento_{doc_id}.csv en cada carpeta
+      // → maestro_clientes.yaml actualizado (cliente + libro + última fecha)
+      // → .state.json del asiento pasa a "done"
+      const confirmRes = await persistBatchToBackend(approvedInvoices);
+      if (confirmRes) {
+        toast.success(
+          `${confirmRes.facturas_confirmadas} facturas confirmadas` +
+            (confirmRes.clientes_nuevos > 0
+              ? ` · ${confirmRes.clientes_nuevos} cliente${confirmRes.clientes_nuevos === 1 ? "" : "s"} nuevos`
+              : ""),
+        );
+      }
+
       await downloadZip(csvFiles);
       toast.success(`ZIP descargado (${csvFiles.length} archivo${csvFiles.length !== 1 ? "s" : ""})`);
     } catch (err) {
-      console.error("Error generating ZIP:", err);
-      toast.error("Error generando el ZIP");
+      console.error("Error en confirm+ZIP:", err);
+      toast.error("Error confirmando o generando el ZIP");
     } finally {
       setIsZipping(false);
     }
-  }, [csvFiles]);
+  }, [csvFiles, approvedInvoices]);
 
   // --- AlertDialog confirm action ---
   const handleConfirmDownload = useCallback(async () => {
