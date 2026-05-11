@@ -724,6 +724,17 @@ def _recover_stale_pipeline_state() -> None:
                 with status_path.open("w", encoding="utf-8") as f:
                     json.dump(status, f, indent=2)
         _cancel_path().unlink(missing_ok=True)
+
+        # Detectar pending_confirm huérfano (lote pipeline OK pero sin
+        # confirmación humana antes del reinicio). No lo borramos: la UI lo
+        # mostrará al operario para que confirme cuando vuelva.
+        pending = _load_pending_confirm()
+        if pending:
+            logger.warning(
+                "[startup] .pending_confirm.json detectado: %d facturas a la "
+                "espera de confirmación humana — UI las mostrará en /api/pipeline/status",
+                len(pending.get("doc_ids_lote", [])),
+            )
     except (OSError, json.JSONDecodeError) as exc:
         logger.error("[startup] Error en recovery de pipeline: %s", exc, exc_info=True)
 
@@ -1016,9 +1027,27 @@ def confirm_batch(payload: ConfirmBatchPayload):
     }
 
 
+def _load_pending_confirm() -> dict | None:
+    p = _pending_confirm_path()
+    if not p.exists():
+        return None
+    try:
+        with p.open(encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("[pending_confirm] no se pudo leer: %s", e)
+        return None
+
+
 @app.get("/api/pipeline/status")
 def pipeline_status():
     """Lee el estado del pipeline (runtime en `libros/.runtime/`)."""
+    pending = _load_pending_confirm()
+    pending_flag = {
+        "pending_confirm": pending is not None,
+        "pending_doc_ids": (pending or {}).get("doc_ids_lote", []),
+    }
+
     status_path = _status_path()
     if not status_path.exists():
         return {
@@ -1029,13 +1058,16 @@ def pipeline_status():
             "started_at": None,
             "completed_at": None,
             "error_message": None,
+            **pending_flag,
         }
     try:
         with status_path.open(encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        data.update(pending_flag)
+        return data
     except Exception as e:
         logger.error(f"Error reading pipeline status: {e}", exc_info=True)
-        return {"status": "error", "error_message": str(e)}
+        return {"status": "error", "error_message": str(e), **pending_flag}
 
 
 @app.post("/api/pipeline/run")

@@ -299,6 +299,13 @@ def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -
             error_message=None,
         )
 
+    # Guardia de reinicio: ".pending_confirm.json" señala que hay un lote en
+    # curso a la espera de confirmación humana. POST /api/pipeline/confirm
+    # lo elimina al cerrar. Si el contenedor se reinicia, el endpoint
+    # /api/pipeline/status lo reporta para que la UI avise al operario.
+    pending_doc_ids = [os.path.basename(f).rsplit(".", 1)[0] for f in files]
+    _write_pending_confirm(cfg, pending_doc_ids)
+
     vision_client = VisionOcrClient()
     gemini_model = _init_gemini_model()
     folder_name = os.path.basename(os.path.normpath(folder_path))
@@ -429,6 +436,25 @@ def _print_summary(folder: str, summary: dict) -> None:
     print(f"Revisión: {summary['warn']}")
     print(f"Error:    {summary['error']}")
     print("=" * 60)
+
+
+def _write_pending_confirm(cfg, doc_ids: list[str]) -> None:
+    """Marca el lote como pendiente de confirmación humana."""
+    try:
+        runtime_dir = Path(cfg.runtime_path())
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        path = runtime_dir / ".pending_confirm.json"
+        payload = {
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "doc_ids_lote": doc_ids,
+        }
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning(f"[pipeline] no se pudo escribir .pending_confirm.json: {e}")
 
 
 def _update_status_file(status_file: str, **kwargs) -> None:
