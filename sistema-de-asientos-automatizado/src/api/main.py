@@ -1066,24 +1066,7 @@ def reset_pipeline():
     }
 
 
-@app.get("/api/clients")
-def list_clients():
-    """List registered clients from clients.json."""
-    cfg = settings()
-    # clients.json is in data/ relative to project root (parent of output_path's parent)
-    project_root = Path(cfg.output_path).parent
-    clients_path = project_root / "data" / "clients.json"
-
-    if not clients_path.exists():
-        return {"clients": []}
-
-    try:
-        with open(clients_path, encoding="utf-8") as f:
-            clients = json.load(f)
-        return {"clients": clients}
-    except (OSError, json.JSONDecodeError) as e:
-        logger.error(f"Error reading clients file: {e}", exc_info=True)
-        return {"clients": []}
+# GET /api/clients se reescribe en Task 7 leyendo maestro_clientes.yaml.
 
 
 # ──────────────────────────────────────────────────────────

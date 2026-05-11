@@ -113,7 +113,7 @@ class Settings(BaseSettings):
 
     # ── Output Paths ──────────────────────────────────────────
     # `output_path` permanece por compatibilidad con módulos auxiliares
-    # (feedback dir, clients.json lookup); el pipeline ya no escribe ahí.
+    # (feedback dir); el pipeline ya no escribe ahí.
     output_path: str = Field(default="data/output", validation_alias="OUTPUT_PATH")
     logs_path: str = Field(default="logs", validation_alias="LOGS_PATH")
 

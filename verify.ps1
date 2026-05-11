@@ -81,17 +81,8 @@ if ($missingFolders.Count -eq 0) {
 }
 
 # --- Clientes ---
-$clientsFile = "sistema-de-asientos-automatizado\data\clients.json"
-if (Test-Path $clientsFile) {
-    $content = Get-Content $clientsFile -Raw
-    if ($content -and $content.Trim() -ne "[]" -and $content.Trim() -ne "") {
-        Check-OK "data/clients.json tiene datos de clientes"
-    } else {
-        Check-WARN "data/clients.json esta vacio — añade los clientes de la gestoria antes de procesar facturas"
-    }
-} else {
-    Check-WARN "data/clients.json no existe — el pipeline no podra resolver clientes destino"
-}
+# data/clients.json eliminado en v0.4: el maestro de clientes vive ahora en
+# data/maestros/maestro_clientes.yaml y se actualiza vía POST /api/pipeline/confirm.
 
 # --- Versión instalada (endpoint /api/system/version) ---
 try {
