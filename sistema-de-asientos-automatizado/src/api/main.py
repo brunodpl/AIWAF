@@ -1002,6 +1002,7 @@ def confirm_batch(payload: ConfirmBatchPayload):
 
     _invoices_cache.clear()
     _stats_cache.clear()
+    _clients_cache.clear()
     _delete_pending_confirm()
 
     logger.info(
@@ -1226,7 +1227,108 @@ def reset_pipeline():
     }
 
 
-# GET /api/clients se reescribe en Task 7 leyendo maestro_clientes.yaml.
+# ──────────────────────────────────────────────────────────
+# GET /api/clients — trazabilidad por cliente (lee maestro_clientes.yaml)
+# ──────────────────────────────────────────────────────────
+
+_clients_cache: dict = {}
+
+
+@app.get("/api/clients")
+def list_clients():
+    """Lista de clientes registrados con métricas operativas para el grid de
+    trazabilidad. Lee `data/maestros/maestro_clientes.yaml` (fuente única).
+
+    Si el YAML no existe → 200 con lista vacía (no es error: gestoría recién
+    instalada sin facturas confirmadas).
+
+    Caché en memoria 5s para evitar I/O por cada poll del frontend.
+    """
+    now = time.time()
+    cached = _clients_cache.get("data")
+    if cached and now - _clients_cache.get("ts", 0) < _CACHE_TTL:
+        return cached
+
+    cfg = settings()
+    try:
+        maestro = cargar_maestro(cfg.maestro_clientes_path)
+    except Exception as e:
+        logger.error("[clients] error leyendo maestro: %s", e, exc_info=True)
+        return {"clients": [], "total": 0}
+
+    clientes_dict = maestro.get("clientes", {}) or {}
+    items = []
+    for nif, info in clientes_dict.items():
+        items.append({
+            "nif": nif,
+            "nombre": info.get("nombre", ""),
+            "fecha_alta": info.get("fecha_alta"),
+            "ultima_factura_fecha": info.get("ultima_factura_fecha"),
+            "documentos_procesados": info.get("documentos_procesados", 0),
+            "libros_activos": info.get("libros_activos", []) or [],
+        })
+
+    # Orden desc por ultima_factura_fecha (None al final).
+    items.sort(
+        key=lambda c: (c["ultima_factura_fecha"] is None, c["ultima_factura_fecha"] or ""),
+        reverse=False,
+    )
+    items.sort(key=lambda c: c["ultima_factura_fecha"] or "", reverse=True)
+
+    result = {"clients": items, "total": len(items)}
+    _clients_cache["data"] = result
+    _clients_cache["ts"] = now
+    return result
+
+
+# TODO: con >2000 facturas, construir índice nif→[doc_ids] al startup en
+# lugar de hacer un escaneo lineal por petición.
+@app.get("/api/clients/{nif}/invoices")
+def list_invoices_by_client(nif: str):
+    """Facturas confirmadas para un NIF (filtradas por resultado_final.json).
+
+    Excluye facturas sin resultado_final.json (no confirmadas todavía) y las
+    bloqueadas o con error técnico en resultado_validacion.json.
+    """
+    if not nif or "/" in nif or "\\" in nif or ".." in nif:
+        raise HTTPException(status_code=400, detail="NIF inválido")
+
+    invoices = []
+    for folder in _scan_asiento_folders():
+        final_path = folder / "resultado_final.json"
+        if not final_path.exists():
+            continue
+        try:
+            final = load_json_file(final_path)
+        except HTTPException:
+            continue
+
+        campos = final.get("campos_finales") or {}
+        nif_cliente = (campos.get("nif_cliente") or {}).get("valor")
+        if nif_cliente != nif:
+            continue
+
+        origen = final.get("origen_decision")
+        if origen in {"block", "error"}:
+            continue
+
+        tiene_ediciones = any(
+            c.get("editado") for c in campos.values() if isinstance(c, dict)
+        )
+
+        invoices.append({
+            "doc_id": final.get("doc_id"),
+            "numero_factura": (campos.get("numero_factura") or {}).get("valor"),
+            "fecha_expedicion": (campos.get("fecha_expedicion") or {}).get("valor"),
+            "total_euros": safe_float((campos.get("total_euros") or {}).get("valor")),
+            "decision_global": origen,
+            "status": current_status_of(folder),
+            "libro": final.get("libro"),
+            "tiene_ediciones": tiene_ediciones,
+        })
+
+    invoices.sort(key=lambda i: i["fecha_expedicion"] or "", reverse=True)
+    return {"nif": nif, "invoices": invoices}
 
 
 # ──────────────────────────────────────────────────────────
