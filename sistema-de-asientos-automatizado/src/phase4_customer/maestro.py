@@ -4,12 +4,16 @@ I/O del maestro de clientes.
 Lee y escribe maestro_clientes.yaml. El maestro almacena
 datos básicos de cada cliente identificado por NIF.
 
-Schema:
+Schema v1 — espejo exacto del futuro CREATE TABLE clientes en Supabase
+(la migración GCP será un INSERT ... SELECT directo):
+
     clientes:
-      B12345674:
-        nombre: "PROVEEDOR EJEMPLO SL"
-        fecha_alta: "2026-04-04"
-        documentos_procesados: 1
+      <nif>:                              # str — clave primaria
+        nombre: str                       # razón social / nombre completo
+        fecha_alta: str (ISO)             # primer procesado confirmado
+        documentos_procesados: int        # total facturas auto+warn confirmadas
+        ultima_factura_fecha: str|null    # max(fecha_expedicion) de auto+warn
+        libros_activos: list[str]         # subset de {"compras","ventas","bienes"}
 """
 
 from __future__ import annotations
@@ -23,6 +27,8 @@ import yaml
 logger = logging.getLogger("pipeline.cliente_destino")
 
 _MAESTRO_VACIO: dict = {"clientes": {}}
+
+_DECISIONES_REGISTRABLES = {"auto", "warn"}
 
 
 def cargar_maestro(path: str) -> dict:
@@ -66,28 +72,62 @@ def buscar_cliente(maestro: dict, nif: str) -> dict | None:
     return {"nif": nif, **entry}
 
 
-def registrar_cliente(maestro: dict, nif: str, nombre: str) -> dict:
+def registrar_cliente(
+    maestro: dict,
+    nif: str,
+    nombre: str,
+    fecha_expedicion: str | None = None,
+    libro: str | None = None,
+    decision: str = "auto",
+) -> dict | None:
     """
-    Registra un nuevo cliente en el maestro (en memoria).
+    Registra/actualiza un cliente en el maestro (en memoria).
 
-    Si el NIF ya existe, incrementa documentos_procesados.
+    Reglas (v1):
+    - Si `decision` no es "auto" ni "warn", NO se registra y devuelve None.
+    - Si el NIF no existe, crea entrada con schema v1 completo.
+    - Incrementa `documentos_procesados`.
+    - Si `fecha_expedicion` > `ultima_factura_fecha` actual, la actualiza.
+    - Añade `libro` a `libros_activos` si no estaba.
+
     No escribe a disco — usar guardar_maestro() después.
 
     Returns:
-        La entrada del cliente (nueva o actualizada).
+        La entrada del cliente (nueva o actualizada), o None si decision no registra.
     """
+    if decision not in _DECISIONES_REGISTRABLES:
+        return None
+
     clientes = maestro.setdefault("clientes", {})
 
-    if nif in clientes:
-        clientes[nif]["documentos_procesados"] = clientes[nif].get("documentos_procesados", 0) + 1
-    else:
+    if nif not in clientes:
         clientes[nif] = {
             "nombre": nombre,
             "fecha_alta": date.today().isoformat(),
-            "documentos_procesados": 1,
+            "documentos_procesados": 0,
+            "ultima_factura_fecha": None,
+            "libros_activos": [],
         }
 
-    return clientes[nif]
+    entry = clientes[nif]
+    # Backfill defensivo: entradas escritas con schema antiguo pueden no tener
+    # los campos nuevos. Los añadimos sin perder los existentes.
+    entry.setdefault("ultima_factura_fecha", None)
+    entry.setdefault("libros_activos", [])
+    entry.setdefault("documentos_procesados", 0)
+
+    entry["documentos_procesados"] = entry["documentos_procesados"] + 1
+
+    if fecha_expedicion and (
+        entry["ultima_factura_fecha"] is None
+        or fecha_expedicion > entry["ultima_factura_fecha"]
+    ):
+        entry["ultima_factura_fecha"] = fecha_expedicion
+
+    if libro and libro not in entry["libros_activos"]:
+        entry["libros_activos"].append(libro)
+
+    return entry
 
 
 def guardar_maestro(path: str, maestro: dict) -> None:
