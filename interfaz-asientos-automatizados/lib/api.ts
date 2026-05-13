@@ -252,8 +252,13 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
     decisionLine: line.decisionLine || line.decision_linea || "",
   }));
 
-  // Use actual file URL if available, otherwise fallback to placeholder
-  const fileUrl = detail.file_url || `${API_URL}/api/invoices/${detail.id}/file`;
+  // Sólo construir URL si el backend confirmó que el archivo existe
+  // (invoice_filename no null). Si es null, el PDF no está accesible:
+  // pasar "" para que ImageViewer muestre el placeholder inmediatamente
+  // sin esperar el timeout de 8s del iframe de PDF.
+  const fileUrl = detail.invoice_filename
+    ? (detail.file_url || `${API_URL}/api/invoices/${detail.id}/file`)
+    : "";
 
   // Determine file type from filename for proper rendering
   const filename = detail.invoice_filename || "";
