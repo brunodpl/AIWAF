@@ -406,3 +406,34 @@ def test_list_invoices_excluye_carpetas_sin_validacion(client, libros_root):
     assert "factura_huerfana" not in ids, (
         "carpeta sin resultado_validacion.json no debe aparecer en el reviewer"
     )
+
+
+def test_list_invoices_include_done_false_no_lee_validacion_de_done(
+    client, libros_root, monkeypatch
+):
+    """include_done=False must skip done folders BEFORE reading resultado_validacion."""
+    from unittest.mock import patch
+
+    # Carpeta done: .state.json con último evento done + resultado_validacion.json
+    folder = _make_asiento(libros_root, "compras_factura_done", "factura_done", decision="auto")
+
+    call_count = 0
+    original_gvr = api_main.get_validation_result
+
+    def counting_gvr(folder_or_doc):
+        nonlocal call_count
+        result = original_gvr(folder_or_doc)
+        p = str(folder_or_doc)
+        if "factura_done" in p:
+            call_count += 1
+        return result
+
+    monkeypatch.setattr(api_main, "get_validation_result", counting_gvr)
+    api_main._invoices_cache.clear()
+
+    r = client.get("/api/invoices?include_done=false")
+    assert r.status_code == 200
+    assert call_count == 0, (
+        f"get_validation_result was called {call_count}× for a done folder "
+        "— filtro done debe ejecutarse antes del I/O de validación"
+    )
