@@ -1023,7 +1023,15 @@ def confirm_batch(payload: ConfirmBatchPayload):
 
         nifs_ya_registrados: set[str] = set()
 
-        def _reg(nif_key: str, nombre_key: str) -> None:
+        # Derivar roles: emisor y receptor según el libro contable.
+        # compras/bienes: emisor = proveedor, receptor = cliente de la gestoría
+        # ventas:         emisor = cliente de la gestoría, receptor = su cliente
+        if libro_short in ("compras", "bienes"):
+            tipo_emisor, tipo_receptor = "proveedor", "cliente"
+        else:  # ventas
+            tipo_emisor, tipo_receptor = "cliente", "proveedor"
+
+        def _reg(nif_key: str, nombre_key: str, tipo: str) -> None:
             nif_v = (asiento.campos_finales.get(nif_key) or CampoFinal()).valor
             nombre_v = (asiento.campos_finales.get(nombre_key) or CampoFinal()).valor or ""
             if nif_v and libro_short:
@@ -1040,14 +1048,15 @@ def confirm_batch(payload: ConfirmBatchPayload):
                     # La confirmación explícita del operario sobreescribe la
                     # incertidumbre del pipeline: registrar siempre.
                     decision="auto",
+                    tipo=tipo,
                 )
 
         # Emisor (siempre presente — campo crítico RD 1619/2012)
-        _reg("nif_entidad", "nombre_entidad")
+        _reg("nif_entidad", "nombre_entidad", tipo_emisor)
         # Receptor — alias frontend lo manda como nif_cliente; backend también
         # acepta nif_receptor por compatibilidad. Probar ambos.
-        _reg("nif_cliente", "nombre_cliente")
-        _reg("nif_receptor", "nombre_receptor")
+        _reg("nif_cliente", "nombre_cliente", tipo_receptor)
+        _reg("nif_receptor", "nombre_receptor", tipo_receptor)
 
         confirmadas += 1
 

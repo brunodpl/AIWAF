@@ -104,6 +104,7 @@ def registrar_cliente(
     fecha_expedicion: str | None = None,
     libro: str | None = None,
     decision: str = "auto",
+    tipo: str | None = None,
 ) -> dict | None:
     """
     Registra/actualiza un cliente en el maestro (en memoria).
@@ -114,6 +115,7 @@ def registrar_cliente(
     - Incrementa `documentos_procesados`.
     - Si `fecha_expedicion` > `ultima_factura_fecha` actual, la actualiza.
     - Añade `libro` a `libros_activos` si no estaba.
+    - Añade `tipo` ("cliente"/"proveedor") a `tipos_activos` si no estaba.
 
     No escribe a disco — usar guardar_maestro() después.
 
@@ -132,6 +134,7 @@ def registrar_cliente(
             "documentos_procesados": 0,
             "ultima_factura_fecha": None,
             "libros_activos": [],
+            "tipos_activos": [],
         }
 
     entry = clientes[nif]
@@ -140,6 +143,7 @@ def registrar_cliente(
     entry.setdefault("ultima_factura_fecha", None)
     entry.setdefault("libros_activos", [])
     entry.setdefault("documentos_procesados", 0)
+    entry.setdefault("tipos_activos", [])
 
     entry["documentos_procesados"] = entry["documentos_procesados"] + 1
 
@@ -152,6 +156,9 @@ def registrar_cliente(
     if libro and libro not in entry["libros_activos"]:
         entry["libros_activos"].append(libro)
 
+    if tipo and tipo not in entry["tipos_activos"]:
+        entry["tipos_activos"].append(tipo)
+
     return entry
 
 
@@ -161,6 +168,7 @@ def _merge_cliente(disk: dict, mem: dict) -> dict:
     - documentos_procesados = max(disk, mem)
     - ultima_factura_fecha  = max(disk, mem) (None < cualquier fecha)
     - libros_activos        = unión preservando orden disk-primero
+    - tipos_activos         = unión preservando orden disk-primero
     - nombre, fecha_alta    = del disco si existe, si no del mem
     """
     out = {**disk}
@@ -178,6 +186,13 @@ def _merge_cliente(disk: dict, mem: dict) -> dict:
         if lib not in libros_disk:
             libros_disk.append(lib)
     out["libros_activos"] = libros_disk
+
+    tipos_disk = list(disk.get("tipos_activos", []) or [])
+    for t in mem.get("tipos_activos", []) or []:
+        if t not in tipos_disk:
+            tipos_disk.append(t)
+    out["tipos_activos"] = tipos_disk
+
     return out
 
 
