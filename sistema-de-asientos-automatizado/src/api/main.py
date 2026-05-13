@@ -1021,13 +1021,19 @@ def confirm_batch(payload: ConfirmBatchPayload):
         # proveedor sigue apareciendo en /historial.
         fecha_exp = (asiento.campos_finales.get("fecha_expedicion") or CampoFinal()).valor
 
+        nifs_ya_registrados: set[str] = set()
+
         def _reg(nif_key: str, nombre_key: str) -> None:
             nif_v = (asiento.campos_finales.get(nif_key) or CampoFinal()).valor
             nombre_v = (asiento.campos_finales.get(nombre_key) or CampoFinal()).valor or ""
             if nif_v and libro_short:
+                nif_clean = str(nif_v).strip()
+                if nif_clean in nifs_ya_registrados:
+                    return
+                nifs_ya_registrados.add(nif_clean)
                 registrar_cliente(
                     maestro,
-                    str(nif_v).strip(),
+                    nif_clean,
                     str(nombre_v).strip(),
                     fecha_expedicion=fecha_exp,
                     libro=libro_short,

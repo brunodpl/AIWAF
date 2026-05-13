@@ -175,3 +175,58 @@ def test_confirm_pendiente_registra_cliente(api_client, libros_root):
         "Factura con decision_global='pendiente' confirmada por humano: "
         "cliente debe quedar en el maestro"
     )
+
+
+def test_confirm_no_doble_conteo_nif_igual(api_client):
+    """When nif_entidad == nif_receptor the entity must be counted only once."""
+    client, libros_root, maestro_path = api_client
+
+    nif = "B12345678"
+    doc_id = "factura_doble_nif"
+    folder = libros_root / "asientos" / f"compras_{doc_id}"
+    folder.mkdir(parents=True)
+
+    from src import state_writer as sw
+    sw.init(folder, doc_id, f"libros/facturas/compras/{doc_id}.pdf")
+    sw.append(folder, {"status": "review", "decision": "warn"})
+
+    (folder / "resultado_validacion.json").write_text(json.dumps({
+        "decision_global": "warn",
+        "campos": {
+            "nif_entidad":     {"valor_final": nif},
+            "nombre_entidad":  {"valor_final": "Prov SL"},
+            "nif_receptor":    {"valor_final": nif},
+            "nombre_receptor": {"valor_final": "Prov SL"},
+            "nif_cliente":     {"valor_final": nif},
+            "nombre_cliente":  {"valor_final": "Prov SL"},
+            "fecha_expedicion": {"valor_final": "2026-01-15"},
+        },
+    }), encoding="utf-8")
+
+    payload = {
+        "doc_ids": [doc_id],
+        "asientos": {
+            doc_id: {
+                "campos_finales": {
+                    "nif_entidad":     {"valor": nif},
+                    "nombre_entidad":  {"valor": "Prov SL"},
+                    "nif_receptor":    {"valor": nif},
+                    "nombre_cliente":  {"valor": "Prov SL"},
+                    "nif_cliente":     {"valor": nif},
+                    "fecha_expedicion": {"valor": "2026-01-15"},
+                    "cuenta_contable":  {"valor": "600000"},
+                },
+                "lineas_asiento": [],
+                "csv_b64": base64.b64encode(b"cuenta;debe;haber\n600000;100;0\n").decode(),
+            }
+        },
+    }
+
+    resp = client.post("/api/pipeline/confirm", json=payload)
+    assert resp.status_code == 200, resp.text
+
+    maestro_path.parent.mkdir(parents=True, exist_ok=True)
+    data = yaml.safe_load(maestro_path.read_text(encoding="utf-8"))
+    assert nif in data.get("clientes", {}), "NIF not registered at all"
+    count = data["clientes"][nif]["documentos_procesados"]
+    assert count == 1, f"Expected 1 but got {count} — duplicate NIF was counted twice"
