@@ -1014,8 +1014,6 @@ def confirm_batch(payload: ConfirmBatchPayload):
         # un asiento bloqueado (receptor sin resolver), su trazabilidad por
         # proveedor sigue apareciendo en /historial.
         fecha_exp = (asiento.campos_finales.get("fecha_expedicion") or CampoFinal()).valor
-        validation = get_validation_result(folder) or {}
-        origen_decision = validation.get("decision_global", "auto")
 
         def _reg(nif_key: str, nombre_key: str) -> None:
             nif_v = (asiento.campos_finales.get(nif_key) or CampoFinal()).valor
@@ -1027,7 +1025,9 @@ def confirm_batch(payload: ConfirmBatchPayload):
                     str(nombre_v).strip(),
                     fecha_expedicion=fecha_exp,
                     libro=libro_short,
-                    decision=origen_decision,
+                    # La confirmación explícita del operario sobreescribe la
+                    # incertidumbre del pipeline: registrar siempre.
+                    decision="auto",
                 )
 
         # Emisor (siempre presente — campo crítico RD 1619/2012)

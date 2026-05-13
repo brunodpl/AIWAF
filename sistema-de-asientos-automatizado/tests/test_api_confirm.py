@@ -147,3 +147,31 @@ def test_confirm_doc_id_inexistente_devuelve_404(api_client):
     }
     r = client.post("/api/pipeline/confirm", json=payload)
     assert r.status_code == 404
+
+
+def test_confirm_pendiente_registra_cliente(api_client, libros_root):
+    """
+    Con decision_global='pendiente' (semántica sin resolver), el confirm
+    del operario debe registrar igualmente el cliente en el maestro.
+
+    Antes del fix, registrar_cliente() filtraba 'pendiente' silenciosamente
+    y el cliente nunca aparecía en /historial.
+    """
+    # Reescribir resultado_validacion con decision_global=pendiente
+    folder = libros_root / "asientos" / "compras_factura_001"
+    validation = json.loads((folder / "resultado_validacion.json").read_text(encoding="utf-8"))
+    validation["decision_global"] = "pendiente"
+    (folder / "resultado_validacion.json").write_text(
+        json.dumps(validation), encoding="utf-8"
+    )
+
+    client, _, maestro_path = api_client
+    r = client.post("/api/pipeline/confirm", json=_payload_factura_001())
+    assert r.status_code == 200, r.text
+
+    maestro = yaml.safe_load(maestro_path.read_text(encoding="utf-8"))
+    # B99999999 es el nif_cliente del payload — debe estar registrado
+    assert "B99999999" in maestro["clientes"], (
+        "Factura con decision_global='pendiente' confirmada por humano: "
+        "cliente debe quedar en el maestro"
+    )
