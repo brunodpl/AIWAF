@@ -104,7 +104,9 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       if (isRefresh) setRefreshing(true);
       else { setLoading(true); setError(null); }
 
-      const response = await fetchInvoices();
+      // Excluir asientos ya confirmados (status=done): el reviewer es para
+      // facturas pendientes de revisión, no para histórico.
+      const response = await fetchInvoices({ includeDone: false });
 
       if (response.invoices.length === 0) {
         setError("No hay facturas procesadas. Ejecuta el pipeline primero.");

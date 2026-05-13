@@ -344,7 +344,7 @@ def find_invoice_file(doc_id: str) -> Optional[Tuple[Path, str]]:
 # ──────────────────────────────────────────────────────────
 
 @app.get("/api/invoices")
-def list_invoices():
+def list_invoices(include_done: bool = True):
     """
     Listar todas las facturas procesadas con su estado.
 
@@ -354,10 +354,20 @@ def list_invoices():
     - ``libro``     : compras / ventas / bienes (prefijo de la carpeta)
     - ``status``    : último evento del `.state.json` (processing/review/done/...)
     - ``decision_global`` + campos resumen desde `resultado_validacion.json`.
+
+    Query params:
+    - ``include_done`` (bool, default True): si False excluye los asientos
+      con `status == "done"` (los ya confirmados por el operario). El
+      reviewer lo usa para no remostrar facturas viejas tras un ciclo de
+      confirmación.
     """
     now = time.time()
-    if _invoices_cache and (now - _invoices_cache.get("ts", 0)) < _CACHE_TTL:
-        return _invoices_cache["data"]
+    cache_key = f"data_{int(include_done)}"
+    if (
+        cache_key in _invoices_cache
+        and (now - _invoices_cache.get(f"ts_{int(include_done)}", 0)) < _CACHE_TTL
+    ):
+        return _invoices_cache[cache_key]
 
     invoices = []
     for folder in _scan_asiento_folders():
@@ -367,6 +377,10 @@ def list_invoices():
         doc_id = state.get("doc_id") or folder.name
         events = state.get("events") or []
         status = events[-1].get("status") if events else None
+
+        # Filtro: si el operario ya confirmó (`done`), excluir del reviewer.
+        if not include_done and status == "done":
+            continue
 
         validation = get_validation_result(folder) or {}
         campos = validation.get("campos", {})
@@ -385,8 +399,8 @@ def list_invoices():
         })
 
     result = {"invoices": invoices, "total": len(invoices)}
-    _invoices_cache["data"] = result
-    _invoices_cache["ts"] = now
+    _invoices_cache[cache_key] = result
+    _invoices_cache[f"ts_{int(include_done)}"] = now
     return result
 
 
@@ -983,23 +997,45 @@ def confirm_batch(payload: ConfirmBatchPayload):
                 )
                 raise HTTPException(status_code=500, detail=str(e))
 
-        # Maestro de clientes: actualizar con los datos confirmados.
-        nif_c = (asiento.campos_finales.get("nif_cliente") or CampoFinal()).valor
-        nombre_c = (asiento.campos_finales.get("nombre_cliente") or CampoFinal()).valor or ""
+        # Maestro de contactos: actualizar con TODAS las entidades del asiento.
+        #
+        # La trazabilidad muestra todos los contactos del libro (clientes Y
+        # proveedores). Por eso registramos AMBOS NIFs presentes:
+        #
+        #   - nif_entidad   = emisor de la factura
+        #       * compras → proveedor
+        #       * ventas  → cliente de la gestoría
+        #   - nif_receptor  = receptor de la factura (alias nif_cliente cuando
+        #       el ensamblador lo resolvió)
+        #       * compras → cliente de la gestoría
+        #       * ventas  → cliente del cliente de la gestoría (sin uso oper.)
+        #
+        # Registrar emisor también garantiza que, aunque el operario apruebe
+        # un asiento bloqueado (receptor sin resolver), su trazabilidad por
+        # proveedor sigue apareciendo en /historial.
         fecha_exp = (asiento.campos_finales.get("fecha_expedicion") or CampoFinal()).valor
-
         validation = get_validation_result(folder) or {}
         origen_decision = validation.get("decision_global", "auto")
 
-        if nif_c and libro_short:
-            registrar_cliente(
-                maestro,
-                nif_c,
-                nombre_c,
-                fecha_expedicion=fecha_exp,
-                libro=libro_short,
-                decision=origen_decision,
-            )
+        def _reg(nif_key: str, nombre_key: str) -> None:
+            nif_v = (asiento.campos_finales.get(nif_key) or CampoFinal()).valor
+            nombre_v = (asiento.campos_finales.get(nombre_key) or CampoFinal()).valor or ""
+            if nif_v and libro_short:
+                registrar_cliente(
+                    maestro,
+                    str(nif_v).strip(),
+                    str(nombre_v).strip(),
+                    fecha_expedicion=fecha_exp,
+                    libro=libro_short,
+                    decision=origen_decision,
+                )
+
+        # Emisor (siempre presente — campo crítico RD 1619/2012)
+        _reg("nif_entidad", "nombre_entidad")
+        # Receptor — alias frontend lo manda como nif_cliente; backend también
+        # acepta nif_receptor por compatibilidad. Probar ambos.
+        _reg("nif_cliente", "nombre_cliente")
+        _reg("nif_receptor", "nombre_receptor")
 
         confirmadas += 1
 
@@ -1336,8 +1372,16 @@ def list_invoices_by_client(nif: str):
             continue
 
         campos = final.get("campos_finales") or {}
-        nif_cliente = (campos.get("nif_cliente") or {}).get("valor")
-        if nif_cliente != nif:
+        # Una factura pertenece a un NIF si ese NIF aparece como emisor,
+        # receptor o cliente resuelto. Así el panel de "ÁLVAREZ BRAÑAS"
+        # muestra las facturas donde es proveedor (compras) Y donde es
+        # cliente (ventas), sin depender de qué resolvió el ensamblador.
+        nifs_doc = {
+            (campos.get(k) or {}).get("valor")
+            for k in ("nif_cliente", "nif_entidad", "nif_receptor")
+        }
+        nifs_doc = {str(n).strip() for n in nifs_doc if n}
+        if nif not in nifs_doc:
             continue
 
         origen = final.get("origen_decision")

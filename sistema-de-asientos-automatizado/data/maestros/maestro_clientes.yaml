@@ -3,3 +3,5 @@ clientes:
     nombre: MIGUEZ PEREZ FERNANDO
     fecha_alta: '2026-04-04'
     documentos_procesados: 1
+    ultima_factura_fecha: null
+    libros_activos: []

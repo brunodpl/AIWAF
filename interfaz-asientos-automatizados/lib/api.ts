@@ -130,10 +130,19 @@ export interface InvoiceDetailResponse {
 
 /**
  * Fetch the list of processed invoices.
+ *
+ * @param options.includeDone  Si false (default), excluye asientos cuyo
+ *   .state.json terminó en `status=done` — i.e. ya confirmados por el
+ *   operario. El reviewer las omite para no remostrar facturas viejas tras
+ *   un ciclo de confirmación.
  */
-export async function fetchInvoices(): Promise<InvoiceListResponse> {
+export async function fetchInvoices(
+  options: { includeDone?: boolean } = {},
+): Promise<InvoiceListResponse> {
+  const includeDone = options.includeDone ?? true;
+  const qs = includeDone ? "" : "?include_done=false";
   try {
-    const response = await fetchWithTimeout(`${API_URL}/api/invoices`);
+    const response = await fetchWithTimeout(`${API_URL}/api/invoices${qs}`);
 
     if (!response.ok) {
       throw new Error(`Failed to fetch invoices: ${response.statusText}`);
