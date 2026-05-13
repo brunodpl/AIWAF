@@ -374,6 +374,13 @@ def list_invoices(include_done: bool = True):
         state = get_state(folder)
         if not state:
             continue
+
+        # Saltar carpetas huérfanas (runs interrumpidos sin resultado_validacion).
+        # No hay nada que el operario pueda revisar sin datos de validación.
+        validation = get_validation_result(folder)
+        if not validation:
+            continue
+
         doc_id = state.get("doc_id") or folder.name
         events = state.get("events") or []
         status = events[-1].get("status") if events else None
@@ -382,7 +389,6 @@ def list_invoices(include_done: bool = True):
         if not include_done and status == "done":
             continue
 
-        validation = get_validation_result(folder) or {}
         campos = validation.get("campos", {})
 
         invoices.append({

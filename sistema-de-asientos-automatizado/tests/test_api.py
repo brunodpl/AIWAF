@@ -381,3 +381,28 @@ def test_find_invoice_file_returns_none_when_pdf_missing(client, libros_root):
     # No creamos el PDF
     result = api_main.find_invoice_file("factura_a")
     assert result is None
+
+
+def test_list_invoices_excluye_carpetas_sin_validacion(client, libros_root):
+    """
+    Carpetas con .state.json pero sin resultado_validacion.json (runs
+    interrumpidos) NO deben aparecer en GET /api/invoices.
+    """
+    asientos = libros_root / "asientos"
+
+    # Carpeta completa (con resultado_validacion.json) — creada via _make_asiento
+    _make_asiento(libros_root, "compras_factura_completa", "factura_completa", decision="warn")
+
+    # Carpeta huérfana: solo .state.json, sin resultado_validacion.json
+    huerfana = asientos / "compras_factura_huerfana"
+    huerfana.mkdir(parents=True)
+    state_writer.init(huerfana, "factura_huerfana", "libros/facturas/compras/fh.pdf")
+    # Deliberadamente NO creamos resultado_validacion.json
+
+    r = client.get("/api/invoices")
+    assert r.status_code == 200
+    ids = [inv["id"] for inv in r.json()["invoices"]]
+    assert "factura_completa" in ids, "factura con validacion debe estar en el listado"
+    assert "factura_huerfana" not in ids, (
+        "carpeta sin resultado_validacion.json no debe aparecer en el reviewer"
+    )
