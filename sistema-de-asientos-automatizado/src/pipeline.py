@@ -244,9 +244,19 @@ def process_document(
     return doc_id, doc_dir, results
 
 
-def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -> dict:
+def run_pipeline(
+    folder_path: str,
+    libro: str,
+    status_file: str | None = None,
+    processed_offset: int = 0,
+) -> dict:
     """
     Procesa todos los archivos de una carpeta.
+
+    Args:
+        processed_offset: contador acumulado de docs procesados en libros
+            anteriores en la misma ejecución multi-libro. Se suma al contador
+            local para que la barra de progreso no regrese entre libros.
 
     Returns:
         {"total": N, "ok": N, "warn": N, "error": N}
@@ -398,7 +408,10 @@ def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -
             _log_resumen_documento(doc_id, results, decision)
 
             if status_file:
-                _update_status_file(status_file, processed=summary["ok"] + summary["warn"] + summary["error"])
+                _update_status_file(
+                    status_file,
+                    processed=processed_offset + summary["ok"] + summary["warn"] + summary["error"],
+                )
 
         _print_summary(folder_path, summary)
 

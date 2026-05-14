@@ -1233,6 +1233,7 @@ async def run_pipeline_endpoint():
 
             from src.pipeline import run_pipeline
 
+            processed_acc = 0
             for book_id, info in book_inbox_map.items():
                 if is_cancel_requested():
                     logger.warning("[pipeline] Cancelación solicitada — abortando libros pendientes")
@@ -1242,10 +1243,14 @@ async def run_pipeline_endpoint():
                     "[pipeline] Procesando libro=%s (%d archivos) desde %s",
                     info["libro_long"], info["count"], info["inbox"],
                 )
-                run_pipeline(
+                book_summary = run_pipeline(
                     str(info["inbox"]),
                     info["libro_long"],
                     status_file=str(status_path),
+                    processed_offset=processed_acc,
+                )
+                processed_acc += (
+                    book_summary["ok"] + book_summary["warn"] + book_summary["error"]
                 )
 
             # Estado final.
