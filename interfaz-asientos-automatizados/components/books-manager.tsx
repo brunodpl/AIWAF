@@ -156,7 +156,11 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
     }
   }, [onPipelineStart]);
 
-  const totalFiles = books?.reduce((sum, b) => sum + b.files.length, 0) ?? 0;
+  // Una factura "done" ya tiene asiento — la gestoría quiere ver el inbox limpio
+  // tras procesar. El PDF original sigue en disco bajo libros/facturas/...
+  const isPendingFile = (f: BookFile) => f.status !== "done";
+  const totalFiles =
+    books?.reduce((sum, b) => sum + b.files.filter(isPendingFile).length, 0) ?? 0;
 
   if (loading && !books) {
     return (
@@ -217,6 +221,7 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
             const isUploading = uploadingBooks.has(book.id);
             const isDragOver = dragOverBook === book.id;
             const progress = uploadProgress?.bookId === book.id ? uploadProgress.percent : 0;
+            const visibleFiles = book.files.filter(isPendingFile);
 
             return (
               <div
@@ -234,7 +239,7 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                   {book.label}
                 </h3>
 
-                {book.files.length === 0 && !isUploading ? (
+                {visibleFiles.length === 0 && !isUploading ? (
                   <div
                     className={cn(
                       "border-2 border-dashed rounded-lg p-8 text-center transition-all cursor-pointer",
@@ -282,7 +287,7 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                       </div>
                     )}
 
-                    {book.files.map((file: BookFile) => {
+                    {visibleFiles.map((file: BookFile) => {
                       const fileKey = `${book.id}/${file.name}`;
                       const isDeleting = deletingFile === fileKey;
                       // Trazabilidad 2.0: si ya tiene asiento, mostrar status.
