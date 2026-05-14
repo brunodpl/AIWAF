@@ -12,7 +12,7 @@ import { FeedbackButton } from "@/components/feedback-button";
 import { UpdateBanner } from "@/components/update-banner";
 import { HistorialOverlay } from "@/components/historial-overlay";
 import { ApprovedInvoiceData, FiscalLine, Libro } from "@/lib/types";
-import { resetPipeline, fetchInvoices } from "@/lib/api";
+import { fetchInvoices } from "@/lib/api";
 
 type Stage = "books" | "processing" | "review" | "export";
 
@@ -82,18 +82,14 @@ export default function Home() {
 
   const [resetting, setResetting] = useState(false);
   const [booksNonce, setBooksNonce] = useState(0);
+  // "Nuevo escaneo" = empezar un lote nuevo. NO es destructivo: las
+  // carpetas de asiento (.state.json + resultado_final.json) deben
+  // sobrevivir, porque son las que permiten ocultar del inbox las
+  // facturas que ya tienen asiento confirmado. Llamar aquí a
+  // /api/pipeline/reset rompía esa promesa y reabría facturas viejas
+  // como si fueran pendientes.
   const handleReset = useCallback(async () => {
     setResetting(true);
-    try {
-      const result = await resetPipeline();
-      toast.success(
-        `Sesión reseteada. ${result.asientos_deleted} asiento(s) limpiados. ` +
-        `Las facturas originales siguen en su inbox y se pueden reprocesar.`
-      );
-    } catch (err) {
-      console.error("Reset backend failed:", err);
-      toast.warning("No se pudo contactar el backend. Se limpia solo el estado local.");
-    }
     setApprovedInvoices(new Map());
     setRejectedInvoices(new Set());
     setStage("books");
