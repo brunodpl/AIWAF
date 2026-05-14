@@ -12,7 +12,7 @@ import { FeedbackButton } from "@/components/feedback-button";
 import { UpdateBanner } from "@/components/update-banner";
 import { HistorialOverlay } from "@/components/historial-overlay";
 import { ApprovedInvoiceData, FiscalLine, Libro } from "@/lib/types";
-import { fetchInvoices } from "@/lib/api";
+import { fetchInvoices, resetPipeline } from "@/lib/api";
 
 type Stage = "books" | "processing" | "review" | "export";
 
@@ -82,14 +82,19 @@ export default function Home() {
 
   const [resetting, setResetting] = useState(false);
   const [booksNonce, setBooksNonce] = useState(0);
-  // "Nuevo escaneo" = empezar un lote nuevo. NO es destructivo: las
-  // carpetas de asiento (.state.json + resultado_final.json) deben
-  // sobrevivir, porque son las que permiten ocultar del inbox las
-  // facturas que ya tienen asiento confirmado. Llamar aquí a
-  // /api/pipeline/reset rompía esa promesa y reabría facturas viejas
-  // como si fueran pendientes.
+  // "Nuevo escaneo" = empezar un lote limpio. Llama a /api/pipeline/reset
+  // para descartar asientos pendientes (status != done) que se quedarían
+  // fantasma en /review tras un escaneo abortado. Los PDFs originales en
+  // libros/facturas/ sobreviven; solo se purga libros/asientos/ y runtime.
+  // Si el backend falla, seguimos limpiando estado UI (defensa en profundidad).
   const handleReset = useCallback(async () => {
     setResetting(true);
+    try {
+      await resetPipeline();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.warning(`Reset backend falló: ${msg}. UI se limpia igualmente.`);
+    }
     setApprovedInvoices(new Map());
     setRejectedInvoices(new Set());
     setStage("books");
