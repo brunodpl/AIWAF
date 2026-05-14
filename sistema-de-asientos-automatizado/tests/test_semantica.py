@@ -777,6 +777,22 @@ class TestLlmConceptoNormalizado:
         assert resultado.cuenta_contable.valor_final == "600"
 
 
+class TestSesgoCuenta600:
+    """Garantiza que el prompt enviado al LLM sesga empates 600/601 hacia 600."""
+
+    def test_prompt_contiene_regla_desempate(self):
+        """El system prompt debe declarar la regla de desempate hacia 600."""
+        from src.phase3_semantica.resolver import _SYSTEM_CLASIFICADOR_PGC
+
+        prompt = _SYSTEM_CLASIFICADOR_PGC.upper()
+        assert "DESEMPATE" in prompt, (
+            "El prompt ha perdido la regla de desempate 600 vs 601. "
+            "Decisión de producto: en duda, prevalece 600 (mercaderias)."
+        )
+        assert "600" in prompt and "601" in prompt
+        assert "PREVALECE 600" in prompt or "ELEGIR SIEMPRE LA CUENTA 600" in prompt
+
+
 class _MockSettings:
     """Mock minimo de Settings para tests sin .env."""
     google_application_credentials = ""
