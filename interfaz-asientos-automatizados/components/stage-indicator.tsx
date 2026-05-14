@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { Check, RotateCcw, Loader2 } from "lucide-react";
+import { Check, RotateCcw, Loader2, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -30,9 +30,11 @@ interface StageIndicatorProps {
   onStageClick?: (stage: Stage) => void;
   onReset?: () => void;
   resetting?: boolean;
+  /** Abre el overlay de trazabilidad por cliente — independiente del flujo. */
+  onOpenHistorial?: () => void;
 }
 
-export function StageIndicator({ stage, className, onStageClick, onReset, resetting }: StageIndicatorProps) {
+export function StageIndicator({ stage, className, onStageClick, onReset, resetting, onOpenHistorial }: StageIndicatorProps) {
   const currentIndex = STAGES.findIndex((s) => s.key === stage);
 
   return (
@@ -94,6 +96,24 @@ export function StageIndicator({ stage, className, onStageClick, onReset, resett
         })}
       </div>
 
+      <div className="flex items-center gap-1">
+        {/* Botón HISTORIAL — abre overlay de trazabilidad por cliente.
+            Es vía de consulta independiente del flujo (no navega, no pierde el
+            stage actual). Al cerrar, el operario vuelve exactamente a donde
+            estaba (revisión/exportar/...). */}
+        {onOpenHistorial && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onOpenHistorial}
+            className="text-[10px] text-slate-400 hover:text-slate-600 uppercase tracking-[0.15em] h-6 px-2 gap-1 rounded-none"
+            title="Trazabilidad por cliente"
+          >
+            <History className="h-3 w-3" />
+            Historial
+          </Button>
+        )}
+
       {/* Botón "Nuevo escaneo" con confirmación AlertDialog */}
       {currentIndex > 0 && onReset && (
         <AlertDialog>
@@ -135,6 +155,7 @@ export function StageIndicator({ stage, className, onStageClick, onReset, resett
           </AlertDialogContent>
         </AlertDialog>
       )}
+      </div>
     </div>
   );
 }

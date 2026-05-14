@@ -381,3 +381,59 @@ def test_find_invoice_file_returns_none_when_pdf_missing(client, libros_root):
     # No creamos el PDF
     result = api_main.find_invoice_file("factura_a")
     assert result is None
+
+
+def test_list_invoices_excluye_carpetas_sin_validacion(client, libros_root):
+    """
+    Carpetas con .state.json pero sin resultado_validacion.json (runs
+    interrumpidos) NO deben aparecer en GET /api/invoices.
+    """
+    asientos = libros_root / "asientos"
+
+    # Carpeta completa (con resultado_validacion.json) — creada via _make_asiento
+    _make_asiento(libros_root, "compras_factura_completa", "factura_completa", decision="warn")
+
+    # Carpeta huérfana: solo .state.json, sin resultado_validacion.json
+    huerfana = asientos / "compras_factura_huerfana"
+    huerfana.mkdir(parents=True)
+    state_writer.init(huerfana, "factura_huerfana", "libros/facturas/compras/fh.pdf")
+    # Deliberadamente NO creamos resultado_validacion.json
+
+    r = client.get("/api/invoices")
+    assert r.status_code == 200
+    ids = [inv["id"] for inv in r.json()["invoices"]]
+    assert "factura_completa" in ids, "factura con validacion debe estar en el listado"
+    assert "factura_huerfana" not in ids, (
+        "carpeta sin resultado_validacion.json no debe aparecer en el reviewer"
+    )
+
+
+def test_list_invoices_include_done_false_no_lee_validacion_de_done(
+    client, libros_root, monkeypatch
+):
+    """include_done=False must skip done folders BEFORE reading resultado_validacion."""
+    from unittest.mock import patch
+
+    # Carpeta done: .state.json con último evento done + resultado_validacion.json
+    folder = _make_asiento(libros_root, "compras_factura_done", "factura_done", decision="auto")
+
+    call_count = 0
+    original_gvr = api_main.get_validation_result
+
+    def counting_gvr(folder_or_doc):
+        nonlocal call_count
+        result = original_gvr(folder_or_doc)
+        p = str(folder_or_doc)
+        if "factura_done" in p:
+            call_count += 1
+        return result
+
+    monkeypatch.setattr(api_main, "get_validation_result", counting_gvr)
+    api_main._invoices_cache.clear()
+
+    r = client.get("/api/invoices?include_done=false")
+    assert r.status_code == 200
+    assert call_count == 0, (
+        f"get_validation_result was called {call_count}× for a done folder "
+        "— filtro done debe ejecutarse antes del I/O de validación"
+    )

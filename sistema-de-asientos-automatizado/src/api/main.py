@@ -32,7 +32,14 @@ from pydantic import BaseModel
 from urllib.parse import quote
 
 from src.config import LIBRO_SHORT, settings
-from src import state_writer
+from src import state_writer, final_writer
+from src.phase4_customer.maestro import (
+    cargar_maestro,
+    guardar_maestro,
+    registrar_cliente,
+)
+import base64
+from typing import Any, Dict
 
 # Versión inyectada en build (.env.docker o ENV en docker-compose)
 APP_VERSION = os.getenv("AIWAF_VERSION", "0.0.0-dev")
@@ -337,7 +344,7 @@ def find_invoice_file(doc_id: str) -> Optional[Tuple[Path, str]]:
 # ──────────────────────────────────────────────────────────
 
 @app.get("/api/invoices")
-def list_invoices():
+def list_invoices(include_done: bool = True):
     """
     Listar todas las facturas procesadas con su estado.
 
@@ -347,21 +354,41 @@ def list_invoices():
     - ``libro``     : compras / ventas / bienes (prefijo de la carpeta)
     - ``status``    : último evento del `.state.json` (processing/review/done/...)
     - ``decision_global`` + campos resumen desde `resultado_validacion.json`.
+
+    Query params:
+    - ``include_done`` (bool, default True): si False excluye los asientos
+      con `status == "done"` (los ya confirmados por el operario). El
+      reviewer lo usa para no remostrar facturas viejas tras un ciclo de
+      confirmación.
     """
     now = time.time()
-    if _invoices_cache and (now - _invoices_cache.get("ts", 0)) < _CACHE_TTL:
-        return _invoices_cache["data"]
+    cache_key = f"data_{int(include_done)}"
+    if (
+        cache_key in _invoices_cache
+        and (now - _invoices_cache.get(f"ts_{int(include_done)}", 0)) < _CACHE_TTL
+    ):
+        return _invoices_cache[cache_key]
 
     invoices = []
     for folder in _scan_asiento_folders():
         state = get_state(folder)
         if not state:
             continue
+
         doc_id = state.get("doc_id") or folder.name
         events = state.get("events") or []
         status = events[-1].get("status") if events else None
 
-        validation = get_validation_result(folder) or {}
+        # Filtro done primero — antes del I/O de validación.
+        if not include_done and status == "done":
+            continue
+
+        # Saltar carpetas huérfanas (runs interrumpidos sin resultado_validacion).
+        # No hay nada que el operario pueda revisar sin datos de validación.
+        validation = get_validation_result(folder)
+        if not validation:
+            continue
+
         campos = validation.get("campos", {})
 
         invoices.append({
@@ -378,8 +405,8 @@ def list_invoices():
         })
 
     result = {"invoices": invoices, "total": len(invoices)}
-    _invoices_cache["data"] = result
-    _invoices_cache["ts"] = now
+    _invoices_cache[cache_key] = result
+    _invoices_cache[f"ts_{int(include_done)}"] = now
     return result
 
 
@@ -717,6 +744,17 @@ def _recover_stale_pipeline_state() -> None:
                 with status_path.open("w", encoding="utf-8") as f:
                     json.dump(status, f, indent=2)
         _cancel_path().unlink(missing_ok=True)
+
+        # Detectar pending_confirm huérfano (lote pipeline OK pero sin
+        # confirmación humana antes del reinicio). No lo borramos: la UI lo
+        # mostrará al operario para que confirme cuando vuelva.
+        pending = _load_pending_confirm()
+        if pending:
+            logger.warning(
+                "[startup] .pending_confirm.json detectado: %d facturas a la "
+                "espera de confirmación humana — UI las mostrará en /api/pipeline/status",
+                len(pending.get("doc_ids_lote", [])),
+            )
     except (OSError, json.JSONDecodeError) as exc:
         logger.error("[startup] Error en recovery de pipeline: %s", exc, exc_info=True)
 
@@ -855,9 +893,218 @@ def delete_book_file(book_id: str, filename: str):
     return {"deleted": safe_name}
 
 
+# ──────────────────────────────────────────────────────────
+# POST /api/pipeline/confirm — confirmación en lote de asientos
+# ──────────────────────────────────────────────────────────
+
+
+class CampoFinal(BaseModel):
+    """Valor de un campo tras la revisión humana."""
+
+    valor: Any = None
+
+
+class AsientoConfirm(BaseModel):
+    campos_finales: Dict[str, CampoFinal]
+    lineas_asiento: list[dict[str, Any]] = []
+    csv_b64: str = ""
+
+
+class ConfirmBatchPayload(BaseModel):
+    doc_ids: list[str]
+    asientos: Dict[str, AsientoConfirm]
+
+
+def _pending_confirm_path() -> Path:
+    return get_runtime_dir() / ".pending_confirm.json"
+
+
+def _delete_pending_confirm() -> None:
+    p = _pending_confirm_path()
+    try:
+        if p.exists():
+            p.unlink()
+    except OSError as e:
+        logger.warning("[confirm] no se pudo borrar pending_confirm: %s", e)
+
+
+@app.post("/api/pipeline/confirm")
+def confirm_batch(payload: ConfirmBatchPayload):
+    """
+    Confirma en lote un grupo de asientos revisados por el operario.
+
+    Por cada doc_id:
+      1. Localiza la carpeta del asiento (state_writer.find_folder_by_doc_id).
+      2. final_writer escribe resultado_final.json + asiento_{doc_id}.csv +
+         hash. Calcula el diff frente a resultado_validacion.json y marca
+         qué campos llevan `editado: true`.
+      3. Si state aún no es ``done`` (idempotencia), añade evento done al
+         sidecar.
+      4. Acumula la actualización del maestro de clientes.
+
+    Al cierre del lote, guarda el maestro UNA sola vez bajo file-lock y borra
+    `.pending_confirm.json` si existía.
+    """
+    if not payload.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids vacío")
+
+    cfg = settings()
+    maestro = cargar_maestro(cfg.maestro_clientes_path)
+    nifs_antes = set(maestro.get("clientes", {}).keys())
+
+    confirmadas = 0
+    for doc_id in payload.doc_ids:
+        validate_doc_id(doc_id)
+        if doc_id not in payload.asientos:
+            raise HTTPException(
+                status_code=400, detail=f"asientos[{doc_id}] ausente en payload"
+            )
+
+        folder = get_doc_folder(doc_id)
+        if folder is None:
+            raise HTTPException(
+                status_code=404, detail=f"doc_id {doc_id} no encontrado"
+            )
+
+        asiento = payload.asientos[doc_id]
+        try:
+            csv_bytes = base64.b64decode(asiento.csv_b64, validate=False)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"csv_b64 inválido para {doc_id}: {e}",
+            )
+
+        libro_short = _libro_from_folder(folder.name) or ""
+        campos_para_writer = {
+            k: {"valor": v.valor} for k, v in asiento.campos_finales.items()
+        }
+
+        final_writer.write_final(
+            str(folder),
+            doc_id=doc_id,
+            libro=libro_short,
+            campos_finales=campos_para_writer,
+            lineas=asiento.lineas_asiento,
+            csv_bytes=csv_bytes,
+        )
+
+        # Idempotencia: no duplicar evento done si ya está cerrado.
+        if not state_writer.is_done(folder):
+            try:
+                state_writer.append(
+                    folder,
+                    {"status": "done", "actor": "operario", "action": "confirmed"},
+                )
+            except (FileNotFoundError, ValueError, OSError) as e:
+                logger.error(
+                    "[confirm] no se pudo escribir done en sidecar doc_id=%s: %s",
+                    doc_id, e, exc_info=True,
+                )
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # Maestro de contactos: actualizar con TODAS las entidades del asiento.
+        #
+        # La trazabilidad muestra todos los contactos del libro (clientes Y
+        # proveedores). Por eso registramos AMBOS NIFs presentes:
+        #
+        #   - nif_entidad   = emisor de la factura
+        #       * compras → proveedor
+        #       * ventas  → cliente de la gestoría
+        #   - nif_receptor  = receptor de la factura (alias nif_cliente cuando
+        #       el ensamblador lo resolvió)
+        #       * compras → cliente de la gestoría
+        #       * ventas  → cliente del cliente de la gestoría (sin uso oper.)
+        #
+        # Registrar emisor también garantiza que, aunque el operario apruebe
+        # un asiento bloqueado (receptor sin resolver), su trazabilidad por
+        # proveedor sigue apareciendo en /historial.
+        fecha_exp = (asiento.campos_finales.get("fecha_expedicion") or CampoFinal()).valor
+
+        nifs_ya_registrados: set[str] = set()
+
+        # Derivar roles: emisor y receptor según el libro contable.
+        # compras/bienes: emisor = proveedor, receptor = cliente de la gestoría
+        # ventas:         emisor = cliente de la gestoría, receptor = su cliente
+        if libro_short in ("compras", "bienes"):
+            tipo_emisor, tipo_receptor = "proveedor", "cliente"
+        else:  # ventas
+            tipo_emisor, tipo_receptor = "cliente", "proveedor"
+
+        def _reg(nif_key: str, nombre_key: str, tipo: str) -> None:
+            nif_v = (asiento.campos_finales.get(nif_key) or CampoFinal()).valor
+            nombre_v = (asiento.campos_finales.get(nombre_key) or CampoFinal()).valor or ""
+            if nif_v and libro_short:
+                nif_clean = str(nif_v).strip()
+                if nif_clean in nifs_ya_registrados:
+                    return
+                nifs_ya_registrados.add(nif_clean)
+                registrar_cliente(
+                    maestro,
+                    nif_clean,
+                    str(nombre_v).strip(),
+                    fecha_expedicion=fecha_exp,
+                    libro=libro_short,
+                    # La confirmación explícita del operario sobreescribe la
+                    # incertidumbre del pipeline: registrar siempre.
+                    decision="auto",
+                    tipo=tipo,
+                )
+
+        # Emisor (siempre presente — campo crítico RD 1619/2012)
+        _reg("nif_entidad", "nombre_entidad", tipo_emisor)
+        # Receptor — alias frontend lo manda como nif_cliente; backend también
+        # acepta nif_receptor por compatibilidad. Probar ambos.
+        _reg("nif_cliente", "nombre_cliente", tipo_receptor)
+        _reg("nif_receptor", "nombre_receptor", tipo_receptor)
+
+        confirmadas += 1
+
+    # Una sola escritura del maestro, bajo lock cross-process.
+    guardar_maestro(cfg.maestro_clientes_path, maestro)
+
+    nifs_despues = set(
+        cargar_maestro(cfg.maestro_clientes_path).get("clientes", {}).keys()
+    )
+    clientes_nuevos = len(nifs_despues - nifs_antes)
+
+    _invoices_cache.clear()
+    _stats_cache.clear()
+    _clients_cache.clear()
+    _delete_pending_confirm()
+
+    logger.info(
+        "[confirm] lote confirmado: %d facturas, %d clientes nuevos",
+        confirmadas, clientes_nuevos,
+    )
+    return {
+        "ok": True,
+        "facturas_confirmadas": confirmadas,
+        "clientes_nuevos": clientes_nuevos,
+    }
+
+
+def _load_pending_confirm() -> dict | None:
+    p = _pending_confirm_path()
+    if not p.exists():
+        return None
+    try:
+        with p.open(encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("[pending_confirm] no se pudo leer: %s", e)
+        return None
+
+
 @app.get("/api/pipeline/status")
 def pipeline_status():
     """Lee el estado del pipeline (runtime en `libros/.runtime/`)."""
+    pending = _load_pending_confirm()
+    pending_flag = {
+        "pending_confirm": pending is not None,
+        "pending_doc_ids": (pending or {}).get("doc_ids_lote", []),
+    }
+
     status_path = _status_path()
     if not status_path.exists():
         return {
@@ -868,13 +1115,16 @@ def pipeline_status():
             "started_at": None,
             "completed_at": None,
             "error_message": None,
+            **pending_flag,
         }
     try:
         with status_path.open(encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        data.update(pending_flag)
+        return data
     except Exception as e:
         logger.error(f"Error reading pipeline status: {e}", exc_info=True)
-        return {"status": "error", "error_message": str(e)}
+        return {"status": "error", "error_message": str(e), **pending_flag}
 
 
 @app.post("/api/pipeline/run")
@@ -1066,24 +1316,140 @@ def reset_pipeline():
     }
 
 
+# ──────────────────────────────────────────────────────────
+# GET /api/clients — trazabilidad por cliente (lee maestro_clientes.yaml)
+# ──────────────────────────────────────────────────────────
+
+_clients_cache: dict = {}
+
+
 @app.get("/api/clients")
 def list_clients():
-    """List registered clients from clients.json."""
+    """Lista de clientes registrados con métricas operativas para el grid de
+    trazabilidad. Lee `data/maestros/maestro_clientes.yaml` (fuente única).
+
+    Si el YAML no existe → 200 con lista vacía (no es error: gestoría recién
+    instalada sin facturas confirmadas).
+
+    Caché en memoria 5s para evitar I/O por cada poll del frontend.
+    """
+    now = time.time()
+    cached = _clients_cache.get("data")
+    if cached and now - _clients_cache.get("ts", 0) < _CACHE_TTL:
+        return cached
+
     cfg = settings()
-    # clients.json is in data/ relative to project root (parent of output_path's parent)
-    project_root = Path(cfg.output_path).parent
-    clients_path = project_root / "data" / "clients.json"
-
-    if not clients_path.exists():
-        return {"clients": []}
-
     try:
-        with open(clients_path, encoding="utf-8") as f:
-            clients = json.load(f)
-        return {"clients": clients}
-    except (OSError, json.JSONDecodeError) as e:
-        logger.error(f"Error reading clients file: {e}", exc_info=True)
-        return {"clients": []}
+        maestro = cargar_maestro(cfg.maestro_clientes_path)
+    except Exception as e:
+        logger.error("[clients] error leyendo maestro: %s", e, exc_info=True)
+        return {"clients": [], "total": 0}
+
+    clientes_dict = maestro.get("clientes", {}) or {}
+    items = []
+    for nif, info in clientes_dict.items():
+        tipos = info.get("tipos_activos", []) or []
+        # Trazabilidad por cliente = SOLO clientes de la gestoría.
+        # Proveedores (y entradas legacy sin tipos_activos) se omiten — el
+        # panel "Historial" muestra el árbol fiscal del cliente, no la lista
+        # de quién factura a la gestoría.
+        if "cliente" not in tipos:
+            continue
+        items.append({
+            "nif": nif,
+            "nombre": info.get("nombre", ""),
+            "fecha_alta": info.get("fecha_alta"),
+            "ultima_factura_fecha": info.get("ultima_factura_fecha"),
+            "documentos_procesados": info.get("documentos_procesados", 0),
+            "libros_activos": info.get("libros_activos", []) or [],
+            "tipos_activos": tipos,
+        })
+
+    # Orden desc por ultima_factura_fecha (None al final).
+    items.sort(
+        key=lambda c: (c["ultima_factura_fecha"] is None, c["ultima_factura_fecha"] or ""),
+        reverse=False,
+    )
+    items.sort(key=lambda c: c["ultima_factura_fecha"] or "", reverse=True)
+
+    result = {"clients": items, "total": len(items)}
+    _clients_cache["data"] = result
+    _clients_cache["ts"] = now
+    return result
+
+
+# TODO: con >2000 facturas, construir índice nif→[doc_ids] al startup en
+# lugar de hacer un escaneo lineal por petición.
+@app.get("/api/clients/{nif}/invoices")
+def list_invoices_by_client(nif: str):
+    """Facturas confirmadas para un NIF (filtradas por resultado_final.json).
+
+    Excluye facturas sin resultado_final.json (no confirmadas todavía) y las
+    bloqueadas o con error técnico en resultado_validacion.json.
+    """
+    if not nif or "/" in nif or "\\" in nif or ".." in nif:
+        raise HTTPException(status_code=400, detail="NIF inválido")
+
+    invoices = []
+    for folder in _scan_asiento_folders():
+        final_path = folder / "resultado_final.json"
+        if not final_path.exists():
+            continue
+        try:
+            final = load_json_file(final_path)
+        except HTTPException:
+            continue
+
+        campos = final.get("campos_finales") or {}
+        # Una factura pertenece a un NIF si ese NIF aparece como emisor,
+        # receptor o cliente resuelto. Así el panel de "ÁLVAREZ BRAÑAS"
+        # muestra las facturas donde es proveedor (compras) Y donde es
+        # cliente (ventas), sin depender de qué resolvió el ensamblador.
+        nifs_doc = {
+            (campos.get(k) or {}).get("valor")
+            for k in ("nif_cliente", "nif_entidad", "nif_receptor")
+        }
+        nifs_doc = {str(n).strip() for n in nifs_doc if n}
+        if nif not in nifs_doc:
+            continue
+
+        # `resultado_final.json` solo existe tras confirm humano. No filtramos
+        # por `origen_decision`: si la decisión original del pipeline fue
+        # `block` pero el operario aprobó la factura, debe aparecer en su
+        # historial. La carpeta sigue siendo trazable a través de `.state.json`.
+        origen = final.get("origen_decision")
+
+        tiene_ediciones = any(
+            c.get("editado") for c in campos.values() if isinstance(c, dict)
+        )
+
+        # Contraparte: el otro extremo del asiento. En `compras`/`bienes` el
+        # cliente de la gestoría es `nif_receptor`, así que la contraparte es
+        # `nif_entidad` (proveedor). En `ventas` se invierte.
+        libro_doc = final.get("libro")
+        if libro_doc == "ventas":
+            cp_nif = (campos.get("nif_receptor") or {}).get("valor")
+            cp_nombre = (campos.get("nombre_receptor") or {}).get("valor")
+        else:
+            cp_nif = (campos.get("nif_entidad") or {}).get("valor")
+            cp_nombre = (campos.get("nombre_entidad") or {}).get("valor")
+
+        invoices.append({
+            "doc_id": final.get("doc_id"),
+            "numero_factura": (campos.get("numero_factura") or {}).get("valor"),
+            "fecha_expedicion": (campos.get("fecha_expedicion") or {}).get("valor"),
+            "total_euros": safe_float((campos.get("total_euros") or {}).get("valor")),
+            "decision_global": origen,
+            "status": current_status_of(folder),
+            "libro": libro_doc,
+            "tiene_ediciones": tiene_ediciones,
+            "lineas_asiento": final.get("lineas_asiento", []) or [],
+            "contraparte_nif": cp_nif,
+            "contraparte_nombre": cp_nombre,
+        })
+
+    invoices.sort(key=lambda i: i["fecha_expedicion"] or "", reverse=True)
+    return {"nif": nif, "invoices": invoices}
 
 
 # ──────────────────────────────────────────────────────────

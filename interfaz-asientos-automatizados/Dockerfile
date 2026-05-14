@@ -1,7 +1,9 @@
 FROM node:20-alpine AS base
 
 # Instalar pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# pnpm 9.x es la última versión compatible con Node 20.
+# pnpm 10+ requiere Node 22 (node:sqlite built-in).
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
 FROM base AS deps
 WORKDIR /app

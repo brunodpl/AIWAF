@@ -107,3 +107,6 @@ cython_debug/
 
 # [AI assistant] Code
 .[AI assistant]/settings.local.json
+
+# Lock sidecars del maestro (creados por guardar_maestro bajo file-lock)
+data/maestros/*.lock

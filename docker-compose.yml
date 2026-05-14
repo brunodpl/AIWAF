@@ -16,9 +16,13 @@ services:
       - ${CREDENTIALS_PATH}:/app/credentials/service_account.json:ro
       # Persistir feedback recibido desde la UI (audit + reintentos)
       - ./sistema-de-asientos-automatizado/data/feedback:/app/data/feedback
-      # Maestros y clients.json — datos de referencia
-      - ./sistema-de-asientos-automatizado/data/maestros:/app/data/maestros:ro
-      - ./sistema-de-asientos-automatizado/data/clients.json:/app/data/clients.json:ro
+      # Maestros — datos de referencia.
+      # Montado RW porque POST /api/pipeline/confirm actualiza
+      # maestro_clientes.yaml (ultima_factura_fecha, libros_activos,
+      # contador de documentos_procesados) bajo file-lock cross-process.
+      # Anteriormente ":ro" era seguro porque solo phase4_customer/main.py
+      # escribía durante el pipeline batch, ruta nunca ejercida en producción.
+      - ./sistema-de-asientos-automatizado/data/maestros:/app/data/maestros
       # Trazabilidad 2.0: árbol único de datos operativos visible al operario.
       # Contiene:
       #   libros/facturas/{compras,ventas,bienes}/  — inboxes permanentes (PDFs no se mueven)

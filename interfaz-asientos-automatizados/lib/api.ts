@@ -130,10 +130,19 @@ export interface InvoiceDetailResponse {
 
 /**
  * Fetch the list of processed invoices.
+ *
+ * @param options.includeDone  Si false (default), excluye asientos cuyo
+ *   .state.json terminó en `status=done` — i.e. ya confirmados por el
+ *   operario. El reviewer las omite para no remostrar facturas viejas tras
+ *   un ciclo de confirmación.
  */
-export async function fetchInvoices(): Promise<InvoiceListResponse> {
+export async function fetchInvoices(
+  options: { includeDone?: boolean } = {},
+): Promise<InvoiceListResponse> {
+  const includeDone = options.includeDone ?? true;
+  const qs = includeDone ? "" : "?include_done=false";
   try {
-    const response = await fetchWithTimeout(`${API_URL}/api/invoices`);
+    const response = await fetchWithTimeout(`${API_URL}/api/invoices${qs}`);
 
     if (!response.ok) {
       throw new Error(`Failed to fetch invoices: ${response.statusText}`);
@@ -243,8 +252,13 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
     decisionLine: line.decisionLine || line.decision_linea || "",
   }));
 
-  // Use actual file URL if available, otherwise fallback to placeholder
-  const fileUrl = detail.file_url || `${API_URL}/api/invoices/${detail.id}/file`;
+  // Sólo construir URL si el backend confirmó que el archivo existe
+  // (invoice_filename no null). Si es null, el PDF no está accesible:
+  // pasar "" para que ImageViewer muestre el placeholder inmediatamente
+  // sin esperar el timeout de 8s del iframe de PDF.
+  const fileUrl = detail.invoice_filename
+    ? (detail.file_url || `${API_URL}/api/invoices/${detail.id}/file`)
+    : "";
 
   // Determine file type from filename for proper rendering
   const filename = detail.invoice_filename || "";

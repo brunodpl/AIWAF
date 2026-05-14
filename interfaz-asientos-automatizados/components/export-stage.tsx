@@ -27,6 +27,8 @@ import {
   normalizeNumber,
 } from "@/lib/csv";
 import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
+import { buildCsvBase64, confirmBatch } from "@/lib/api-clients";
+import type { AsientoConfirm, ConfirmBatchPayload, LineaAsiento } from "@/lib/types";
 import JSZip from "jszip";
 
 type ExportKind = "emitidas" | "recibidas";
@@ -34,6 +36,14 @@ type ExportKind = "emitidas" | "recibidas";
 interface ExportStageProps {
   approvedInvoices: Map<string, ApprovedInvoiceData>;
   onBack: () => void;
+  /**
+   * Disparado tras un POST /api/pipeline/confirm con éxito.
+   * El padre limpia approvedInvoices + localStorage y vuelve a "books".
+   */
+  onConfirmed?: (response: {
+    facturas_confirmadas: number;
+    clientes_nuevos: number;
+  }) => void;
 }
 
 interface AsientoRow {
@@ -138,6 +148,67 @@ function downloadCsvFile(file: IntermegaCsvFile) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Construye el payload de confirm batch a partir del Map de aprobadas y
+ * envía POST /api/pipeline/confirm. Devuelve la respuesta o null si no hay
+ * facturas que confirmar.
+ *
+ * Persiste por cada doc_id:
+ *   - libros/asientos/{folder}/resultado_final.json (diff con validación)
+ *   - libros/asientos/{folder}/asiento_{doc_id}.csv (CSV físico para Hacienda)
+ *   - .state.json → último evento "done"
+ *   - maestro_clientes.yaml actualizado bajo file-lock
+ */
+async function persistBatchToBackend(
+  approvedInvoices: Map<string, ApprovedInvoiceData>,
+): Promise<{ ok: true; facturas_confirmadas: number; clientes_nuevos: number } | null> {
+  if (approvedInvoices.size === 0) return null;
+
+  const doc_ids: string[] = [];
+  const asientos: Record<string, AsientoConfirm> = {};
+
+  for (const [docId, invoice] of approvedInvoices) {
+    const fd = invoice.formData;
+    const cliente = resolveClienteGestoria(invoice.libro, fd);
+
+    // campos_finales — todo lo que el operario dejó en el form, tal cual.
+    // El backend hace el diff frente a resultado_validacion.json y marca
+    // qué campos llevan editado:true.
+    const camposFinales: Record<string, { valor: string | number | null }> = {};
+    for (const [k, v] of Object.entries(fd)) {
+      camposFinales[k] = { valor: v ?? null };
+    }
+    // Asegurar campos clave para la tarjeta de cliente del grid.
+    camposFinales["nif_cliente"] = { valor: cliente.nif || null };
+    camposFinales["nombre_cliente"] = { valor: cliente.nombre || null };
+    camposFinales["cuenta_contable"] = { valor: fd.cuenta_contable || null };
+
+    const lineas: LineaAsiento[] = invoice.fiscalLines.map((l) => {
+      const base = normalizeNumber(l.base);
+      const cuota = normalizeNumber(l.vatAmount);
+      return {
+        cuenta: fd.cuenta_contable || "",
+        concepto: fd.concepto || "",
+        debe: base + cuota,
+        haber: 0,
+        tipo_iva: l.vatRate ?? 0,
+        base_imponible: base,
+      };
+    });
+
+    asientos[docId] = {
+      campos_finales: camposFinales,
+      lineas_asiento: lineas,
+      csv_b64: buildCsvBase64(lineas),
+    };
+    doc_ids.push(docId);
+  }
+
+  const payload: ConfirmBatchPayload = { doc_ids, asientos };
+  return await confirmBatch(payload);
+}
+
+
 async function downloadZip(files: IntermegaCsvFile[]): Promise<void> {
   const zip = new JSZip();
   for (const f of files) zip.file(f.filename, f.content);
@@ -154,11 +225,50 @@ async function downloadZip(files: IntermegaCsvFile[]): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
+export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportStageProps) {
   const [isZipping, setIsZipping] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [missingAccountsCount, setMissingAccountsCount] = useState(0);
   const [missingFilesCount, setMissingFilesCount] = useState(0);
+
+  /**
+   * "CONFIRMAR Y SEGUIR ESCANEANDO" — CTA primario del flujo:
+   * llama POST /api/pipeline/confirm que persiste, por cada doc_id:
+   *   - resultado_final.json con diff editado:true/false
+   *   - asiento_{doc_id}.csv físico + hash SHA-256
+   *   - maestro_clientes.yaml actualizado (lock cross-process)
+   *   - .state.json → último evento "done"
+   *
+   * Bloquea UI con flag isConfirming para impedir doble click. Tras éxito,
+   * el padre limpia approvedInvoices/localStorage y vuelve a "books".
+   */
+  const handleConfirmAndContinue = useCallback(async () => {
+    if (isConfirming || approvedInvoices.size === 0) return;
+    setIsConfirming(true);
+    try {
+      const res = await persistBatchToBackend(approvedInvoices);
+      if (!res) {
+        toast.error("No hay facturas para confirmar");
+        return;
+      }
+      toast.success(
+        `${res.facturas_confirmadas} factura${res.facturas_confirmadas === 1 ? "" : "s"} confirmada${res.facturas_confirmadas === 1 ? "" : "s"}` +
+          (res.clientes_nuevos > 0
+            ? ` · ${res.clientes_nuevos} cliente${res.clientes_nuevos === 1 ? "" : "s"} nuevo${res.clientes_nuevos === 1 ? "" : "s"}`
+            : ""),
+      );
+      onConfirmed?.({
+        facturas_confirmadas: res.facturas_confirmadas,
+        clientes_nuevos: res.clientes_nuevos,
+      });
+    } catch (err) {
+      console.error("[confirm] error en POST /api/pipeline/confirm:", err);
+      toast.error("Error confirmando el lote. Revisa la conexión y reintenta.");
+    } finally {
+      setIsConfirming(false);
+    }
+  }, [approvedInvoices, isConfirming, onConfirmed]);
 
   // CSV files grouped by (client × tipo), computed once per render cycle
   const csvFiles = useMemo(
@@ -250,12 +360,15 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
   }, [approvedInvoices, csvFiles]);
 
   const doZip = useCallback(async () => {
+    // Descarga sin efectos secundarios: la confirmación (persistencia
+    // resultado_final.json + maestro + state→done) la dispara el botón
+    // explícito "CONFIRMAR Y SEGUIR ESCANEANDO", NO el download.
     try {
       setIsZipping(true);
       await downloadZip(csvFiles);
       toast.success(`ZIP descargado (${csvFiles.length} archivo${csvFiles.length !== 1 ? "s" : ""})`);
     } catch (err) {
-      console.error("Error generating ZIP:", err);
+      console.error("Error generando ZIP:", err);
       toast.error("Error generando el ZIP");
     } finally {
       setIsZipping(false);
@@ -519,15 +632,20 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
         )}
       </div>
 
-      {/* Footer */}
-      <footer className="h-24 flex items-center justify-center gap-6 px-8 bg-white border-t flex-shrink-0">
+      {/* Footer — dos acciones independientes:
+            1) ZIP: descarga local de los CSVs Intermega (sin efectos secundarios).
+            2) CONFIRMAR Y SEGUIR ESCANEANDO: persiste resultado_final.json,
+               CSV físico y maestro en backend; CTA primario.
+        */}
+      <footer className="h-24 flex items-center justify-center gap-3 px-8 bg-white border-t flex-shrink-0">
         <Button
           size="lg"
+          variant="outline"
           onClick={handleZipDownload}
-          disabled={csvFiles.length === 0 || isZipping}
+          disabled={csvFiles.length === 0 || isZipping || isConfirming}
           className={cn(
-            "h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all px-8",
-            (csvFiles.length === 0 || isZipping) && "opacity-50 cursor-not-allowed"
+            "h-11 border-slate-300 text-slate-700 hover:bg-slate-50 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none transition-all px-6",
+            (csvFiles.length === 0 || isZipping || isConfirming) && "opacity-50 cursor-not-allowed"
           )}
         >
           {isZipping ? (
@@ -535,7 +653,23 @@ export function ExportStage({ approvedInvoices, onBack }: ExportStageProps) {
           ) : (
             <Download className="h-4 w-4 mr-2" />
           )}
-          Descargar todos en ZIP ({csvFiles.length} archivo{csvFiles.length !== 1 ? "s" : ""})
+          Descargar ZIP ({csvFiles.length})
+        </Button>
+
+        <Button
+          size="lg"
+          onClick={handleConfirmAndContinue}
+          disabled={approvedInvoices.size === 0 || isConfirming || isZipping}
+          className={cn(
+            "h-11 bg-teal-700 border border-teal-700 hover:bg-teal-800 text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all px-8",
+            (approvedInvoices.size === 0 || isConfirming || isZipping) && "opacity-50 cursor-not-allowed"
+          )}
+          title="Persiste el asiento (resultado_final.json + CSV + maestro) y vuelve a Gestión para escanear más facturas"
+        >
+          {isConfirming ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : null}
+          Confirmar y seguir escaneando
         </Button>
       </footer>
     </div>

@@ -10,6 +10,7 @@ import { InvoiceReviewer } from "@/components/invoice-reviewer";
 import { ExportStage } from "@/components/export-stage";
 import { FeedbackButton } from "@/components/feedback-button";
 import { UpdateBanner } from "@/components/update-banner";
+import { HistorialOverlay } from "@/components/historial-overlay";
 import { ApprovedInvoiceData, FiscalLine, Libro } from "@/lib/types";
 import { resetPipeline, fetchInvoices } from "@/lib/api";
 
@@ -21,6 +22,7 @@ const STORAGE_KEY_STAGE = "horeca_current_stage";
 export default function Home() {
   const [hydrated, setHydrated] = useState(false);
   const [stage, setStage] = useState<Stage>("books");
+  const [historialOpen, setHistorialOpen] = useState(false);
   const [approvedInvoices, setApprovedInvoices] = useState<Map<string, ApprovedInvoiceData>>(new Map());
   const [rejectedInvoices, setRejectedInvoices] = useState<Set<string>>(new Set());
 
@@ -148,6 +150,7 @@ export default function Home() {
           onStageClick={(s) => setStage(s)}
           onReset={handleReset}
           resetting={resetting}
+          onOpenHistorial={() => setHistorialOpen(true)}
         />
       </div>
 
@@ -178,12 +181,28 @@ export default function Home() {
           <ExportStage
             approvedInvoices={approvedInvoices}
             onBack={() => setStage("review")}
+            onConfirmed={() => {
+              // Tras confirmar el lote: limpiar estado in-memory + localStorage
+              // y volver a Gestión. Los asientos quedan persistidos en backend
+              // (resultado_final.json + maestro_clientes.yaml + .state.json done)
+              // y se consultan desde el botón HISTORIAL.
+              setApprovedInvoices(new Map());
+              setRejectedInvoices(new Set());
+              localStorage.removeItem(STORAGE_KEY_INVOICES);
+              localStorage.removeItem(STORAGE_KEY_STAGE);
+              setStage("books");
+            }}
           />
         )}
       </div>
 
       <FeedbackButton />
       <Toaster position="bottom-right" closeButton richColors />
+
+      <HistorialOverlay
+        open={historialOpen}
+        onClose={() => setHistorialOpen(false)}
+      />
     </div>
   );
 }

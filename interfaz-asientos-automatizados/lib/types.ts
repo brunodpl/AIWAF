@@ -102,3 +102,67 @@ export interface ApprovedInvoiceData {
   libro?: Libro;
   cuenta_contable: string;
 }
+
+// ──────────────────────────────────────────────────────────
+// Trazabilidad por cliente (GET /api/clients, /api/clients/{nif}/invoices)
+// ──────────────────────────────────────────────────────────
+
+export interface ClientCard {
+  nif: string;
+  nombre: string;
+  fecha_alta: string | null;
+  ultima_factura_fecha: string | null;
+  documentos_procesados: number;
+  libros_activos: LibroShort[];
+  tipos_activos: ("cliente" | "proveedor")[];
+}
+
+export interface ClientInvoice {
+  doc_id: string;
+  numero_factura: string | null;
+  fecha_expedicion: string | null;
+  total_euros: number;
+  decision_global: "auto" | "warn" | "block" | "pendiente" | null;
+  status: DocStatus | null;
+  libro: LibroShort | null;
+  tiene_ediciones: boolean;
+  lineas_asiento?: LineaAsiento[];
+  /** NIF de la contraparte del asiento (proveedor en compras/bienes,
+   *  cliente final en ventas). Null si no se resolvió. */
+  contraparte_nif?: string | null;
+  contraparte_nombre?: string | null;
+}
+
+// ──────────────────────────────────────────────────────────
+// POST /api/pipeline/confirm — payload del batch confirm
+// ──────────────────────────────────────────────────────────
+
+export interface CampoFinal {
+  valor: string | number | null;
+}
+
+export interface LineaAsiento {
+  cuenta: string;
+  concepto: string;
+  debe: number;
+  haber: number;
+  tipo_iva?: number;
+  base_imponible?: number;
+}
+
+export interface AsientoConfirm {
+  campos_finales: Record<string, CampoFinal>;
+  lineas_asiento: LineaAsiento[];
+  csv_b64: string;
+}
+
+export interface ConfirmBatchPayload {
+  doc_ids: string[];
+  asientos: Record<string, AsientoConfirm>;
+}
+
+export interface ConfirmBatchResponse {
+  ok: true;
+  facturas_confirmadas: number;
+  clientes_nuevos: number;
+}

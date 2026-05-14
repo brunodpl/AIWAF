@@ -82,17 +82,8 @@ else
 fi
 
 # --- Clientes ---
-CLIENTS_FILE="sistema-de-asientos-automatizado/data/clients.json"
-if [ -f "$CLIENTS_FILE" ]; then
-    CONTENT=$(cat "$CLIENTS_FILE" | tr -d '[:space:]')
-    if [ "$CONTENT" != "[]" ] && [ -n "$CONTENT" ]; then
-        check_ok "data/clients.json tiene datos de clientes"
-    else
-        check_warn "data/clients.json esta vacio — añade los clientes de la gestoria antes de procesar facturas"
-    fi
-else
-    check_warn "data/clients.json no existe — el pipeline no podra resolver clientes destino"
-fi
+# data/clients.json eliminado en v0.4: el maestro de clientes vive ahora en
+# data/maestros/maestro_clientes.yaml y se actualiza vía POST /api/pipeline/confirm.
 
 # --- Maestros ---
 for maestro in \
