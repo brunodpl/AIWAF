@@ -95,6 +95,16 @@ DESAMBIGUACION CRITICA HORECA - cuentas 600 / 601 / 602:
 - 602 (aprovisionamientos): el bien SE CONSUME en el proceso pero NO se vende al cliente.
   Ejemplo: envases, bolsas, servilletas, pajitas, vajilla desechable, productos de limpieza.
 
+REGLA DE DESEMPATE 600 vs 601 (OBLIGATORIA):
+Si tras analizar la factura NO ESTAS COMPLETAMENTE SEGURO de si el bien se transforma
+en cocina (601) o se vende/sirve tal cual (600) -- por ejemplo descripciones genericas
+como "ALIMENTACION", "PRODUCTOS VARIOS", "BEBIDAS Y COMESTIBLES", "GENEROS", o cualquier
+caso ambiguo donde no se identifique inequivocamente la naturaleza del producto --
+DEBES elegir SIEMPRE la cuenta 600 (mercaderias). Solo asigna 601 cuando la factura
+identifique INEQUIVOCAMENTE ingredientes crudos para elaboracion (carne fresca, pescado
+fresco, verdura cruda, harina, huevos, lacteos crudos, especias a granel). En la duda,
+prevalece 600.
+
 FORMATO EXACTO DEL CAMPO "concepto":
 - Debe ser EXACTAMENTE la clave entre parentesis mostrada en la lista (p.ej. "mercaderias").
 - Solo letras minusculas y guion_bajo. NUNCA incluyas numeros, mayusculas, espacios ni simbolos.

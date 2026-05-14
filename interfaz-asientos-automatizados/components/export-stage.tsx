@@ -26,7 +26,7 @@ import {
   type IntermegaCsvFile,
   normalizeNumber,
 } from "@/lib/csv";
-import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
+import { resolveClienteGestoria, resolveContraparteFactura } from "@/lib/cliente-gestoria";
 import { buildCsvBase64, confirmBatch } from "@/lib/api-clients";
 import type { AsientoConfirm, ConfirmBatchPayload, LineaAsiento } from "@/lib/types";
 import JSZip from "jszip";
@@ -54,8 +54,8 @@ interface AsientoRow {
   fecha_expedicion: string;
   numero_factura: string;
   cuenta_contable: string;
-  nombre_entidad: string;
-  nif_entidad: string;
+  nombre_contraparte: string;
+  nif_contraparte: string;
   concepto: string;
   base_euros: string;
   tipo_porcentaje: string;
@@ -81,6 +81,7 @@ function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): A
   for (const [docId, invoice] of approvedInvoices) {
     const fd = invoice.formData;
     const cliente = resolveClienteGestoria(invoice.libro, fd);
+    const contraparte = resolveContraparteFactura(invoice.libro, fd);
     const nifCliente = sanitizeNifKey(cliente.nif);
     const nombreCliente = cliente.nombre || "Cliente desconocido";
     const totalFactura = normalizeNumber(fd.total_euros).toFixed(2);
@@ -94,8 +95,8 @@ function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): A
       fecha_expedicion: fd.fecha_expedicion || "",
       numero_factura: fd.numero_factura || "",
       cuenta_contable: fd.cuenta_contable || "",
-      nombre_entidad: fd.nombre_entidad || "",
-      nif_entidad: fd.nif_entidad || "",
+      nombre_contraparte: contraparte.nombre || "",
+      nif_contraparte: contraparte.nif || "",
       concepto: fd.concepto || "",
       kind,
     };
@@ -299,8 +300,8 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
     { key: "fecha_expedicion", label: "F. Expedición", align: "left" as const },
     { key: "numero_factura", label: "Nº Factura", align: "left" as const },
     { key: "cuenta_contable", label: "Cuenta", align: "left" as const },
-    { key: "nombre_entidad", label: "Entidad", align: "left" as const },
-    { key: "nif_entidad", label: "NIF Entidad", align: "left" as const },
+    { key: "nombre_contraparte", label: "Contraparte", align: "left" as const },
+    { key: "nif_contraparte", label: "NIF Contraparte", align: "left" as const },
     { key: "concepto", label: "Concepto", align: "left" as const },
     { key: "base_euros", label: "Base", align: "right" as const },
     { key: "tipo_porcentaje", label: "IVA %", align: "center" as const },
@@ -595,10 +596,10 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
                       <td className={cn("p-2.5", !row.cuenta_contable && "text-amber-500 italic")}>
                         {row.cuenta_contable || "sin asignar"}
                       </td>
-                      <td className="p-2.5 max-w-[150px] truncate" title={row.nombre_entidad}>
-                        {row.nombre_entidad || "—"}
+                      <td className="p-2.5 max-w-[150px] truncate" title={row.nombre_contraparte}>
+                        {row.nombre_contraparte || "—"}
                       </td>
-                      <td className="p-2.5">{row.nif_entidad || "—"}</td>
+                      <td className="p-2.5">{row.nif_contraparte || "—"}</td>
                       <td className="p-2.5 max-w-[120px] truncate" title={row.concepto}>
                         {row.concepto || "—"}
                       </td>
