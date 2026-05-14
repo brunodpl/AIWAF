@@ -976,8 +976,13 @@ def confirm_batch(payload: ConfirmBatchPayload):
             )
 
         libro_short = _libro_from_folder(folder.name) or ""
+        # Normalizamos NIFs a mayúsculas antes de persistir. Sin esto el
+        # frontend podía guardar "49915950q" minúscula y romper las
+        # comparaciones case-sensitive del historial.
+        _NIF_KEYS = {"nif_entidad", "nif_receptor", "nif_cliente"}
         campos_para_writer = {
-            k: {"valor": v.valor} for k, v in asiento.campos_finales.items()
+            k: {"valor": (str(v.valor).strip().upper() if k in _NIF_KEYS and v.valor else v.valor)}
+            for k, v in asiento.campos_finales.items()
         }
 
         final_writer.write_final(
@@ -998,8 +1003,10 @@ def confirm_batch(payload: ConfirmBatchPayload):
             # Embebemos los campos finales + líneas en el evento. Así el
             # `.state.json` es autosuficiente para auditoría: no hace falta
             # cruzar con `resultado_final.json` para saber qué se guardó.
+            # Mismo criterio de normalización que para resultado_final.json:
+            # NIFs en mayúsculas para que el .state.json sea consistente.
             campos_finales_event = {
-                k: v.valor
+                k: (str(v.valor).strip().upper() if k in _NIF_KEYS and v.valor else v.valor)
                 for k, v in asiento.campos_finales.items()
             }
             # `lineas_asiento` viene tipada como list[dict] en el modelo
@@ -1380,11 +1387,12 @@ def list_clients():
         logger.error("[clients] error leyendo maestro: %s", e, exc_info=True)
         return {"clients": [], "total": 0}
 
-    # Fuente de verdad = libros/asientos/. Recolectamos los NIFs que aparecen
-    # como cliente resuelto en al menos una factura CONFIRMADA
-    # (resultado_final.json existe). Sin esto el endpoint mostraba "clientes
-    # fantasma" del maestro que nunca llegaron a confirm.
-    nifs_con_asiento: set[str] = set()
+    # Fuente de verdad = libros/asientos/. Recolectamos por NIF normalizado:
+    # count de asientos, última fecha de expedición y libros activos.
+    # ESTO no se lee del maestro porque el maestro tiene contadores stale
+    # (resetPipeline borra asientos pero no decrementa documentos_procesados,
+    # y el NIF puede haberse guardado con distinta capitalización).
+    asientos_por_nif: dict[str, dict] = {}
     for folder in _scan_asiento_folders():
         final_path = folder / "resultado_final.json"
         if not final_path.exists():
@@ -1395,34 +1403,52 @@ def list_clients():
             continue
         campos = final.get("campos_finales") or {}
         nif_cliente = (campos.get("nif_cliente") or {}).get("valor")
-        if nif_cliente:
-            nifs_con_asiento.add(str(nif_cliente).strip().upper())
+        if not nif_cliente:
+            continue
+        nif_norm = str(nif_cliente).strip().upper()
+        fecha = (campos.get("fecha_expedicion") or {}).get("valor")
+        libro = final.get("libro")
+        entry = asientos_por_nif.setdefault(
+            nif_norm, {"count": 0, "ultima_factura_fecha": None, "libros": set()}
+        )
+        entry["count"] += 1
+        if fecha and (entry["ultima_factura_fecha"] is None or fecha > entry["ultima_factura_fecha"]):
+            entry["ultima_factura_fecha"] = fecha
+        if libro:
+            entry["libros"].add(libro)
 
-    # Dedupe por NIF normalizado. Si por una migración antigua el maestro
-    # tiene "49915950q" y "49915950Q", nos quedamos con la entrada con más
-    # documentos_procesados (la "real").
+    # Dedupe entradas del maestro por NIF normalizado. El maestro aporta
+    # metadatos no-derivables (nombre, fecha_alta, tipos_activos).
     clientes_dict = maestro.get("clientes", {}) or {}
-    by_upper: dict[str, tuple[str, dict]] = {}
+    meta_by_upper: dict[str, dict] = {}
     for nif, info in clientes_dict.items():
         upper = (nif or "").strip().upper()
-        if not upper or upper not in nifs_con_asiento:
+        if not upper:
             continue
         tipos = info.get("tipos_activos", []) or []
         if "cliente" not in tipos:
             continue
-        existing = by_upper.get(upper)
-        if existing is None or info.get("documentos_procesados", 0) > existing[1].get("documentos_procesados", 0):
-            by_upper[upper] = (upper, info)
+        # Si hay duplicado por case, ganamos la entrada con más documentos
+        # (proxy de "la que más se ha usado").
+        existing = meta_by_upper.get(upper)
+        if existing is None or info.get("documentos_procesados", 0) > existing.get("documentos_procesados", 0):
+            meta_by_upper[upper] = info
 
+    # Cruce: cliente aparece sii (a) está en maestro como "cliente" y
+    # (b) tiene al menos un asiento confirmado. Todas las stats salen de los
+    # asientos reales — el maestro solo aporta nombre/fecha_alta.
     items = []
-    for upper_nif, info in by_upper.values():
+    for upper_nif, agg in asientos_por_nif.items():
+        info = meta_by_upper.get(upper_nif)
+        if info is None:
+            continue
         items.append({
             "nif": upper_nif,
             "nombre": info.get("nombre", ""),
             "fecha_alta": info.get("fecha_alta"),
-            "ultima_factura_fecha": info.get("ultima_factura_fecha"),
-            "documentos_procesados": info.get("documentos_procesados", 0),
-            "libros_activos": info.get("libros_activos", []) or [],
+            "ultima_factura_fecha": agg["ultima_factura_fecha"],
+            "documentos_procesados": agg["count"],
+            "libros_activos": sorted(agg["libros"]),
             "tipos_activos": info.get("tipos_activos", []) or [],
         })
 
@@ -1451,6 +1477,10 @@ def list_invoices_by_client(nif: str):
     if not nif or "/" in nif or "\\" in nif or ".." in nif:
         raise HTTPException(status_code=400, detail="NIF inválido")
 
+    # Comparación case-insensitive: el frontend puede haber guardado el NIF
+    # en minúsculas ("49915950q") aunque la URL llegue normalizada ("49915950Q").
+    nif_norm = nif.strip().upper()
+
     invoices = []
     for folder in _scan_asiento_folders():
         final_path = folder / "resultado_final.json"
@@ -1463,15 +1493,14 @@ def list_invoices_by_client(nif: str):
 
         campos = final.get("campos_finales") or {}
         # Una factura pertenece a un NIF si ese NIF aparece como emisor,
-        # receptor o cliente resuelto. Así el panel de "ÁLVAREZ BRAÑAS"
-        # muestra las facturas donde es proveedor (compras) Y donde es
-        # cliente (ventas), sin depender de qué resolvió el ensamblador.
+        # receptor o cliente resuelto. Comparamos en mayúsculas para evitar
+        # falsos negativos por capitalización.
         nifs_doc = {
             (campos.get(k) or {}).get("valor")
             for k in ("nif_cliente", "nif_entidad", "nif_receptor")
         }
-        nifs_doc = {str(n).strip() for n in nifs_doc if n}
-        if nif not in nifs_doc:
+        nifs_doc = {str(n).strip().upper() for n in nifs_doc if n}
+        if nif_norm not in nifs_doc:
             continue
 
         # `resultado_final.json` solo existe tras confirm humano. No filtramos
