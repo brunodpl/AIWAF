@@ -33,8 +33,16 @@ import {
   API_URL,
 } from "@/lib/api";
 import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
+import { CUENTAS, CUENTA_BY_CODE } from "@/lib/cuentas-maestro";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
-const HEADER_FIELDS = new Set(["nif_cliente", "nombre_cliente"]);
+const HEADER_FIELDS = new Set(["nif_cliente", "nombre_cliente", "concepto"]);
 
 interface InvoiceSummary {
   id: string;
@@ -494,16 +502,35 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                {invoice.decision_global?.toUpperCase()}
              </span>
            )}
-           {/* FIX #10: botón siempre visible, disabled si no hay aprobadas */}
-           <Button
-             variant="outline" size="sm"
-             onClick={onExport}
-             disabled={approvedInvoices.size === 0}
-             className="text-[10px] uppercase tracking-[0.15em] rounded-none border-teal-200 text-teal-700 hover:bg-teal-50 disabled:opacity-40 disabled:cursor-not-allowed"
-             title={approvedInvoices.size === 0 ? "Aprueba al menos una factura para exportar" : "Ir a exportar asientos"}
-           >
-             Generar Asientos →
-           </Button>
+           {(() => {
+             const totalInvoices = invoiceSummaries.length;
+             const decidedCount = approvedInvoices.size + rejectedInvoices.size;
+             const allDecided = totalInvoices > 0 && decidedCount === totalInvoices;
+             const hasApproved = approvedInvoices.size > 0;
+             const ready = allDecided && hasApproved;
+             const title = !hasApproved
+               ? "Aprueba al menos una factura para exportar"
+               : !allDecided
+                 ? `Faltan ${totalInvoices - decidedCount} factura(s) por aceptar o rechazar`
+                 : "Ir a exportar asientos";
+             return (
+               <Button
+                 variant="outline" size="sm"
+                 onClick={onExport}
+                 disabled={!hasApproved}
+                 className={cn(
+                   "text-[10px] uppercase tracking-[0.15em] rounded-none transition-colors",
+                   ready
+                     ? "border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600 hover:text-white animate-pulse"
+                     : "border-teal-200 text-teal-700 hover:bg-teal-50",
+                   "disabled:opacity-40 disabled:cursor-not-allowed disabled:animate-none",
+                 )}
+                 title={title}
+               >
+                 Generar Asientos →
+               </Button>
+             );
+           })()}
         </div>
       </header>
 
@@ -556,16 +583,61 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                             {field.status.toUpperCase()} {field.confidence}%
                           </span>
                         </div>
-                        <Input
-                          id={field.id}
-                          value={formData[field.id] || ""}
-                          onChange={(e) => handleInputChange(field.id, e.target.value)}
-                          className={cn(
-                            "border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm",
-                            field.status === "block" && "border-red-200 bg-red-50/30",
-                            field.status === "warn" && "border-amber-200",
-                          )}
-                        />
+                        {field.id === "cuenta_contable" ? (
+                          <>
+                            <Select
+                              value={formData.cuenta_contable || ""}
+                              onValueChange={(code) => {
+                                const cuenta = CUENTA_BY_CODE[code];
+                                dirtyRef.current = true;
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  cuenta_contable: code,
+                                  concepto: cuenta ? cuenta.concepto : prev.concepto,
+                                }));
+                              }}
+                            >
+                              <SelectTrigger
+                                id={field.id}
+                                className={cn(
+                                  "border-slate-100 focus:ring-0 focus:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all",
+                                  field.status === "block" && "border-red-200 bg-red-50/30",
+                                  field.status === "warn" && "border-amber-200",
+                                )}
+                              >
+                                <SelectValue placeholder="Selecciona cuenta…" />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-80">
+                                {CUENTAS.map((c) => (
+                                  <SelectItem
+                                    key={c.code}
+                                    value={c.code}
+                                    className="font-mono text-xs"
+                                  >
+                                    <span className="font-bold mr-2">{c.code}</span>
+                                    <span className="text-slate-600">{c.label}</span>
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            {formData.concepto && (
+                              <div className="text-[10px] font-mono text-slate-500 pl-1">
+                                concepto: <span className="text-slate-700">{formData.concepto}</span>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <Input
+                            id={field.id}
+                            value={formData[field.id] || ""}
+                            onChange={(e) => handleInputChange(field.id, e.target.value)}
+                            className={cn(
+                              "border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm",
+                              field.status === "block" && "border-red-200 bg-red-50/30",
+                              field.status === "warn" && "border-amber-200",
+                            )}
+                          />
+                        )}
                       </div>
                     ))}
                   </div>

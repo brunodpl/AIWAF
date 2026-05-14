@@ -81,6 +81,7 @@ export default function Home() {
   }, [stage, hydrated]);
 
   const [resetting, setResetting] = useState(false);
+  const [booksNonce, setBooksNonce] = useState(0);
   const handleReset = useCallback(async () => {
     setResetting(true);
     try {
@@ -98,6 +99,7 @@ export default function Home() {
     setStage("books");
     localStorage.removeItem(STORAGE_KEY_INVOICES);
     localStorage.removeItem(STORAGE_KEY_STAGE);
+    setBooksNonce((n) => n + 1);
     setResetting(false);
   }, []);
 
@@ -156,7 +158,7 @@ export default function Home() {
 
       <div className="flex-1 overflow-hidden">
         {stage === "books" && (
-          <BooksManager onPipelineStart={() => setStage("processing")} />
+          <BooksManager key={booksNonce} onPipelineStart={() => setStage("processing")} />
         )}
 
         {stage === "processing" && (

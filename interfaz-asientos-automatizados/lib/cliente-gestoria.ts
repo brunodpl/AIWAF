@@ -43,3 +43,25 @@ export function resolveClienteGestoria(
     nombre: (formData[rol.nombreKey] ?? "").trim(),
   };
 }
+
+const LIBRO_A_CONTRAPARTE: Record<Libro, { nifKey: string; nombreKey: string }> = {
+  ingresos: { nifKey: "nif_receptor", nombreKey: "nombre_receptor" },
+  gastos:   { nifKey: "nif_entidad",  nombreKey: "nombre_entidad"  },
+  bienes:   { nifKey: "nif_entidad",  nombreKey: "nombre_entidad"  },
+};
+
+export interface ContraparteFactura {
+  nif: string;
+  nombre: string;
+}
+
+export function resolveContraparteFactura(
+  libro: Libro | undefined,
+  formData: Record<string, string>
+): ContraparteFactura {
+  const rol = libro ? LIBRO_A_CONTRAPARTE[libro] : LIBRO_A_CONTRAPARTE.gastos;
+  return {
+    nif: (formData[rol.nifKey] ?? "").trim(),
+    nombre: (formData[rol.nombreKey] ?? "").trim(),
+  };
+}

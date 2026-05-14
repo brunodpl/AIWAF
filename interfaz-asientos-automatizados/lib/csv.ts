@@ -1,5 +1,5 @@
 import type { ApprovedInvoiceData } from "./types";
-import { resolveClienteGestoria } from "./cliente-gestoria";
+import { resolveClienteGestoria, resolveContraparteFactura } from "./cliente-gestoria";
 
 /**
  * Escape a CSV field for semicolon-delimited format (Spanish Excel locale).
@@ -65,12 +65,10 @@ export function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
   const f = invoice.formData;
   const fecha = formatDateDDMMYYYY(f.fecha_expedicion || "");
   const total = toSpanishDecimal(normalizeNumber(f.total_euros));
-  // CLI-PRO is ALWAYS the counterpart of our gestoria's client:
-  //   - emitidas (libro=ingresos): counterpart = receptor (final customer)
-  //   - recibidas (libro=gastos|bienes|undefined): counterpart = entidad (supplier)
-  const isEmitida = invoice.libro === "ingresos";
-  const nombreCliPro = isEmitida ? (f.nombre_receptor || "") : (f.nombre_entidad || "");
-  const nifCliPro = sanitizeNIF(isEmitida ? (f.nif_receptor || "") : (f.nif_entidad || ""));
+  // CLI-PRO is ALWAYS the counterpart of our gestoria's client.
+  const contraparte = resolveContraparteFactura(invoice.libro, f);
+  const nombreCliPro = contraparte.nombre;
+  const nifCliPro = sanitizeNIF(contraparte.nif);
   const concepto = f.concepto || "";
 
   return invoice.fiscalLines.map((line) => {
