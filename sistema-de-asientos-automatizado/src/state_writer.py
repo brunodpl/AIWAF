@@ -162,13 +162,29 @@ def current_status(folder: Path) -> Optional[str]:
 
 
 def is_done(folder: Path) -> bool:
-    """True si el último evento del sidecar es ``status=done``.
-
-    Utilidad para idempotencia: ``POST /api/pipeline/confirm`` lo consulta
-    antes de hacer ``append({"status":"done"})`` para no duplicar eventos
-    cuando el frontend reintenta la confirmación.
-    """
+    """True si el último evento del sidecar es ``status=done``."""
     return current_status(folder) == "done"
+
+
+def is_confirmed(folder: Path) -> bool:
+    """True si la carpeta ya tiene un evento ``status=done, action=confirmed``.
+
+    Sirve para idempotencia específica del batch confirm
+    (``POST /api/pipeline/confirm``): una vez el operario pulsa
+    "CONFIRMAR Y SEGUIR ESCANEANDO" no debe duplicarse el evento si
+    reintenta. NO impide registrar ``confirmed`` cuando ya existe un
+    ``done, action=approve`` previo de la fase de revisión por factura —
+    ese evento es semánticamente distinto y la trazabilidad fiscal
+    necesita verlos ambos.
+    """
+    folder = Path(folder)
+    if not _sidecar_path(folder).exists():
+        return False
+    data = read(folder)
+    for ev in data.get("events") or []:
+        if ev.get("status") == "done" and ev.get("action") == "confirmed":
+            return True
+    return False
 
 
 def rename(folder: Path, new_name: str) -> Path:

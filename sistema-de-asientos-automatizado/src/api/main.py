@@ -989,12 +989,33 @@ def confirm_batch(payload: ConfirmBatchPayload):
             csv_bytes=csv_bytes,
         )
 
-        # Idempotencia: no duplicar evento done si ya está cerrado.
-        if not state_writer.is_done(folder):
+        # Idempotencia específica del batch confirm. Permite registrar el
+        # evento aunque exista un `done, action=approve` previo (de la fase
+        # de revisión por factura) — son semánticamente distintos y la
+        # trazabilidad fiscal exige verlos ambos. Solo se omite si ya hubo
+        # un `confirmed` (retry del frontend).
+        if not state_writer.is_confirmed(folder):
+            # Embebemos los campos finales + líneas en el evento. Así el
+            # `.state.json` es autosuficiente para auditoría: no hace falta
+            # cruzar con `resultado_final.json` para saber qué se guardó.
+            campos_finales_event = {
+                k: v.valor
+                for k, v in asiento.campos_finales.items()
+            }
+            # `lineas_asiento` viene tipada como list[dict] en el modelo
+            # Pydantic (línea 909). Las copiamos tal cual al evento.
+            lineas_event = [dict(l) for l in asiento.lineas_asiento]
             try:
                 state_writer.append(
                     folder,
-                    {"status": "done", "actor": "operario", "action": "confirmed"},
+                    {
+                        "status": "done",
+                        "actor": "operario",
+                        "action": "confirmed",
+                        "libro": libro_short,
+                        "campos_finales": campos_finales_event,
+                        "lineas_asiento": lineas_event,
+                    },
                 )
             except (FileNotFoundError, ValueError, OSError) as e:
                 logger.error(

@@ -80,7 +80,7 @@ def test_clients_yaml_vacio_devuelve_200_vacio(api_client):
 
 
 def test_clients_devuelve_ordenado_por_ultima_factura_desc(api_client):
-    client, _, maestro_path = api_client
+    client, asientos_root, maestro_path = api_client
     _seed_maestro(maestro_path, [
         {"nif": "B11111111", "nombre": "Antiguo SL",
          "fecha_alta": "2026-01-01", "documentos_procesados": 2,
@@ -93,6 +93,9 @@ def test_clients_devuelve_ordenado_por_ultima_factura_desc(api_client):
          "libros_activos": ["compras", "ventas"],
          "tipos_activos": ["cliente"]},
     ])
+    # Nuevo contrato: solo aparecen clientes con asiento real bajo libros/asientos.
+    _seed_asiento(asientos_root, "f1", "B11111111", "2026-02-01")
+    _seed_asiento(asientos_root, "f2", "B22222222", "2026-04-28")
     r = client.get("/api/clients")
     body = r.json()
     assert body["total"] == 2
@@ -135,8 +138,10 @@ def test_clients_nif_invoices_incluye_block_aprobado(api_client):
 
 def test_clients_solo_devuelve_clientes_gestoria(api_client):
     """GET /api/clients filtra a entradas con tipos_activos=['cliente'].
-    Proveedores y entradas legacy sin tipos_activos se omiten."""
-    client, _, maestro_path = api_client
+    Proveedores y entradas legacy sin tipos_activos se omiten. Adicionalmente
+    el NIF debe aparecer en al menos un resultado_final.json bajo
+    libros/asientos/ — no basta con estar en el maestro."""
+    client, asientos_root, maestro_path = api_client
     _seed_maestro(maestro_path, [
         {"nif": "B11111111", "nombre": "Cliente SL",
          "fecha_alta": "2026-01-01", "documentos_procesados": 1,
@@ -151,6 +156,12 @@ def test_clients_solo_devuelve_clientes_gestoria(api_client):
          "ultima_factura_fecha": "2026-02-01",
          "libros_activos": ["compras"]},
     ])
+    # Sembramos asientos reales para los 3 NIFs. Aún así solo aparece el
+    # cliente (B11111111) — el filtro tipos_activos="cliente" debe seguir
+    # funcionando aunque el NIF tenga asiento.
+    _seed_asiento(asientos_root, "f1", "B11111111", "2026-02-01")
+    _seed_asiento(asientos_root, "f2", "B22222222", "2026-02-01")
+    _seed_asiento(asientos_root, "f3", "B33333333", "2026-02-01")
 
     body = client.get("/api/clients").json()
     nifs = [e["nif"] for e in body["clients"]]
