@@ -56,6 +56,17 @@ _MAESTRO_VACIO: dict = {"clientes": {}}
 _DECISIONES_REGISTRABLES = {"auto", "warn"}
 
 
+def _normalizar_nif(nif: str | None) -> str:
+    """Normaliza un NIF/CIF para usar como clave canónica en el maestro.
+
+    El BOE no distingue mayúsculas/minúsculas en NIFs — `49915950Q` y
+    `49915950q` son el mismo contribuyente. Antes de esta normalización el
+    maestro guardaba ambos como entradas separadas, generando duplicados en
+    el panel de historial.
+    """
+    return (nif or "").strip().upper()
+
+
 def cargar_maestro(path: str) -> dict:
     """
     Carga maestro de clientes desde YAML.
@@ -85,16 +96,19 @@ def cargar_maestro(path: str) -> dict:
 
 def buscar_cliente(maestro: dict, nif: str) -> dict | None:
     """
-    Busca un cliente por NIF en el maestro.
+    Busca un cliente por NIF en el maestro (NIF normalizado a mayúsculas).
 
     Returns:
         dict con datos del cliente si existe, None si no.
     """
+    key = _normalizar_nif(nif)
+    if not key:
+        return None
     clientes = maestro.get("clientes", {})
-    entry = clientes.get(nif)
+    entry = clientes.get(key)
     if entry is None:
         return None
-    return {"nif": nif, **entry}
+    return {"nif": key, **entry}
 
 
 def registrar_cliente(
@@ -125,10 +139,14 @@ def registrar_cliente(
     if decision not in _DECISIONES_REGISTRABLES:
         return None
 
+    key = _normalizar_nif(nif)
+    if not key:
+        return None
+
     clientes = maestro.setdefault("clientes", {})
 
-    if nif not in clientes:
-        clientes[nif] = {
+    if key not in clientes:
+        clientes[key] = {
             "nombre": nombre,
             "fecha_alta": date.today().isoformat(),
             "documentos_procesados": 0,
@@ -137,7 +155,7 @@ def registrar_cliente(
             "tipos_activos": [],
         }
 
-    entry = clientes[nif]
+    entry = clientes[key]
     # Backfill defensivo: entradas escritas con schema antiguo pueden no tener
     # los campos nuevos. Los añadimos sin perder los existentes.
     entry.setdefault("ultima_factura_fecha", None)

@@ -1359,24 +1359,50 @@ def list_clients():
         logger.error("[clients] error leyendo maestro: %s", e, exc_info=True)
         return {"clients": [], "total": 0}
 
+    # Fuente de verdad = libros/asientos/. Recolectamos los NIFs que aparecen
+    # como cliente resuelto en al menos una factura CONFIRMADA
+    # (resultado_final.json existe). Sin esto el endpoint mostraba "clientes
+    # fantasma" del maestro que nunca llegaron a confirm.
+    nifs_con_asiento: set[str] = set()
+    for folder in _scan_asiento_folders():
+        final_path = folder / "resultado_final.json"
+        if not final_path.exists():
+            continue
+        try:
+            final = load_json_file(final_path)
+        except HTTPException:
+            continue
+        campos = final.get("campos_finales") or {}
+        nif_cliente = (campos.get("nif_cliente") or {}).get("valor")
+        if nif_cliente:
+            nifs_con_asiento.add(str(nif_cliente).strip().upper())
+
+    # Dedupe por NIF normalizado. Si por una migración antigua el maestro
+    # tiene "49915950q" y "49915950Q", nos quedamos con la entrada con más
+    # documentos_procesados (la "real").
     clientes_dict = maestro.get("clientes", {}) or {}
-    items = []
+    by_upper: dict[str, tuple[str, dict]] = {}
     for nif, info in clientes_dict.items():
+        upper = (nif or "").strip().upper()
+        if not upper or upper not in nifs_con_asiento:
+            continue
         tipos = info.get("tipos_activos", []) or []
-        # Trazabilidad por cliente = SOLO clientes de la gestoría.
-        # Proveedores (y entradas legacy sin tipos_activos) se omiten — el
-        # panel "Historial" muestra el árbol fiscal del cliente, no la lista
-        # de quién factura a la gestoría.
         if "cliente" not in tipos:
             continue
+        existing = by_upper.get(upper)
+        if existing is None or info.get("documentos_procesados", 0) > existing[1].get("documentos_procesados", 0):
+            by_upper[upper] = (upper, info)
+
+    items = []
+    for upper_nif, info in by_upper.values():
         items.append({
-            "nif": nif,
+            "nif": upper_nif,
             "nombre": info.get("nombre", ""),
             "fecha_alta": info.get("fecha_alta"),
             "ultima_factura_fecha": info.get("ultima_factura_fecha"),
             "documentos_procesados": info.get("documentos_procesados", 0),
             "libros_activos": info.get("libros_activos", []) or [],
-            "tipos_activos": tipos,
+            "tipos_activos": info.get("tipos_activos", []) or [],
         })
 
     # Orden desc por ultima_factura_fecha (None al final).
