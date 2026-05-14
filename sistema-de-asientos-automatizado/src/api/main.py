@@ -1492,15 +1492,15 @@ def list_invoices_by_client(nif: str):
             continue
 
         campos = final.get("campos_finales") or {}
-        # Una factura pertenece a un NIF si ese NIF aparece como emisor,
-        # receptor o cliente resuelto. Comparamos en mayúsculas para evitar
-        # falsos negativos por capitalización.
-        nifs_doc = {
-            (campos.get(k) or {}).get("valor")
-            for k in ("nif_cliente", "nif_entidad", "nif_receptor")
-        }
-        nifs_doc = {str(n).strip().upper() for n in nifs_doc if n}
-        if nif_norm not in nifs_doc:
+        # Una factura pertenece a un cliente de la gestoría únicamente si su
+        # NIF coincide con `nif_cliente` (el rol resuelto por phase4 según
+        # `LIBRO_A_ROL_CLIENTE`). No basta con que aparezca como contraparte
+        # (emisor/receptor del otro lado), eso lo duplicaría en el panel del
+        # otro cliente.
+        nif_cliente_raw = (campos.get("nif_cliente") or {}).get("valor")
+        if not nif_cliente_raw:
+            continue
+        if str(nif_cliente_raw).strip().upper() != nif_norm:
             continue
 
         # `resultado_final.json` solo existe tras confirm humano. No filtramos
