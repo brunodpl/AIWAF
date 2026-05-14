@@ -275,6 +275,26 @@ def run_pipeline(folder_path: str, libro: str, status_file: str | None = None) -
             )
         return summary
 
+    # Idempotencia: si una factura ya tiene un asiento confirmado por el
+    # operario (`.state.json` con último status="done"), saltarla. Evita que
+    # un nuevo escaneo reprocese facturas anteriores que la UI ya oculta del
+    # inbox.
+    asientos_root_for_skip = cfg.asientos_path()
+    pending_files: list[str] = []
+    skipped = 0
+    for fp in files:
+        doc_id = os.path.basename(fp).rsplit(".", 1)[0]
+        existing_folder = state_writer.find_folder_by_doc_id(asientos_root_for_skip, doc_id)
+        if existing_folder and state_writer.is_done(existing_folder):
+            skipped += 1
+            logger.info(f"[pipeline] Saltando '{doc_id}' — asiento ya confirmado (done)")
+            continue
+        pending_files.append(fp)
+
+    if skipped:
+        logger.info(f"[pipeline] {skipped} factura(s) ya procesadas — omitidas")
+    files = pending_files
+
     summary["total"] = len(files)
     if not files:
         logger.warning("[pipeline] No se encontraron archivos para procesar")

@@ -1144,14 +1144,28 @@ async def run_pipeline_endpoint():
 
     cfg = settings()
 
-    # Mapa book_id → (inbox, libro_long, libro_short). Solo libros con archivos.
+    # Índice doc_id → status para excluir facturas ya confirmadas (done).
+    # Coherente con /api/books, que ya las oculta del inbox visible.
+    done_doc_ids: set[str] = set()
+    for folder in _scan_asiento_folders():
+        st = get_state(folder) or {}
+        doc_id = st.get("doc_id")
+        events = st.get("events") or []
+        if doc_id and events and events[-1].get("status") == "done":
+            done_doc_ids.add(doc_id)
+
+    # Mapa book_id → (inbox, libro_long, libro_short). Solo libros con
+    # archivos pendientes (los "done" se omiten igual que en la UI).
     book_inbox_map: dict[str, dict] = {}
     total_files = 0
     for book_id, cfg_book in BOOK_CONFIGS.items():
         inbox = _inbox_for_book(book_id)
         if not inbox.is_dir():
             continue
-        files = [p for p in inbox.iterdir() if p.is_file()]
+        files = [
+            p for p in inbox.iterdir()
+            if p.is_file() and os.path.splitext(p.name)[0] not in done_doc_ids
+        ]
         if files:
             book_inbox_map[book_id] = {
                 "inbox": inbox,
