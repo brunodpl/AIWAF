@@ -85,11 +85,13 @@ def test_clients_devuelve_ordenado_por_ultima_factura_desc(api_client):
         {"nif": "B11111111", "nombre": "Antiguo SL",
          "fecha_alta": "2026-01-01", "documentos_procesados": 2,
          "ultima_factura_fecha": "2026-02-01",
-         "libros_activos": ["compras"]},
+         "libros_activos": ["compras"],
+         "tipos_activos": ["cliente"]},
         {"nif": "B22222222", "nombre": "Reciente SL",
          "fecha_alta": "2026-04-01", "documentos_procesados": 5,
          "ultima_factura_fecha": "2026-04-28",
-         "libros_activos": ["compras", "ventas"]},
+         "libros_activos": ["compras", "ventas"],
+         "tipos_activos": ["cliente"]},
     ])
     r = client.get("/api/clients")
     body = r.json()
@@ -119,9 +121,67 @@ def test_clients_nif_invoices_solo_confirmadas_y_aislamiento(api_client):
     assert body["invoices"][0]["tiene_ediciones"] is True
 
 
-def test_clients_nif_invoices_excluye_block(api_client):
+def test_clients_nif_invoices_incluye_block_aprobado(api_client):
+    """Un block aprobado por el operario (resultado_final.json existe) aparece
+    en el historial — el filtro por origen_decision se eliminó porque el
+    fichero solo se crea tras confirmación humana."""
     client, asientos_root, _ = api_client
     _seed_asiento(asientos_root, "f001", "B15234567", "2026-04-21",
                   origen_decision="block")
     r = client.get("/api/clients/B15234567/invoices")
-    assert r.json()["invoices"] == []
+    docs = [i["doc_id"] for i in r.json()["invoices"]]
+    assert docs == ["f001"]
+
+
+def test_clients_solo_devuelve_clientes_gestoria(api_client):
+    """GET /api/clients filtra a entradas con tipos_activos=['cliente'].
+    Proveedores y entradas legacy sin tipos_activos se omiten."""
+    client, _, maestro_path = api_client
+    _seed_maestro(maestro_path, [
+        {"nif": "B11111111", "nombre": "Cliente SL",
+         "fecha_alta": "2026-01-01", "documentos_procesados": 1,
+         "ultima_factura_fecha": "2026-02-01",
+         "libros_activos": ["compras"], "tipos_activos": ["cliente"]},
+        {"nif": "B22222222", "nombre": "Prov SL",
+         "fecha_alta": "2026-01-01", "documentos_procesados": 1,
+         "ultima_factura_fecha": "2026-02-01",
+         "libros_activos": ["compras"], "tipos_activos": ["proveedor"]},
+        {"nif": "B33333333", "nombre": "Legacy SL",
+         "fecha_alta": "2026-01-01", "documentos_procesados": 1,
+         "ultima_factura_fecha": "2026-02-01",
+         "libros_activos": ["compras"]},
+    ])
+
+    body = client.get("/api/clients").json()
+    nifs = [e["nif"] for e in body["clients"]]
+    assert nifs == ["B11111111"]
+    assert body["total"] == 1
+    assert body["clients"][0]["tipos_activos"] == ["cliente"]
+
+
+def test_invoices_by_client_includes_lineas_asiento(api_client):
+    """GET /api/clients/{nif}/invoices must return lineas_asiento per invoice."""
+    client, asientos_root, _ = api_client
+
+    nif = "B12345678"
+    doc_id = "f_lineas_001"
+    folder = _seed_asiento(asientos_root, doc_id, nif, "2026-01-15")
+
+    lineas = [
+        {"cuenta": "600", "concepto": "Compras", "debe": 100.0, "haber": 0.0},
+        {"cuenta": "472", "concepto": "IVA soportado", "debe": 21.0, "haber": 0.0},
+        {"cuenta": "400", "concepto": "Proveedor", "debe": 0.0, "haber": 121.0},
+    ]
+    final_data = json.loads((folder / "resultado_final.json").read_text(encoding="utf-8"))
+    final_data["lineas_asiento"] = lineas
+    (folder / "resultado_final.json").write_text(json.dumps(final_data), encoding="utf-8")
+
+    resp = client.get(f"/api/clients/{nif}/invoices")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["nif"] == nif
+    assert len(body["invoices"]) == 1
+    inv = body["invoices"][0]
+    assert "lineas_asiento" in inv, "lineas_asiento missing from response"
+    assert len(inv["lineas_asiento"]) == 3
+    assert inv["lineas_asiento"][0]["cuenta"] == "600"

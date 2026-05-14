@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { X, ChevronRight, ArrowLeft } from "lucide-react";
+import { X, ChevronRight, ChevronDown, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { ClientCard, ClientInvoice, LibroShort } from "@/lib/types";
@@ -56,6 +56,7 @@ function formatEuros(v: number): string {
 export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPanelProps) {
   const [invoices, setInvoices] = useState<ClientInvoice[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,34 +175,90 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
                 {items.map((inv) => {
                   const badge = badgeForInvoice(inv);
                   const importeNeg = inv.total_euros < 0;
+                  const isExpanded = selectedDocId === inv.doc_id;
+                  const lineas = inv.lineas_asiento ?? [];
                   return (
-                    <li
-                      key={inv.doc_id}
-                      className="grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-3 px-3 py-2 border border-slate-100 hover:border-slate-300"
-                    >
-                      <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 bg-slate-100 text-slate-600">
-                        {libroLabel(inv.libro)}
-                      </span>
-                      <span className="text-xs font-mono text-slate-700 min-w-[80px]">
-                        {inv.numero_factura ?? inv.doc_id}
-                      </span>
-                      <span
-                        className={cn(
-                          "text-[9px] uppercase tracking-[0.15em] px-1.5 py-0.5",
-                          badge.className,
-                        )}
+                    <li key={inv.doc_id} className="border border-slate-100 hover:border-slate-300">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedDocId(isExpanded ? null : inv.doc_id)
+                        }
+                        className="w-full grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-3 px-3 py-2 text-left"
                       >
-                        {badge.label}
-                      </span>
-                      <span
-                        className={cn(
-                          "text-xs text-right",
-                          importeNeg ? "text-rose-600" : "text-slate-700",
+                        <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 bg-slate-100 text-slate-600">
+                          {libroLabel(inv.libro)}
+                        </span>
+                        <div className="flex flex-col min-w-[80px]">
+                          <span className="text-xs font-mono text-slate-700 truncate">
+                            {inv.numero_factura ?? inv.doc_id}
+                          </span>
+                          {inv.contraparte_nombre && (
+                            <span className="text-[9px] uppercase tracking-[0.1em] text-slate-400 truncate">
+                              {inv.libro === "ventas" ? "Cliente" : "Proveedor"} · {inv.contraparte_nombre}
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          className={cn(
+                            "text-[9px] uppercase tracking-[0.15em] px-1.5 py-0.5",
+                            badge.className,
+                          )}
+                        >
+                          {badge.label}
+                        </span>
+                        <span
+                          className={cn(
+                            "text-xs text-right",
+                            importeNeg ? "text-rose-600" : "text-slate-700",
+                          )}
+                        >
+                          {formatEuros(inv.total_euros)}
+                        </span>
+                        {isExpanded ? (
+                          <ChevronDown className="h-3 w-3 text-slate-400" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3 text-slate-400" />
                         )}
-                      >
-                        {formatEuros(inv.total_euros)}
-                      </span>
-                      <ChevronRight className="h-3 w-3 text-slate-400" />
+                      </button>
+
+                      {isExpanded && (
+                        <div className="px-3 pb-3 border-t border-slate-100">
+                          {lineas.length === 0 ? (
+                            <p className="text-[10px] text-slate-400 mt-2">
+                              Sin líneas de asiento registradas.
+                            </p>
+                          ) : (
+                            <table className="w-full text-[10px] mt-2">
+                              <thead>
+                                <tr className="text-slate-400 uppercase tracking-[0.1em] border-b border-slate-100">
+                                  <th className="text-left py-1 pr-2 font-medium">Cuenta</th>
+                                  <th className="text-left py-1 pr-2 font-medium">Concepto</th>
+                                  <th className="text-right py-1 pr-2 font-medium">Debe</th>
+                                  <th className="text-right py-1 font-medium">Haber</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {lineas.map((l, idx) => (
+                                  <tr
+                                    key={idx}
+                                    className="border-b border-slate-50 text-slate-700"
+                                  >
+                                    <td className="py-1 pr-2 font-mono">{l.cuenta}</td>
+                                    <td className="py-1 pr-2">{l.concepto}</td>
+                                    <td className="py-1 pr-2 text-right">
+                                      {l.debe > 0 ? formatEuros(l.debe) : "—"}
+                                    </td>
+                                    <td className="py-1 text-right">
+                                      {l.haber > 0 ? formatEuros(l.haber) : "—"}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      )}
                     </li>
                   );
                 })}

@@ -1348,6 +1348,13 @@ def list_clients():
     clientes_dict = maestro.get("clientes", {}) or {}
     items = []
     for nif, info in clientes_dict.items():
+        tipos = info.get("tipos_activos", []) or []
+        # Trazabilidad por cliente = SOLO clientes de la gestoría.
+        # Proveedores (y entradas legacy sin tipos_activos) se omiten — el
+        # panel "Historial" muestra el árbol fiscal del cliente, no la lista
+        # de quién factura a la gestoría.
+        if "cliente" not in tipos:
+            continue
         items.append({
             "nif": nif,
             "nombre": info.get("nombre", ""),
@@ -1355,6 +1362,7 @@ def list_clients():
             "ultima_factura_fecha": info.get("ultima_factura_fecha"),
             "documentos_procesados": info.get("documentos_procesados", 0),
             "libros_activos": info.get("libros_activos", []) or [],
+            "tipos_activos": tipos,
         })
 
     # Orden desc por ultima_factura_fecha (None al final).
@@ -1405,13 +1413,26 @@ def list_invoices_by_client(nif: str):
         if nif not in nifs_doc:
             continue
 
+        # `resultado_final.json` solo existe tras confirm humano. No filtramos
+        # por `origen_decision`: si la decisión original del pipeline fue
+        # `block` pero el operario aprobó la factura, debe aparecer en su
+        # historial. La carpeta sigue siendo trazable a través de `.state.json`.
         origen = final.get("origen_decision")
-        if origen in {"block", "error"}:
-            continue
 
         tiene_ediciones = any(
             c.get("editado") for c in campos.values() if isinstance(c, dict)
         )
+
+        # Contraparte: el otro extremo del asiento. En `compras`/`bienes` el
+        # cliente de la gestoría es `nif_receptor`, así que la contraparte es
+        # `nif_entidad` (proveedor). En `ventas` se invierte.
+        libro_doc = final.get("libro")
+        if libro_doc == "ventas":
+            cp_nif = (campos.get("nif_receptor") or {}).get("valor")
+            cp_nombre = (campos.get("nombre_receptor") or {}).get("valor")
+        else:
+            cp_nif = (campos.get("nif_entidad") or {}).get("valor")
+            cp_nombre = (campos.get("nombre_entidad") or {}).get("valor")
 
         invoices.append({
             "doc_id": final.get("doc_id"),
@@ -1420,8 +1441,11 @@ def list_invoices_by_client(nif: str):
             "total_euros": safe_float((campos.get("total_euros") or {}).get("valor")),
             "decision_global": origen,
             "status": current_status_of(folder),
-            "libro": final.get("libro"),
+            "libro": libro_doc,
             "tiene_ediciones": tiene_ediciones,
+            "lineas_asiento": final.get("lineas_asiento", []) or [],
+            "contraparte_nif": cp_nif,
+            "contraparte_nombre": cp_nombre,
         })
 
     invoices.sort(key=lambda i: i["fecha_expedicion"] or "", reverse=True)

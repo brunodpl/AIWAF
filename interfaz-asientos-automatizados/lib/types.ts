@@ -114,6 +114,7 @@ export interface ClientCard {
   ultima_factura_fecha: string | null;
   documentos_procesados: number;
   libros_activos: LibroShort[];
+  tipos_activos: ("cliente" | "proveedor")[];
 }
 
 export interface ClientInvoice {
@@ -125,6 +126,11 @@ export interface ClientInvoice {
   status: DocStatus | null;
   libro: LibroShort | null;
   tiene_ediciones: boolean;
+  lineas_asiento?: LineaAsiento[];
+  /** NIF de la contraparte del asiento (proveedor en compras/bienes,
+   *  cliente final en ventas). Null si no se resolvió. */
+  contraparte_nif?: string | null;
+  contraparte_nombre?: string | null;
 }
 
 // ──────────────────────────────────────────────────────────

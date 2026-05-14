@@ -4,10 +4,7 @@ import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import type { ClientCard, LibroShort } from "@/lib/types";
-
-type Filter = "todos" | "clientes" | "proveedores";
 
 interface ClientsGridProps {
   clients: ClientCard[];
@@ -52,36 +49,20 @@ function hashColor(nif: string): string {
   return palette[Math.abs(h) % palette.length];
 }
 
-function categoryOfClient(c: ClientCard): Filter {
-  const hasVentas = c.libros_activos.includes("ventas" as LibroShort);
-  const hasCompras = c.libros_activos.includes("compras" as LibroShort);
-  if (hasVentas && !hasCompras) return "clientes";
-  if (hasCompras && !hasVentas) return "proveedores";
-  return "todos";
-}
-
 export function ClientsGrid({ clients, onSelect }: ClientsGridProps) {
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<Filter>("todos");
 
+  // El backend ya filtra a solo clientes de la gestoría (tipos_activos contiene
+  // "cliente"). Aquí solo aplicamos la búsqueda por nombre/NIF.
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return clients.filter((c) => {
-      const matchesQuery =
-        !q ||
+    if (!q) return clients;
+    return clients.filter(
+      (c) =>
         c.nombre.toLowerCase().includes(q) ||
-        c.nif.toLowerCase().includes(q);
-      if (!matchesQuery) return false;
-      if (filter === "todos") return true;
-      const cat = categoryOfClient(c);
-      // ventas-only → clientes, compras-only → proveedores, mixto → ambos
-      const hasVentas = c.libros_activos.includes("ventas" as LibroShort);
-      const hasCompras = c.libros_activos.includes("compras" as LibroShort);
-      if (filter === "clientes") return hasVentas;
-      if (filter === "proveedores") return hasCompras;
-      return cat === filter;
-    });
-  }, [clients, query, filter]);
+        c.nif.toLowerCase().includes(q),
+    );
+  }, [clients, query]);
 
   if (clients.length === 0) {
     return (
@@ -99,29 +80,14 @@ export function ClientsGrid({ clients, onSelect }: ClientsGridProps) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar cliente por nombre o NIF..."
-            className="pl-8 h-9 text-xs rounded-none"
-          />
-        </div>
-        <div className="flex items-center gap-1">
-          {(["todos", "clientes", "proveedores"] as Filter[]).map((f) => (
-            <Button
-              key={f}
-              variant={filter === f ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setFilter(f)}
-              className="text-[10px] uppercase tracking-[0.15em] h-7 px-3 rounded-none"
-            >
-              {f}
-            </Button>
-          ))}
-        </div>
+      <div className="relative max-w-md">
+        <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Buscar cliente por nombre o NIF..."
+          className="pl-8 h-9 text-xs rounded-none"
+        />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
