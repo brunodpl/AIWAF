@@ -1,1 +1,184 @@
-clientes: {}
+clientes:
+  B15272859:
+    nombre: CROIPAN
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 1
+    ultima_factura_fecha: '2026-03-04'
+    libros_activos:
+    - ventas
+    tipos_activos: []
+  B15663065:
+    nombre: DISFRIOGA,S.L.
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 2
+    ultima_factura_fecha: '2025-12-31'
+    libros_activos:
+    - bienes
+    - ventas
+    tipos_activos:
+    - proveedor
+    - cliente
+  '1':
+    nombre: '1'
+    fecha_alta: '2026-05-14'
+    documentos_procesados: 4
+    ultima_factura_fecha: '2026-03-04'
+    libros_activos:
+    - compras
+    - ventas
+    tipos_activos:
+    - cliente
+    - proveedor
+  B15740491:
+    nombre: ADEGA DO VAL, S.L.U.
+    fecha_alta: '2026-05-14'
+    documentos_procesados: 1
+    ultima_factura_fecha: '2026-02-27'
+    libros_activos:
+    - bienes
+    tipos_activos:
+    - proveedor
+  Q:
+    nombre: 31122 EL COBO 44
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 3
+    ultima_factura_fecha: '2026-03-07'
+    libros_activos:
+    - bienes
+    - compras
+    - ventas
+    tipos_activos:
+    - cliente
+    - proveedor
+  PACO:
+    nombre: PEDRIDO VAZ LUCIA
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 1
+    ultima_factura_fecha: '2026-01-23'
+    libros_activos:
+    - bienes
+    tipos_activos:
+    - cliente
+  A14221188:
+    nombre: BOFROST SAU
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 1
+    ultima_factura_fecha: '2026-01-23'
+    libros_activos:
+    - bienes
+    tipos_activos:
+    - proveedor
+  32320818E:
+    nombre: MIGUEZ PEREZ FERNANDO
+    fecha_alta: '2026-05-14'
+    documentos_procesados: 3
+    ultima_factura_fecha: '2026-02-11'
+    libros_activos:
+    - bienes
+    tipos_activos:
+    - cliente
+  B15026693:
+    nombre: ESPINA Y DELFIN SL
+    fecha_alta: '2026-05-14'
+    documentos_procesados: 2
+    ultima_factura_fecha: '2026-02-11'
+    libros_activos:
+    - bienes
+    tipos_activos:
+    - proveedor
+  B15736408:
+    nombre: CARBALLEIRA
+    fecha_alta: '2026-05-14'
+    documentos_procesados: 4
+    ultima_factura_fecha: '2026-03-04'
+    libros_activos:
+    - compras
+    tipos_activos:
+    - proveedor
+  A28647451:
+    nombre: MAKRO DISTRIBUCION MAYORISTA, S.A.
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 3
+    ultima_factura_fecha: '2026-03-07'
+    libros_activos:
+    - ventas
+    - bienes
+    tipos_activos:
+    - cliente
+    - proveedor
+  B06049985:
+    nombre: NOVADELTA ESPAÑA S.L.U.
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 1
+    ultima_factura_fecha: '2026-02-16'
+    libros_activos:
+    - ventas
+    tipos_activos: []
+  51297171H:
+    nombre: CARLOS DIAZ NAVA "LIBRERIA PILAR"
+    fecha_alta: '2026-05-16'
+    documentos_procesados: 1
+    ultima_factura_fecha: '2026-03-09'
+    libros_activos:
+    - ventas
+    tipos_activos: []
+  B81078933:
+    nombre: PROCUBITOS EUROPE DISTRIBUCION SLU
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 1
+    ultima_factura_fecha: '2026-02-17'
+    libros_activos:
+    - ventas
+    tipos_activos: []
+  BRUNO:
+    nombre: BRUNO
+    fecha_alta: '2026-05-14'
+    documentos_procesados: 12
+    ultima_factura_fecha: '2026-03-10'
+    libros_activos:
+    - bienes
+    - compras
+    - ventas
+    tipos_activos:
+    - cliente
+    - proveedor
+  A15230592:
+    nombre: TGT GALICIA, S.A.
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 3
+    ultima_factura_fecha: '2026-03-10'
+    libros_activos:
+    - compras
+    - bienes
+    tipos_activos:
+    - proveedor
+  32653137Z:
+    nombre: ALMACENES CANCELA S.L.
+    fecha_alta: '2026-05-15'
+    documentos_procesados: 2
+    ultima_factura_fecha: '2026-02-27'
+    libros_activos:
+    - ventas
+    - compras
+    tipos_activos:
+    - proveedor
+  76344704E:
+    nombre: ALVAREZ BRAÑAS, EDELMIRO
+    fecha_alta: '2026-05-14'
+    documentos_procesados: 3
+    ultima_factura_fecha: '2026-02-28'
+    libros_activos:
+    - compras
+    - ventas
+    tipos_activos:
+    - proveedor
+    - cliente
+  B36007409:
+    nombre: MERCASH SAR S. L. UNIPERSONAL
+    fecha_alta: '2026-05-14'
+    documentos_procesados: 3
+    ultima_factura_fecha: '2026-03-05'
+    libros_activos:
+    - ventas
+    tipos_activos:
+    - cliente

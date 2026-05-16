@@ -82,6 +82,7 @@ export default function Home() {
 
   const [resetting, setResetting] = useState(false);
   const [booksNonce, setBooksNonce] = useState(0);
+  const [totalQueued, setTotalQueued] = useState<number>(0);
   // "Nuevo escaneo" = empezar un lote limpio. Llama a /api/pipeline/reset
   // para descartar asientos pendientes (status != done) que se quedarían
   // fantasma en /review tras un escaneo abortado. Los PDFs originales en
@@ -97,6 +98,7 @@ export default function Home() {
     }
     setApprovedInvoices(new Map());
     setRejectedInvoices(new Set());
+    setTotalQueued(0);
     setStage("books");
     localStorage.removeItem(STORAGE_KEY_INVOICES);
     localStorage.removeItem(STORAGE_KEY_STAGE);
@@ -166,7 +168,7 @@ export default function Home() {
           <PipelineProgress
             onComplete={() => setStage("review")}
             onBack={() => setStage("books")}
-            onJumpToReview={() => setStage("review")}
+            onJumpToReview={(total) => { setTotalQueued(total); setStage("review"); }}
           />
         )}
 
@@ -174,6 +176,7 @@ export default function Home() {
           <InvoiceReviewer
             approvedInvoices={approvedInvoices}
             rejectedInvoices={rejectedInvoices}
+            totalQueued={totalQueued > 0 ? totalQueued : undefined}
             onApprove={handleApprove}
             onReject={handleReject}
             onExport={() => setStage("export")}

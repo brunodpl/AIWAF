@@ -6,6 +6,7 @@ import type {
   InvoiceDocument,
   FieldDecision,
   Book,
+  BookFile,
   PipelineStatus,
   Client,
   Libro,
@@ -46,15 +47,30 @@ export const API_URL = "";
 const API_TIMEOUT_MS = 30000;
 
 async function fetchWithTimeout(url: string, options?: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), API_TIMEOUT_MS);
+
+  // Si el caller pasó un signal propio, lo combinamos con el de timeout para
+  // que cualquiera de los dos abortos cancele el fetch. AbortSignal.any está
+  // disponible en Chrome 116+/Firefox 124+; con fallback manual para navegadores
+  // anteriores.
+  let signal: AbortSignal = timeoutController.signal;
+  const callerSignal = options?.signal;
+  if (callerSignal) {
+    if (typeof (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any === "function") {
+      signal = (AbortSignal as unknown as { any: (signals: AbortSignal[]) => AbortSignal }).any(
+        [timeoutController.signal, callerSignal]
+      );
+    } else {
+      // Fallback: si el caller aborta, abortamos el timeout también.
+      const onCallerAbort = () => timeoutController.abort();
+      if (callerSignal.aborted) timeoutController.abort();
+      else callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+    }
+  }
 
   try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    return response;
+    return await fetch(url, { ...options, signal });
   } finally {
     clearTimeout(timeoutId);
   }
@@ -98,6 +114,10 @@ export interface InvoiceListItem {
   nombre_entidad: string;
   numero_factura: string;
   total_euros: number;
+  /** folder_name del asiento original si el pipeline detectó duplicado fiscal. */
+  duplicate_of?: string;
+  /** Hash determinista del triplete (NIF emisor, nº factura, fecha). */
+  fiscal_hash?: string;
 }
 
 export interface InvoiceListResponse {
@@ -383,6 +403,7 @@ export interface BooksResponse {
 export interface UploadResponse {
   uploaded: string[];
   errors: Array<{ file: string; error: string }>;
+  files?: BookFile[];
 }
 
 export interface PipelineRunResponse {

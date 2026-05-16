@@ -52,6 +52,57 @@ class ProcessingStats:
         print("=" * 60)
 
 
+def _begin_processing_event(folder: Path, documento_id: str, file_origin: str) -> None:
+    """Anota el evento de inicio de OCR en el sidecar.
+
+    Lógica condicional según estado previo:
+
+    - Sin sidecar (CLI standalone / legacy): ``state_writer.init`` (escribe
+      directamente ``processing`` como primer evento).
+    - Sidecar con último status ``uploaded``: append ``processing``.
+    - Sidecar en estado terminal (``confirmed|blocked|cancelled|error``)
+      o ``done``: append ``retrying`` con ``previous_status`` y ``attempt``.
+    - Sidecar en cualquier otro estado (``processing``/``review``/...):
+      append ``processing`` (reproceso, idempotente como antes).
+    """
+    sidecar = folder / state_writer.SIDECAR_NAME
+    if not sidecar.exists():
+        state_writer.init(folder, doc_id=documento_id, file_origin=file_origin)
+        return
+
+    last = state_writer.current_status(folder)
+    if last == "uploaded":
+        state_writer.append(folder, {
+            "status": "processing",
+            "file_origin": file_origin,
+            "folder": folder.name,
+        })
+        return
+
+    if last in {"confirmed", "blocked", "cancelled", "error", "done"}:
+        events = state_writer.read(folder).get("events") or []
+        previous_attempts = sum(1 for ev in events if ev.get("status") == "retrying")
+        state_writer.append(folder, {
+            "status": "retrying",
+            "previous_status": last,
+            "attempt": previous_attempts + 1,
+        })
+        state_writer.append(folder, {
+            "status": "processing",
+            "file_origin": file_origin,
+            "folder": folder.name,
+        })
+        return
+
+    # Reproceso normal (último era processing/review/renamed/...): solo
+    # marcamos otro processing — comportamiento legacy.
+    state_writer.append(folder, {
+        "status": "processing",
+        "file_origin": file_origin,
+        "folder": folder.name,
+    })
+
+
 def scan_folder(folder_path: str) -> List[str]:
     """
     Escanear carpeta para archivos con extensión admitida.
@@ -137,10 +188,10 @@ def run_ocr(
     folder_name = f"{libro_short}_{documento_id}"
     doc_output_dir = os.path.join(output_base_path, folder_name)
     Path(doc_output_dir).mkdir(parents=True, exist_ok=True)
-    state_writer.init(
+    _begin_processing_event(
         Path(doc_output_dir),
-        doc_id=documento_id,
-        file_origin=os.path.relpath(file_path).replace(os.sep, "/"),
+        documento_id=documento_id,
+        file_origin=str(Path(file_path).resolve()),
     )
 
     logger.info(f"[ocr] Iniciando: {filename} doc_id={documento_id}")

@@ -9,6 +9,7 @@ Provides endpoints for:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -333,6 +334,14 @@ def find_invoice_file(doc_id: str) -> Optional[Tuple[Path, str]]:
                 cand = inbox / f"{doc_id}{ext}"
                 if cand.exists():
                     return cand, cand.name
+            # Búsqueda exacta por basename con cualquier extensión (evita
+            # colisiones del glob suelto: ej que factura_001_backup.pdf
+            # gane a factura_001.pdf).
+            for cand in inbox.iterdir():
+                if cand.is_file() and cand.suffix.lower() in ALLOWED_INVOICE_EXTENSIONS:
+                    if cand.stem == doc_id:
+                        return cand, cand.name
+            # Último recurso: glob suelto (puede tener falsos positivos).
             for cand in inbox.glob(f"*{doc_id}*"):
                 if cand.is_file() and cand.suffix.lower() in ALLOWED_INVOICE_EXTENSIONS:
                     return cand, cand.name
@@ -344,28 +353,37 @@ def find_invoice_file(doc_id: str) -> Optional[Tuple[Path, str]]:
 # ──────────────────────────────────────────────────────────
 
 @app.get("/api/invoices")
-def list_invoices(include_done: bool = True):
+def list_invoices(include_done: bool = True, include_confirmed: bool = False):
     """
     Listar todas las facturas procesadas con su estado.
+
+    Fuente de verdad del status: ``.state.json`` (último evento). El
+    JSON ``resultado_validacion.json`` solo se lee para los campos
+    resumen (NIF, número, total, etc.) — no para decidir status.
 
     Para cada carpeta de asiento devuelve:
     - ``id``        : doc_id estable (basename del PDF original)
     - ``folder_name``: nombre actual de la carpeta (renombrada o provisional)
     - ``libro``     : compras / ventas / bienes (prefijo de la carpeta)
-    - ``status``    : último evento del `.state.json` (processing/review/done/...)
+    - ``status``    : último evento del `.state.json` (uploaded/processing/
+      review/done/confirmed/blocked/cancelled/error/retrying)
+    - ``duplicate_of`` (opcional): si en algún evento se anotó duplicado fiscal,
+      el ``folder_name`` del asiento original al que se atribuye.
     - ``decision_global`` + campos resumen desde `resultado_validacion.json`.
 
     Query params:
-    - ``include_done`` (bool, default True): si False excluye los asientos
-      con `status == "done"` (los ya confirmados por el operario). El
-      reviewer lo usa para no remostrar facturas viejas tras un ciclo de
-      confirmación.
+    - ``include_done`` (bool, default True): incluye status=``done`` (esperando
+      confirm humano). El reviewer lo desactiva tras confirmar para no
+      remostrar facturas que ya pasaron a ``confirmed``.
+    - ``include_confirmed`` (bool, default False): incluye status=``confirmed``
+      (asiento contable cerrado). El historial lo activa.
     """
     now = time.time()
-    cache_key = f"data_{int(include_done)}"
+    cache_key = f"data_{int(include_done)}_{int(include_confirmed)}"
+    ts_key = f"ts_{int(include_done)}_{int(include_confirmed)}"
     if (
         cache_key in _invoices_cache
-        and (now - _invoices_cache.get(f"ts_{int(include_done)}", 0)) < _CACHE_TTL
+        and (now - _invoices_cache.get(ts_key, 0)) < _CACHE_TTL
     ):
         return _invoices_cache[cache_key]
 
@@ -379,9 +397,21 @@ def list_invoices(include_done: bool = True):
         events = state.get("events") or []
         status = events[-1].get("status") if events else None
 
-        # Filtro done primero — antes del I/O de validación.
+        # Filtros por status — antes del I/O de validación.
         if not include_done and status == "done":
             continue
+        if not include_confirmed and status == "confirmed":
+            continue
+
+        # Extraer duplicate_of si existe en cualquier evento (anotado por
+        # el pipeline al detectar duplicado fiscal).
+        duplicate_of = None
+        fiscal_hash = None
+        for ev in events:
+            if ev.get("duplicate_of") and not duplicate_of:
+                duplicate_of = ev["duplicate_of"]
+            if ev.get("fiscal_hash") and not fiscal_hash:
+                fiscal_hash = ev["fiscal_hash"]
 
         # Saltar carpetas huérfanas (runs interrumpidos sin resultado_validacion).
         # No hay nada que el operario pueda revisar sin datos de validación.
@@ -391,7 +421,7 @@ def list_invoices(include_done: bool = True):
 
         campos = validation.get("campos", {})
 
-        invoices.append({
+        record = {
             "id": doc_id,
             "folder_name": folder.name,
             "libro": _libro_from_folder(folder.name),
@@ -402,11 +432,16 @@ def list_invoices(include_done: bool = True):
             "nombre_entidad": campos.get("nombre_entidad", {}).get("valor_final", ""),
             "numero_factura": campos.get("numero_factura", {}).get("valor_final", ""),
             "total_euros": campos.get("total_euros", {}).get("valor_final", 0),
-        })
+        }
+        if duplicate_of:
+            record["duplicate_of"] = duplicate_of
+        if fiscal_hash:
+            record["fiscal_hash"] = fiscal_hash
+        invoices.append(record)
 
     result = {"invoices": invoices, "total": len(invoices)}
     _invoices_cache[cache_key] = result
-    _invoices_cache[f"ts_{int(include_done)}"] = now
+    _invoices_cache[ts_key] = now
     return result
 
 
@@ -529,6 +564,29 @@ def process_invoice_action(doc_id: str, action: InvoiceAction):
     validation = get_validation_result(folder)
     if not validation:
         raise HTTPException(status_code=404, detail=f"Invoice {doc_id} not found")
+
+    # Estados desde los que NO se permite aprobar/rechazar:
+    #
+    # - ``confirmed``  — ya generó asiento contable; cambiarlo requiere flujo
+    #                    administrativo separado (revertir la confirmación).
+    # - ``cancelled``  — run abandonado; el usuario debe relanzar el pipeline
+    #                    antes de poder aprobar/rechazar de nuevo.
+    # - ``processing``/``uploaded``/``retrying`` — pipeline aún no completó.
+    #
+    # Sí se permite desde ``review`` (caso normal), ``done`` (re-revisión),
+    # ``blocked`` (override humano del bloqueo del pipeline), ``error``
+    # (override de fallo técnico) y ``renamed`` (estado intermedio que no
+    # implica nada del workflow).
+    current = state_writer.current_status(folder)
+    NON_ACTIONABLE = {"confirmed", "cancelled", "processing", "uploaded", "retrying"}
+    if current in NON_ACTIONABLE:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Invoice {doc_id} está en estado '{current}' — no se permite "
+                "approve/reject. Espera a que el pipeline termine o relánzalo."
+            ),
+        )
 
     status = "done" if action.action == "approve" else "review"
     event = {
@@ -828,9 +886,14 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
 
     upload_dir = _inbox_for_book(book_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
+    asientos_root = get_asientos_dir()
+    libro_short = LIBRO_SHORT.get(BOOK_CONFIGS[book_id]["libro_short"], BOOK_CONFIGS[book_id]["libro_short"])
 
     uploaded = []
     errors = []
+    # Track de carpetas de asiento creadas durante este upload para no
+    # re-disparar init_uploaded por colisión con sidecars recién creados.
+    new_sidecars: list[tuple[Path, str, str, int]] = []
 
     for file in files:
         if not file.filename:
@@ -848,31 +911,196 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
             errors.append({"file": file.filename, "error": "Invalid filename"})
             continue
 
+        # Leer contenido y computar SHA-256 ANTES de escribir, para poder
+        # rechazar duplicados físicos sin tocar disco.
+        try:
+            content = await file.read()
+        except Exception as e:
+            errors.append({"file": file.filename, "error": f"read error: {e}"})
+            continue
+        sha256_file = hashlib.sha256(content).hexdigest()
+
+        # Duplicado físico: si ya existe un sidecar con este sha256, rechazar
+        # salvo que el doc anterior esté en estado ``error`` (retry legítimo).
+        try:
+            existing = state_writer.find_by_file_sha256(asientos_root, sha256_file)
+        except Exception:
+            existing = None
+        if existing is not None:
+            try:
+                prev_status = state_writer.current_status(existing)
+            except Exception:
+                prev_status = None
+            if prev_status != "error":
+                errors.append({
+                    "file": file.filename,
+                    "error": (
+                        f"duplicate: el PDF ya está registrado como "
+                        f"'{existing.name}' (estado: {prev_status or 'desconocido'})"
+                    ),
+                    "duplicate_of": existing.name,
+                    "duplicate_status": prev_status,
+                })
+                logger.info(
+                    "[upload] dup físico rechazado file=%s sha256=%s existing=%s status=%s",
+                    file.filename, sha256_file[:12], existing.name, prev_status,
+                )
+                continue
+
         dest = upload_dir / safe_name
-        # Avoid silent overwrite — sufijo timestamp si colisiona.
+        # Colisión de nombre:
+        # - Si existe un sidecar activo para este nombre, mantenemos sufijo
+        #   timestamp para no pisar (NO debería pasar — la dup física por sha256
+        #   ya habría rechazado contenido idéntico; sería colisión de nombre con
+        #   contenido distinto).
+        # - Si el fichero existe sin sidecar (huérfano de un reset previo), lo
+        #   sobreescribimos silenciosamente — no hay asiento que dependa de él.
         if dest.exists():
-            base, ext_part = os.path.splitext(safe_name)
-            ts = int(datetime.now(timezone.utc).timestamp())
-            safe_name = f"{base}_{ts}{ext_part}"
-            dest = upload_dir / safe_name
+            doc_id_collision = os.path.splitext(safe_name)[0]
+            folder_collision = asientos_root / f"{libro_short}_{doc_id_collision}"
+            has_sidecar = (folder_collision / state_writer.SIDECAR_NAME).exists()
+            if has_sidecar:
+                base, ext_part = os.path.splitext(safe_name)
+                ts = int(datetime.now(timezone.utc).timestamp())
+                safe_name = f"{base}_{ts}{ext_part}"
+                dest = upload_dir / safe_name
+            # else: huérfano — overwrite limpio sin renombrar
 
         try:
             with open(dest, "wb") as f:
-                content = await file.read()
                 f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
             uploaded.append(safe_name)
+            # Apuntar para init_uploaded post-fsync (al final del loop, tras
+            # haber confirmado visibilidad en filesystem).
+            doc_id = os.path.splitext(safe_name)[0]
+            folder_name = f"{libro_short}_{doc_id}"
+            asiento_folder = asientos_root / folder_name
+            new_sidecars.append((asiento_folder, doc_id, sha256_file, len(content)))
+            # Pequeña pausa entre archivos: en Docker con volúmenes
+            # Windows el filesystem puede no estar consistente al
+            # instante siguiente — damos margen al SO para sincronizar.
+            await asyncio.sleep(0.2)
         except Exception as e:
             errors.append({"file": file.filename, "error": str(e)})
 
-    return {"uploaded": uploaded, "errors": errors}
+    # Forzar sync global del filesystem al terminar el lote,
+    # para que el subsiguiente GET /api/books vea todos los archivos.
+    os.sync()
+
+    # Verificar que cada archivo es visible en el filesystem.
+    # En Docker Desktop + Windows con bind-mounts, el virtiofs/9p
+    # puede tardar hasta 2s en hacer visible un archivo nuevo a
+    # os.scandir() incluso tras fsync+sync.
+    VERIFY_TIMEOUT = 3.0
+    VERIFY_POLL = 0.25
+    verified_files = []
+    for name in uploaded:
+        dest = upload_dir / name
+        deadline = time.monotonic() + VERIFY_TIMEOUT
+        visible = False
+        while time.monotonic() < deadline:
+            if dest.exists() and dest.is_file():
+                visible = True
+                break
+            await asyncio.sleep(VERIFY_POLL)
+        if visible:
+            stat = dest.stat()
+            # Crear sidecar .state.json con primer evento ``uploaded``.
+            # Tomamos los metadatos asociados a este nombre desde
+            # ``new_sidecars`` (mismo orden que ``uploaded``).
+            doc_id = os.path.splitext(name)[0]
+            sidecar_status: Optional[str] = None
+            folder_name: Optional[str] = None
+            meta = next((m for m in new_sidecars if m[1] == doc_id), None)
+            if meta is not None:
+                asiento_folder, _, sha_meta, size_meta = meta
+                try:
+                    state_writer.init_uploaded(
+                        asiento_folder,
+                        doc_id=doc_id,
+                        file_origin=str(dest.resolve()),
+                        sha256_file=sha_meta,
+                        size_bytes=size_meta,
+                    )
+                    sidecar_status = "uploaded"
+                    folder_name = asiento_folder.name
+                except FileExistsError:
+                    # Sidecar ya existe. Dos escenarios:
+                    # 1. Retry legítimo / doble-click del frontend: nuestro propio
+                    #    sidecar con mismo sha256 (la dup-detection lo habría
+                    #    pillado, salvo que estuviera ``error``). Idempotente.
+                    # 2. Race con otro upload concurrente que creó el sidecar
+                    #    entre nuestro find_by_file_sha256 y este init: el sidecar
+                    #    pertenece a OTRO contenido. Reportar como conflicto.
+                    folder_name = asiento_folder.name
+                    sidecar_status = None
+                    try:
+                        existing_state = state_writer.read(asiento_folder)
+                        existing_sha = None
+                        for ev in existing_state.get("events") or []:
+                            if ev.get("status") == "uploaded" and ev.get("sha256_file"):
+                                existing_sha = ev["sha256_file"]
+                                break
+                        sidecar_status = state_writer.current_status(asiento_folder)
+                        if existing_sha and existing_sha != sha_meta:
+                            # Race con upload concurrente de OTRO contenido.
+                            logger.warning(
+                                "[upload] race detected doc_id=%s — sidecar existente "
+                                "tiene sha256=%s, nuestro upload tenía sha256=%s",
+                                doc_id, existing_sha[:12], sha_meta[:12],
+                            )
+                            errors.append({
+                                "file": name,
+                                "error": (
+                                    "conflicto con upload concurrente — el sidecar fue creado "
+                                    "por otra subida con contenido distinto. Reintenta."
+                                ),
+                                "stage": "upload_race",
+                            })
+                            sidecar_status = None  # no anunciarlo como "uploaded"
+                    except Exception:
+                        # Lectura del sidecar falló — degradar a "uploaded" defensive.
+                        sidecar_status = sidecar_status or "uploaded"
+                except Exception as exc:
+                    logger.error(
+                        "[upload] init_uploaded falló doc_id=%s: %s",
+                        doc_id, exc, exc_info=True,
+                    )
+                    errors.append({"file": name, "error": f"sidecar init failed: {exc}"})
+
+            verified_files.append({
+                "name": name,
+                "size_kb": round(stat.st_size / 1024, 1),
+                "added": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                "status": sidecar_status,
+                "folder_name": folder_name,
+            })
+            logger.info(
+                "upload_verified file=%s book=%s status=%s",
+                name, book_id, sidecar_status,
+            )
+        else:
+            logger.warning("upload_stale file=%s book=%s — not visible after %.1fs", name, book_id, VERIFY_TIMEOUT)
+            errors.append({"file": name, "error": f"File saved but not visible after {VERIFY_TIMEOUT:.0f}s — retry or refresh"})
+
+    return {"uploaded": uploaded, "errors": errors, "files": verified_files}
 
 
 @app.delete("/api/books/{book_id}/files/{filename}")
 def delete_book_file(book_id: str, filename: str):
-    """Elimina un PDF del inbox permanente del libro.
+    """Elimina un PDF del inbox permanente del libro y su carpeta de asiento.
 
-    Solo borra el archivo de entrada — no toca la carpeta de asiento si ya
-    existe (esa se gestiona vía `/api/pipeline/reset` o eliminación manual).
+    Comportamiento:
+    - Borra el PDF de ``libros/facturas/{libro}/{filename}``.
+    - Si existe ``libros/asientos/{libro_short}_{doc_id}/`` Y su sidecar NO
+      está en ``confirmed`` (asiento contable cerrado), borra la carpeta
+      entera. Esto es necesario para que el ``sha256_file`` del sidecar no
+      siga "reservando" el documento — sin esto, al subir el mismo PDF a
+      otro libro la detección de duplicado físico lo rechaza.
+    - Si la carpeta está ``confirmed`` (ya generó asiento contable),
+      responde 409 — borrar requeriría flujo administrativo separado.
     """
     if book_id not in BOOK_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}")
@@ -889,8 +1117,50 @@ def delete_book_file(book_id: str, filename: str):
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Localizar carpeta de asiento (si la hay) — el ``doc_id`` es el basename
+    # del PDF sin extensión.
+    doc_id = os.path.splitext(safe_name)[0]
+    libro_short = BOOK_CONFIGS[book_id]["libro_short"]
+    asiento_folder = get_asientos_dir() / f"{libro_short}_{doc_id}"
+    asiento_deleted = False
+    if asiento_folder.exists():
+        try:
+            current = state_writer.current_status(asiento_folder)
+        except Exception:
+            current = None
+        if current == "confirmed":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"'{safe_name}' ya está exportada a Intermega (asiento "
+                    "contable cerrado). Si necesitas eliminarla, contacta con "
+                    "el administrador."
+                ),
+            )
+        try:
+            shutil.rmtree(asiento_folder)
+            asiento_deleted = True
+            logger.info(
+                "[delete] Asiento eliminado folder=%s status_previo=%s",
+                asiento_folder.name, current,
+            )
+        except OSError as e:
+            logger.error(
+                "[delete] No se pudo borrar carpeta asiento %s: %s",
+                asiento_folder, e, exc_info=True,
+            )
+
     file_path.unlink()
-    return {"deleted": safe_name}
+    # Invalidar caches para que /api/invoices, /api/stats y /api/clients
+    # reflejen el borrado en el siguiente fetch (sin esperar al TTL).
+    _invoices_cache.clear()
+    _stats_cache.clear()
+    _clients_cache.clear()
+    return {
+        "deleted": safe_name,
+        "asiento_deleted": asiento_deleted,
+        "asiento_folder": asiento_folder.name if asiento_deleted else None,
+    }
 
 
 # ──────────────────────────────────────────────────────────
@@ -952,47 +1222,67 @@ def confirm_batch(payload: ConfirmBatchPayload):
     maestro = cargar_maestro(cfg.maestro_clientes_path)
     nifs_antes = set(maestro.get("clientes", {}).keys())
 
+    # Atomicidad: si un doc falla parcialmente (sidecar corrupto, OSError),
+    # NO aborta el batch — registramos el error en ``per_doc_errors`` y
+    # continuamos. Al final guardamos el maestro con los docs que SÍ se
+    # confirmaron correctamente. Sin esto, un sidecar roto en el doc N
+    # tiraba la HTTPException y dejaba el maestro sin actualizar para los
+    # 1..N-1 ya escritos en disco — los asientos quedaban en limbo: CSV
+    # generado pero historial /api/clients sin reflejo.
+    _NIF_KEYS = {"nif_entidad", "nif_receptor", "nif_cliente"}
     confirmadas = 0
+    per_doc_errors: list[dict[str, str]] = []
+    confirmed_doc_ids: list[str] = []  # docs que pasaron sin error
+
     for doc_id in payload.doc_ids:
-        validate_doc_id(doc_id)
+        try:
+            validate_doc_id(doc_id)
+        except HTTPException as e:
+            per_doc_errors.append({"doc_id": doc_id, "error": e.detail, "stage": "validate"})
+            continue
         if doc_id not in payload.asientos:
-            raise HTTPException(
-                status_code=400, detail=f"asientos[{doc_id}] ausente en payload"
-            )
+            per_doc_errors.append({
+                "doc_id": doc_id, "error": "asientos[...] ausente en payload", "stage": "payload",
+            })
+            continue
 
         folder = get_doc_folder(doc_id)
         if folder is None:
-            raise HTTPException(
-                status_code=404, detail=f"doc_id {doc_id} no encontrado"
-            )
+            per_doc_errors.append({"doc_id": doc_id, "error": "folder no encontrado", "stage": "lookup"})
+            continue
 
         asiento = payload.asientos[doc_id]
         try:
             csv_bytes = base64.b64decode(asiento.csv_b64, validate=False)
         except (ValueError, TypeError) as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"csv_b64 inválido para {doc_id}: {e}",
-            )
+            per_doc_errors.append({"doc_id": doc_id, "error": f"csv_b64 inválido: {e}", "stage": "csv"})
+            continue
 
         libro_short = _libro_from_folder(folder.name) or ""
         # Normalizamos NIFs a mayúsculas antes de persistir. Sin esto el
         # frontend podía guardar "49915950q" minúscula y romper las
         # comparaciones case-sensitive del historial.
-        _NIF_KEYS = {"nif_entidad", "nif_receptor", "nif_cliente"}
         campos_para_writer = {
             k: {"valor": (str(v.valor).strip().upper() if k in _NIF_KEYS and v.valor else v.valor)}
             for k, v in asiento.campos_finales.items()
         }
 
-        final_writer.write_final(
-            str(folder),
-            doc_id=doc_id,
-            libro=libro_short,
-            campos_finales=campos_para_writer,
-            lineas=asiento.lineas_asiento,
-            csv_bytes=csv_bytes,
-        )
+        try:
+            final_writer.write_final(
+                str(folder),
+                doc_id=doc_id,
+                libro=libro_short,
+                campos_finales=campos_para_writer,
+                lineas=asiento.lineas_asiento,
+                csv_bytes=csv_bytes,
+            )
+        except Exception as e:
+            logger.error(
+                "[confirm] final_writer falló doc_id=%s: %s",
+                doc_id, e, exc_info=True,
+            )
+            per_doc_errors.append({"doc_id": doc_id, "error": str(e), "stage": "final_writer"})
+            continue
 
         # Idempotencia específica del batch confirm. Permite registrar el
         # evento aunque exista un `done, action=approve` previo (de la fase
@@ -1000,24 +1290,18 @@ def confirm_batch(payload: ConfirmBatchPayload):
         # trazabilidad fiscal exige verlos ambos. Solo se omite si ya hubo
         # un `confirmed` (retry del frontend).
         if not state_writer.is_confirmed(folder):
-            # Embebemos los campos finales + líneas en el evento. Así el
-            # `.state.json` es autosuficiente para auditoría: no hace falta
-            # cruzar con `resultado_final.json` para saber qué se guardó.
-            # Mismo criterio de normalización que para resultado_final.json:
-            # NIFs en mayúsculas para que el .state.json sea consistente.
             campos_finales_event = {
                 k: (str(v.valor).strip().upper() if k in _NIF_KEYS and v.valor else v.valor)
                 for k, v in asiento.campos_finales.items()
             }
-            # `lineas_asiento` viene tipada como list[dict] en el modelo
-            # Pydantic (línea 909). Las copiamos tal cual al evento.
             lineas_event = [dict(l) for l in asiento.lineas_asiento]
             try:
                 state_writer.append(
                     folder,
                     {
-                        "status": "done",
+                        "status": "confirmed",
                         "actor": "operario",
+                        # ``action="confirmed"`` se mantiene para parsers legacy.
                         "action": "confirmed",
                         "libro": libro_short,
                         "campos_finales": campos_finales_event,
@@ -1026,10 +1310,13 @@ def confirm_batch(payload: ConfirmBatchPayload):
                 )
             except (FileNotFoundError, ValueError, OSError) as e:
                 logger.error(
-                    "[confirm] no se pudo escribir done en sidecar doc_id=%s: %s",
+                    "[confirm] sidecar.append confirmed falló doc_id=%s: %s — el "
+                    "CSV ya está en disco pero el sidecar queda sin marcar "
+                    "confirmed. Se contabiliza como error parcial.",
                     doc_id, e, exc_info=True,
                 )
-                raise HTTPException(status_code=500, detail=str(e))
+                per_doc_errors.append({"doc_id": doc_id, "error": str(e), "stage": "sidecar_append"})
+                continue
 
         # Maestro de contactos: actualizar con TODAS las entidades del asiento.
         #
@@ -1079,14 +1366,27 @@ def confirm_batch(payload: ConfirmBatchPayload):
                     tipo=tipo,
                 )
 
-        # Emisor (siempre presente — campo crítico RD 1619/2012)
-        _reg("nif_entidad", "nombre_entidad", tipo_emisor)
-        # Receptor — alias frontend lo manda como nif_cliente; backend también
-        # acepta nif_receptor por compatibilidad. Probar ambos.
-        _reg("nif_cliente", "nombre_cliente", tipo_receptor)
-        _reg("nif_receptor", "nombre_receptor", tipo_receptor)
+        try:
+            # Emisor (siempre presente — campo crítico RD 1619/2012)
+            _reg("nif_entidad", "nombre_entidad", tipo_emisor)
+            # Receptor — alias frontend lo manda como nif_cliente; backend también
+            # acepta nif_receptor por compatibilidad. Probar ambos.
+            _reg("nif_cliente", "nombre_cliente", tipo_receptor)
+            _reg("nif_receptor", "nombre_receptor", tipo_receptor)
+        except Exception as e:
+            # Un fallo registrando en maestro NO debe revertir el sidecar.confirmed
+            # (asiento contable ya cerrado); solo dejamos rastro y seguimos.
+            logger.error(
+                "[confirm] error actualizando maestro doc_id=%s: %s",
+                doc_id, e, exc_info=True,
+            )
+            per_doc_errors.append({
+                "doc_id": doc_id, "error": f"maestro_update: {e}", "stage": "maestro_partial",
+            })
+            # Aun así contamos como confirmada (sidecar.confirmed sí pasó).
 
         confirmadas += 1
+        confirmed_doc_ids.append(doc_id)
 
     # Una sola escritura del maestro, bajo lock cross-process.
     guardar_maestro(cfg.maestro_clientes_path, maestro)
@@ -1096,19 +1396,81 @@ def confirm_batch(payload: ConfirmBatchPayload):
     )
     clientes_nuevos = len(nifs_despues - nifs_antes)
 
+    # Limpieza post-confirm: borrar los PDFs del inbox de las facturas que
+    # acabamos de confirmar. El asiento contable ya está en resultado_final.json
+    # + CSV + audit JSONL; el PDF del inbox no aporta nada operativo y solo
+    # ensucia el flujo "CONFIRMAR Y SEGUIR ESCANEANDO".
+    #
+    # Solo borramos PDFs de docs que pasaron sin error (``confirmed_doc_ids``).
+    # Si hubo error parcial, dejamos el PDF en su sitio para que el operario
+    # pueda reintentar.
+    #
+    # Usamos ``file_origin`` del evento ``uploaded`` del sidecar (no
+    # ``get_doc_folder`` + reconstrucción) — el sidecar es la fuente canónica
+    # y resuelve el caso multi-libro: si el doc_id existe en varios libros,
+    # cada uno tiene su propio ``file_origin``.
+    inbox_pdfs_deleted = 0
+    for doc_id in confirmed_doc_ids:
+        folder = get_doc_folder(doc_id)
+        if folder is None:
+            continue
+        try:
+            state_data = state_writer.read(folder)
+        except Exception:
+            continue
+        # Encontrar el primer evento ``uploaded`` con file_origin (es el path
+        # absoluto al PDF del inbox, anotado por /api/upload_files).
+        file_origin = None
+        for ev in state_data.get("events") or []:
+            if ev.get("status") == "uploaded" and ev.get("file_origin"):
+                file_origin = ev["file_origin"]
+                break
+        # Fallback: sidecars legacy sin evento ``uploaded``. Reconstruimos
+        # la ruta usando el libro derivado del folder_name y el doc_id como
+        # basename (operación idempotente — si no existe, no pasa nada).
+        if not file_origin:
+            libro_short_local = _libro_from_folder(folder.name)
+            if libro_short_local:
+                guessed = (
+                    Path(settings().inbox_path(libro_short_local))
+                    / f"{doc_id}.pdf"
+                )
+                if guessed.is_file():
+                    file_origin = str(guessed)
+        if not file_origin:
+            continue
+        try:
+            pdf_path = Path(file_origin)
+            if pdf_path.is_file():
+                pdf_path.unlink()
+                inbox_pdfs_deleted += 1
+                logger.info(
+                    "[confirm] PDF inbox eliminado tras confirm doc_id=%s path=%s",
+                    doc_id, pdf_path,
+                )
+        except OSError as e:
+            logger.warning(
+                "[confirm] No se pudo borrar PDF inbox doc_id=%s: %s",
+                doc_id, e,
+            )
+
     _invoices_cache.clear()
     _stats_cache.clear()
     _clients_cache.clear()
     _delete_pending_confirm()
 
     logger.info(
-        "[confirm] lote confirmado: %d facturas, %d clientes nuevos",
-        confirmadas, clientes_nuevos,
+        "[confirm] lote confirmado: %d facturas, %d clientes nuevos, %d PDFs inbox eliminados, %d errores parciales",
+        confirmadas, clientes_nuevos, inbox_pdfs_deleted, len(per_doc_errors),
     )
     return {
-        "ok": True,
+        # ``ok`` solo si no hubo errores parciales. El frontend puede mostrar
+        # un toast verde si ok=true; amarillo si ok=false con detalle.
+        "ok": len(per_doc_errors) == 0,
         "facturas_confirmadas": confirmadas,
         "clientes_nuevos": clientes_nuevos,
+        "inbox_pdfs_deleted": inbox_pdfs_deleted,
+        "errors": per_doc_errors,
     }
 
 
@@ -1248,6 +1610,8 @@ async def run_pipeline_endpoint():
                     info["libro_long"],
                     status_file=str(status_path),
                     processed_offset=processed_acc,
+                    cancel_requested=is_cancel_requested,
+                    is_multi_book=True,
                 )
                 processed_acc += (
                     book_summary["ok"] + book_summary["warn"] + book_summary["error"]
@@ -1297,15 +1661,17 @@ async def run_pipeline_endpoint():
 # ──────────────────────────────────────────────────────────
 
 @app.post("/api/pipeline/reset")
-def reset_pipeline():
+def reset_pipeline(wipe_inbox: bool = True):
     """
     Reset operativo del pipeline (trazabilidad 2.0):
 
     1. Borra TODAS las carpetas de asiento (`libros/asientos/*`) — incluye
        sus `.state.json` y artefactos JSON.
     2. Limpia el estado transitorio (`libros/.runtime/*`).
-    3. Los PDFs originales NO se tocan: siguen en su inbox permanente
-       (`libros/facturas/{libro}/`), listos para reproceso.
+    3. Si ``wipe_inbox=True`` (default), borra también los PDFs del inbox
+       (`libros/facturas/*/*.pdf`). El flujo "Nuevo escaneo" pasa por aquí
+       para dejar un estado limpio. Si ``wipe_inbox=False``, los PDFs se
+       conservan para reproceso (útil en operaciones de recuperación).
     4. Registra el evento en `libros/logs/audit/reset_{fecha}.jsonl` para
        trazabilidad fiscal.
     """
@@ -1315,6 +1681,31 @@ def reset_pipeline():
     cfg = settings()
     asientos_root = get_asientos_dir()
     runtime_root = get_runtime_dir()
+
+    # 0. Volcar sidecars `.state.json` a un dump audit antes de borrar nada,
+    #    para que la trazabilidad post-reset sea reconstruible si hace falta
+    #    forense (¿qué se borró? ¿en qué estado estaba?).
+    ts_reset = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    audit_dir = Path(cfg.audit_path())
+    dump_dir = audit_dir / "state_dumps" / ts_reset
+    sidecars_dumped = 0
+    try:
+        if asientos_root.exists():
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            for entry in asientos_root.iterdir():
+                if not entry.is_dir():
+                    continue
+                sidecar = entry / state_writer.SIDECAR_NAME
+                if not sidecar.exists():
+                    continue
+                try:
+                    target = dump_dir / f"{entry.name}.json"
+                    shutil.copy2(str(sidecar), str(target))
+                    sidecars_dumped += 1
+                except OSError as e:
+                    logger.warning("[reset] No se pudo volcar sidecar %s: %s", entry.name, e)
+    except Exception as e:
+        logger.error("[reset] Error preparando dump de sidecars: %s", e, exc_info=True)
 
     # 1. Borrar carpetas de asiento (incluye .state.json + artefactos JSON).
     asientos_deleted = 0
@@ -1327,7 +1718,7 @@ def reset_pipeline():
                 except OSError as e:
                     logger.error("[reset] Error borrando %s: %s", entry, e, exc_info=True)
 
-    # 2. Limpiar runtime (lock, cancel, status). Los PDFs no se tocan.
+    # 2. Limpiar runtime (lock, cancel, status).
     if runtime_root.exists():
         for entry in runtime_root.iterdir():
             try:
@@ -1335,15 +1726,40 @@ def reset_pipeline():
             except (OSError, IsADirectoryError):
                 pass
 
+    # 2b. Si wipe_inbox=True, limpiar también los PDFs del inbox.
+    #     Necesario para que el flujo "Nuevo escaneo" deje un estado limpio:
+    #     tras un upload con colisiones renombradas + reset, los PDFs huérfanos
+    #     quedaban en el inbox y polucionaban el GET /api/books.
+    inbox_files_deleted = 0
+    if wipe_inbox:
+        cfg2 = settings()
+        for book_cfg in BOOK_CONFIGS.values():
+            inbox_dir = Path(cfg2.inbox_path(book_cfg["libro_short"]))
+            if not inbox_dir.exists():
+                continue
+            for entry in inbox_dir.iterdir():
+                if not entry.is_file():
+                    continue
+                if entry.suffix.lower() not in ALLOWED_INVOICE_EXTENSIONS:
+                    continue
+                try:
+                    entry.unlink()
+                    inbox_files_deleted += 1
+                except OSError as e:
+                    logger.warning("[reset] No se pudo borrar %s: %s", entry, e)
+
     # 3. Registrar evento en audit log para trazabilidad fiscal.
     try:
-        audit_dir = Path(cfg.audit_path())
         audit_dir.mkdir(parents=True, exist_ok=True)
         reset_record = {
             "schema_v": 1,
             "ts_proceso": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "event": "reset_batch",
             "asientos_deleted": asientos_deleted,
+            "sidecars_dumped": sidecars_dumped,
+            "inbox_files_deleted": inbox_files_deleted,
+            "wipe_inbox": wipe_inbox,
+            "dump_dir": str(dump_dir) if sidecars_dumped else None,
         }
         reset_log = audit_dir / f"reset_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
         with reset_log.open("a", encoding="utf-8") as f:
@@ -1355,11 +1771,18 @@ def reset_pipeline():
     _invoices_cache.clear()
     _stats_cache.clear()
 
-    logger.info("[reset] Completado: %d carpetas de asiento eliminadas", asientos_deleted)
+    logger.info(
+        "[reset] Completado: %d carpetas eliminadas, %d sidecars volcados, %d PDFs inbox borrados (wipe=%s)",
+        asientos_deleted, sidecars_dumped, inbox_files_deleted, wipe_inbox,
+    )
 
     return {
         "status": "ok",
         "asientos_deleted": asientos_deleted,
+        "sidecars_dumped": sidecars_dumped,
+        "inbox_files_deleted": inbox_files_deleted,
+        "wipe_inbox": wipe_inbox,
+        "dump_dir": str(dump_dir) if sidecars_dumped else None,
     }
 
 
@@ -1533,6 +1956,7 @@ def list_invoices_by_client(nif: str):
             "doc_id": final.get("doc_id"),
             "numero_factura": (campos.get("numero_factura") or {}).get("valor"),
             "fecha_expedicion": (campos.get("fecha_expedicion") or {}).get("valor"),
+            "fecha_operacion": (campos.get("fecha_operacion") or {}).get("valor"),
             "total_euros": safe_float((campos.get("total_euros") or {}).get("valor")),
             "decision_global": origen,
             "status": current_status_of(folder),
@@ -1541,9 +1965,16 @@ def list_invoices_by_client(nif: str):
             "lineas_asiento": final.get("lineas_asiento", []) or [],
             "contraparte_nif": cp_nif,
             "contraparte_nombre": cp_nombre,
+            "concepto": (campos.get("concepto") or {}).get("valor"),
+            "cuenta_contable": (campos.get("cuenta_contable") or {}).get("valor"),
+            "nif_entidad": (campos.get("nif_entidad") or {}).get("valor"),
+            "nombre_entidad": (campos.get("nombre_entidad") or {}).get("valor"),
+            "nif_receptor": (campos.get("nif_receptor") or {}).get("valor"),
+            "nombre_receptor": (campos.get("nombre_receptor") or {}).get("valor"),
+            "campos_editados": [k for k, c in campos.items() if isinstance(c, dict) and c.get("editado")],
         })
 
-    invoices.sort(key=lambda i: i["fecha_expedicion"] or "", reverse=True)
+    invoices.sort(key=lambda i: i.get("fecha_operacion") or i.get("fecha_expedicion") or "", reverse=True)
     return {"nif": nif, "invoices": invoices}
 
 

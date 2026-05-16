@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from src.logging_config import setup_logging
 from src.audit_writer import AuditWriter
@@ -53,7 +54,52 @@ DECISION_TO_STATUS = {
 
 # Slug para `numero_factura` al construir el nombre de carpeta renombrado.
 import re as _re
+import hashlib as _hashlib
 _SLUG_RE = _re.compile(r"[^A-Za-z0-9-]+")
+_WHITESPACE_RE = _re.compile(r"\s+")
+
+
+def _normalizar_numero_factura(num: str) -> str:
+    """Normaliza el número de factura para el hash fiscal.
+
+    - Uppercase.
+    - Colapsa whitespace interno.
+    - Elimina ceros a la izquierda en grupos numéricos (``F-0001`` ≡ ``F-1``).
+    """
+    if not num:
+        return ""
+    n = _WHITESPACE_RE.sub("", str(num).strip().upper())
+    return _re.sub(r"(?<![A-Z0-9])0+(?=[1-9])", "", n)
+
+
+def _compute_fiscal_hash(nif_emisor: str, numero_factura: str, fecha_expedicion: str) -> str:
+    """Hash determinista del triplete identificador fiscal de un asiento.
+
+    Permite detectar la misma factura subida como PDFs distintos. 16 hex
+    chars del SHA-256 — suficiente para conjunto operativo de gestoría.
+    """
+    nif_n = (nif_emisor or "").strip().upper()
+    num_n = _normalizar_numero_factura(numero_factura)
+    fecha_n = (fecha_expedicion or "").strip()
+    key = f"{nif_n}|{num_n}|{fecha_n}"
+    return _hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def _was_rejected_by_human(folder: Path) -> bool:
+    """True si el operario rechazó esta factura via POST /api/invoices/.../action.
+
+    El reject mapea a ``status=review`` + ``action=reject``. Para efectos de
+    duplicado fiscal, un asiento rechazado es "cancelado por humano" — no
+    debe bloquear nuevas subidas con la misma identidad fiscal.
+    """
+    try:
+        data = state_writer.read(folder)
+    except Exception:
+        return False
+    for ev in data.get("events") or []:
+        if ev.get("action") == "reject":
+            return True
+    return False
 
 
 def _campo_valor(validacion: dict, nombre: str) -> object:
@@ -249,6 +295,8 @@ def run_pipeline(
     libro: str,
     status_file: str | None = None,
     processed_offset: int = 0,
+    cancel_requested: Callable[[], bool] | None = None,
+    is_multi_book: bool = False,
 ) -> dict:
     """
     Procesa todos los archivos de una carpeta.
@@ -257,6 +305,15 @@ def run_pipeline(
         processed_offset: contador acumulado de docs procesados en libros
             anteriores en la misma ejecución multi-libro. Se suma al contador
             local para que la barra de progreso no regrese entre libros.
+        cancel_requested: callable opcional que devuelve True si el usuario
+            ha solicitado cancelación. Se consulta entre documentos; si
+            devuelve True, el loop se detiene y los documentos pendientes
+            se quedan en su estado actual (típicamente ``uploaded``).
+        is_multi_book: si True, ``run_pipeline`` no escribe los campos
+            ``total``/``processed=0`` ni el ``status=completed`` final del
+            ``status_file`` — la API orquestadora (``api/main.py``) los
+            gestiona globalmente para que la barra de progreso refleje el
+            agregado de todos los libros, no solo el del libro actual.
 
     Returns:
         {"total": N, "ok": N, "warn": N, "error": N}
@@ -285,19 +342,31 @@ def run_pipeline(
             )
         return summary
 
-    # Idempotencia: si una factura ya tiene un asiento confirmado por el
-    # operario (`.state.json` con último status="done"), saltarla. Evita que
-    # un nuevo escaneo reprocese facturas anteriores que la UI ya oculta del
-    # inbox.
+    # Idempotencia: si una factura ya tiene un asiento en estado terminal o
+    # pendiente de confirmar humano, saltarla. Evita que un nuevo escaneo
+    # reprocese facturas anteriores que la UI ya oculta del inbox.
+    #
+    # Estados que se saltan:
+    #   - ``done``       — esperando confirm humano (no reprocesar para no perder revisión)
+    #   - ``confirmed``  — asiento contable cerrado
+    #   - ``blocked``    — bloqueado por regla (ej. duplicado fiscal)
+    #   - ``cancelled``  — cancelado por usuario
+    #   - ``error``      — error técnico (re-OCR explícito requiere acción humana via UI)
     asientos_root_for_skip = cfg.asientos_path()
     pending_files: list[str] = []
     skipped = 0
     for fp in files:
         doc_id = os.path.basename(fp).rsplit(".", 1)[0]
         existing_folder = state_writer.find_folder_by_doc_id(asientos_root_for_skip, doc_id)
-        if existing_folder and state_writer.is_done(existing_folder):
+        if existing_folder and (
+            state_writer.is_done(existing_folder)
+            or state_writer.is_terminal(existing_folder)
+        ):
             skipped += 1
-            logger.info(f"[pipeline] Saltando '{doc_id}' — asiento ya confirmado (done)")
+            logger.info(
+                "[pipeline] Saltando '%s' — asiento ya en estado %s",
+                doc_id, state_writer.current_status(existing_folder),
+            )
             continue
         pending_files.append(fp)
 
@@ -308,26 +377,41 @@ def run_pipeline(
     summary["total"] = len(files)
     if not files:
         logger.warning("[pipeline] No se encontraron archivos para procesar")
-        if status_file:
+        # En multi-book NO marcamos completed (la API global lo hace tras el
+        # último libro). Sí seguimos limpiando current_file para que el spinner
+        # no muestre el archivo del libro anterior.
+        if status_file and not is_multi_book:
             _update_status_file(
                 status_file,
                 status="completed",
                 total=0,
                 completed_at=datetime.now(timezone.utc).isoformat(),
             )
+        elif status_file:
+            _update_status_file(status_file, current_file=None)
         return summary
 
     if status_file:
-        _update_status_file(
-            status_file,
-            status="running",
-            total=len(files),
-            processed=0,
-            current_file=None,
-            started_at=datetime.now(timezone.utc).isoformat(),
-            completed_at=None,
-            error_message=None,
-        )
+        if is_multi_book:
+            # Solo actualizamos status="running" y current_file. No pisamos
+            # total/processed/started_at (los gestiona la API orquestadora).
+            _update_status_file(
+                status_file,
+                status="running",
+                current_file=None,
+                error_message=None,
+            )
+        else:
+            _update_status_file(
+                status_file,
+                status="running",
+                total=len(files),
+                processed=0,
+                current_file=None,
+                started_at=datetime.now(timezone.utc).isoformat(),
+                completed_at=None,
+                error_message=None,
+            )
 
     # Guardia de reinicio: ".pending_confirm.json" señala que hay un lote en
     # curso a la espera de confirmación humana. POST /api/pipeline/confirm
@@ -343,7 +427,19 @@ def run_pipeline(
     asientos_root = cfg.asientos_path()
 
     try:
+        cancelled_count = 0
         for file_path in files:
+            # Cancelación cooperativa: chequeamos antes de cada documento. Los
+            # PDFs que aún no se han tocado se quedan en su estado previo (típ.
+            # ``uploaded``); el doc actual procesa hasta el final.
+            if cancel_requested is not None and cancel_requested():
+                remaining = len(files) - (cancelled_count + summary["ok"] + summary["warn"] + summary["error"])
+                logger.warning(
+                    "[pipeline] Cancelación solicitada — saliendo del loop (%d docs sin procesar)",
+                    remaining,
+                )
+                break
+
             if status_file:
                 _update_status_file(status_file, current_file=os.path.basename(file_path))
 
@@ -366,9 +462,64 @@ def run_pipeline(
                 validacion = _leer_validacion(folder_final)
                 status = DECISION_TO_STATUS.get(decision, "error")
                 event: dict = {"status": status, "decision": decision}
-                motivos = validacion.get("motivos_revision") if validacion else None
+                motivos = list(validacion.get("motivos_revision") or []) if validacion else []
+
+                # ── Detección de duplicado fiscal ──────────────────────────
+                #
+                # Tres campos identifican unívocamente un asiento contable
+                # según AEAT: NIF emisor + número factura + fecha expedición.
+                # Si otro asiento previo ya tiene el mismo triplete (mismo
+                # ``fiscal_hash``) y NO está en estado terminal de "rechazado",
+                # marcamos esta factura como bloqueada por duplicado.
+                fiscal_hash: str | None = None
+                if validacion:
+                    nif_emisor = _campo_valor(validacion, "nif_entidad")
+                    num_fact = _campo_valor(validacion, "numero_factura")
+                    fecha_exp = _campo_valor(validacion, "fecha_expedicion")
+                    if nif_emisor and num_fact and fecha_exp:
+                        fiscal_hash = _compute_fiscal_hash(
+                            str(nif_emisor), str(num_fact), str(fecha_exp)
+                        )
+                        try:
+                            dup_folder = state_writer.find_by_fiscal_hash(
+                                Path(asientos_root), fiscal_hash
+                            )
+                        except Exception:
+                            dup_folder = None
+                        # Solo bloqueamos si el duplicado existe Y no es la propia
+                        # carpeta (auto-match cuando se reprocesa el mismo doc).
+                        if dup_folder is not None and dup_folder.resolve() != folder_final.resolve():
+                            try:
+                                dup_status = state_writer.current_status(dup_folder)
+                            except Exception:
+                                dup_status = None
+                            # Estados que NO consideran activo el duplicado:
+                            # - ``cancelled``/``error``: terminales no contables.
+                            # - cualquier estado con un evento ``action=reject``:
+                            #   el operario ya descartó esa factura, no debe
+                            #   bloquear nuevas subidas con la misma identidad
+                            #   fiscal (típicamente: rechazo + re-subida con
+                            #   corrección de fecha o número factura).
+                            dup_rejected = _was_rejected_by_human(dup_folder)
+                            if dup_status not in {"cancelled", "error"} and not dup_rejected:
+                                logger.warning(
+                                    "[pipeline] Duplicado fiscal: doc_id=%s ya existe como %s (status=%s)",
+                                    doc_id, dup_folder.name, dup_status,
+                                )
+                                status = "blocked"
+                                decision = "block"
+                                motivos.append(
+                                    f"duplicado fiscal: ya existe como '{dup_folder.name}' "
+                                    f"(estado: {dup_status or 'desconocido'})"
+                                )
+                                event["duplicate_of"] = dup_folder.name
+                # Refrescamos status/decision en el evento por si dup forzó cambio.
+                event["status"] = status
+                event["decision"] = decision
                 if motivos:
                     event["motivos"] = motivos
+                if fiscal_hash:
+                    event["fiscal_hash"] = fiscal_hash
                 try:
                     state_writer.append(folder_final, event)
                 except Exception:
@@ -415,7 +566,7 @@ def run_pipeline(
 
         _print_summary(folder_path, summary)
 
-        if status_file:
+        if status_file and not is_multi_book:
             _update_status_file(
                 status_file,
                 status="completed",

@@ -52,6 +52,10 @@ interface InvoiceSummary {
   libro?: LibroShort | null;
   /** Estado actual del documento (último evento del sidecar). */
   status?: DocStatus | null;
+  /** folder_name del asiento original si se detectó duplicado fiscal. */
+  duplicate_of?: string;
+  /** Hash determinista del triplete (NIF emisor, nº factura, fecha). */
+  fiscal_hash?: string;
   decision_global: string;
   timestamp: string;
   nif_entidad: string;
@@ -66,23 +70,32 @@ interface InvoiceReviewerProps {
   onApprove: (id: string, data: { formData: Record<string, string>; fiscalLines: FiscalLine[]; libro?: Libro }) => void;
   onReject: (id: string) => void;
   onExport: () => void;
+  /** Total de facturas en cola en el pipeline (para mostrar dots pendientes al saltar a revisión anticipadamente). */
+  totalQueued?: number;
 }
 
-export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove, onReject, onExport }: InvoiceReviewerProps) {
+export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove, onReject, onExport, totalQueued }: InvoiceReviewerProps) {
   const [invoiceSummaries, setInvoiceSummaries] = useState<InvoiceSummary[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Guard de doble-click: deshabilita botones durante la llamada API
+  // Guard de doble-click: deshabilita botones durante la llamada API.
+  // Combinamos state (para re-render del disabled) con ref (chequeo síncrono
+  // antes de que React propague el setState a los handlers).
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   // Dirty flag: detecta cambios sin guardar
   const dirtyRef = useRef(false);
   // Navegación pendiente (cuando hay cambios sin guardar)
   const [pendingNavIdx, setPendingNavIdx] = useState<number | null>(null);
   // Auto-advance timeout ref para cancelar en navegación manual
   const autoAdvanceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Último id de factura cargado en el formulario. Protege contra resets
+  // espurios del useEffect de carga cuando ``invoiceSummaries`` cambia de
+  // referencia (polling cada 3s) pero el id de la factura actual no varió.
+  const lastLoadedIdRef = useRef<string | null>(null);
 
   const [detailsCache, setDetailsCache] = useState<Map<string, InvoiceDocument>>(new Map());
   const cacheRef = useRef<Map<string, InvoiceDocument>>(new Map());
@@ -112,9 +125,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       if (isRefresh) setRefreshing(true);
       else { setLoading(true); setError(null); }
 
-      // Excluir asientos ya confirmados (status=done): el reviewer es para
-      // facturas pendientes de revisión, no para histórico.
-      const response = await fetchInvoices({ includeDone: false });
+      const response = await fetchInvoices({ includeDone: true });
 
       if (response.invoices.length === 0) {
         setError("No hay facturas procesadas. Ejecuta el pipeline primero.");
@@ -122,11 +133,23 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         return;
       }
 
-      setInvoiceSummaries(response.invoices);
-
-      if (currentIdxRef.current >= response.invoices.length) {
-        setCurrentIdx(0);
-      }
+      // IMPORTANTE: en refresh, preservamos el orden previo. El backend
+      // construye la lista con Path.iterdir() (sin orden estable entre llamadas),
+      // por lo que un poll podía hacer "saltar" la factura que el operario
+      // estaba revisando de posición. Mergeamos por id: actualizamos campos
+      // de las existentes en sitio, y añadimos las nuevas al final.
+      setInvoiceSummaries(prev => {
+        if (!isRefresh || prev.length === 0) return response.invoices;
+        const byId = new Map(response.invoices.map(i => [i.id, i]));
+        const stillPresent = prev
+          .filter(i => byId.has(i.id))
+          .map(i => byId.get(i.id) ?? i);
+        const prevIds = new Set(prev.map(i => i.id));
+        const newOnes = response.invoices.filter(i => !prevIds.has(i.id));
+        return [...stillPresent, ...newOnes];
+      });
+      // El clamp de currentIdx vive ahora en un useEffect separado (más abajo)
+      // que reacciona a invoiceSummaries.length post-merge.
     } catch (err) {
       console.error("Error loading invoices:", err);
       if (!isRefresh) {
@@ -141,9 +164,56 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   useEffect(() => { loadInvoices(); }, [loadInvoices]);
 
+  // Clamp de currentIdx: si tras un merge la lista se redujo (delete externo,
+  // reset mid-polling), evitamos quedar fuera de rango. Apuntamos a la última
+  // factura disponible — preferimos no saltar a 0 para no desorientar al
+  // usuario si solo cayeron las del final.
+  useEffect(() => {
+    if (invoiceSummaries.length === 0) return;
+    if (currentIdx >= invoiceSummaries.length) {
+      setCurrentIdx(invoiceSummaries.length - 1);
+    }
+  }, [invoiceSummaries.length, currentIdx]);
+
+  // Polling para facturas pendientes de escaneo (al saltar a revisión anticipadamente).
+  //
+  // Condiciones de salida:
+  // 1. Hemos cargado al menos totalQueued facturas (pipeline completó).
+  // 2. Máximo 30 intentos (~90s) — evita polling infinito si el pipeline
+  //    falla o se cancela y nunca alcanza el target.
+  // 3. Cleanup al unmount.
+  useEffect(() => {
+    if (!totalQueued || totalQueued === 0) return;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30;
+    const interval = setInterval(() => {
+      if (invoiceSummariesRef.current.length >= totalQueued) {
+        clearInterval(interval);
+        return;
+      }
+      attempts += 1;
+      if (attempts >= MAX_ATTEMPTS) {
+        clearInterval(interval);
+        toast.warning("El pipeline no completó el conteo esperado — algunas facturas pueden faltar");
+        return;
+      }
+      loadInvoices(true);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [totalQueued, loadInvoices]);
+
   useEffect(() => {
     const summary = invoiceSummaries[currentIdx];
     if (!summary) return;
+
+    // Salvaguardia anti-clobber: si la factura es la MISMA que ya teníamos
+    // cargada y hay edición en curso (``dirtyRef``), no resetear nada — el
+    // efecto se ha disparado por un cambio espurio de referencia del array
+    // (típicamente el polling de facturas pendientes) que no requiere recarga.
+    if (summary.id === lastLoadedIdRef.current && dirtyRef.current) {
+      return;
+    }
+    lastLoadedIdRef.current = summary.id;
 
     // Limpiar datos stale inmediatamente al cambiar de factura
     setFormData({});
@@ -207,7 +277,16 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
     loadDetail();
     return () => { cancelled = true; controller.abort(); };
-  }, [currentIdx, invoiceSummaries]);
+    // Deps:
+    // - currentIdx: fires al navegar.
+    // - invoiceSummaries[currentIdx]?.id: fires si el summary actual cambia
+    //   de id (raro — solo si backend reordena).
+    // NO ponemos ``invoiceSummaries`` entero porque el polling cada 3s lo
+    // reemplaza con la misma lista y clobberaría el formData mientras el
+    // usuario teclea. Bug reportado por operario en fase 3 con pipeline
+    // todavía procesando.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentIdx, invoiceSummaries[currentIdx]?.id]);
 
   const currentSummary = invoiceSummaries[currentIdx];
   const displayFileUrl = currentSummary ? `${API_URL}/api/invoices/${currentSummary.id}/file` : "";
@@ -265,10 +344,18 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   // Ejecutar la acción (aprobar/rechazar) con guard de doble-click
   const executeConfirmedAction = async (action: "approve" | "reject") => {
+    // Guard síncrono: si dos clicks llegan en el mismo tick antes de que
+    // React propague setSubmitting(true), el segundo ve submittingRef=true.
+    if (submittingRef.current) return;
     const currentInvoice = detailsCache.get(invoiceSummariesRef.current[currentIdxRef.current]?.id);
-    if (!currentInvoice || submitting) return;
+    if (!currentInvoice) return;
 
+    submittingRef.current = true;
     setSubmitting(true);
+    // Capturamos el índice ANTES de la llamada async. El auto-advance solo
+    // dispara si seguimos viendo la misma factura al volver — si el usuario
+    // navegó manualmente, dejamos su navegación intacta.
+    const idxAtSubmit = currentIdxRef.current;
     try {
       await sendInvoiceAction(currentInvoice.id, action, {
         fields: formData,
@@ -290,12 +377,18 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         toast.error("Factura rechazada — movida a INCIDENCIAS");
       }
 
-      // Auto-advance con ref cancelable
-      if (currentIdxRef.current < invoiceSummariesRef.current.length - 1) {
+      // Auto-advance solo si el usuario NO ha navegado durante el await.
+      if (
+        currentIdxRef.current === idxAtSubmit &&
+        currentIdxRef.current < invoiceSummariesRef.current.length - 1
+      ) {
         autoAdvanceRef.current = setTimeout(() => {
           const summaries = invoiceSummariesRef.current;
           const idx = currentIdxRef.current;
-          if (idx < summaries.length - 1) setCurrentIdx(idx + 1);
+          // Re-chequear: si el usuario navegó dentro de los 500ms, no avanzamos.
+          if (idx === idxAtSubmit && idx < summaries.length - 1) {
+            setCurrentIdx(idx + 1);
+          }
           autoAdvanceRef.current = null;
         }, 500);
       }
@@ -303,6 +396,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       console.error(`Error en acción ${action}:`, err);
       toast.error(`Error al ${action === "approve" ? "aprobar" : "rechazar"} la factura`);
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -339,7 +433,9 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   const invoice = detailsCache.get(invoiceSummaries[currentIdx]?.id);
   const isApproved = invoice ? approvedInvoices.has(invoice.id) : false;
   const isRejected = invoice ? rejectedInvoices.has(invoice.id) : false;
-  const totalInvoices = invoiceSummaries.length;
+  const totalVisible = totalQueued && totalQueued > invoiceSummaries.length ? totalQueued : invoiceSummaries.length;
+  const totalInvoices = totalVisible;
+  const loadedCount = invoiceSummaries.length;
   const approvedCount = invoiceSummaries.filter(inv => approvedInvoices.has(inv.id)).length;
 
   return (
@@ -411,7 +507,19 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
             </Button>
 
             <div className="flex items-center gap-1.5 px-3">
-               {invoiceSummaries.map((inv, idx) => {
+               {Array.from({ length: totalVisible }).map((_, idx) => {
+                  const inv = invoiceSummaries[idx];
+                  if (!inv) {
+                    return (
+                      <span
+                        key={`pending-${idx}`}
+                        className="w-5 h-5 text-[9px] font-black rounded-full flex items-center justify-center text-slate-200 bg-slate-50 border border-slate-100"
+                        title="Factura aún no procesada"
+                      >
+                        {idx + 1}
+                      </span>
+                    );
+                  }
                   const done = approvedInvoices.has(inv.id);
                   const rejected = rejectedInvoices.has(inv.id);
                   const active = currentIdx === idx;
@@ -479,14 +587,26 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
              <span className={cn(
                "text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider",
                invoice.doc_status === "done" && "bg-emerald-50 text-emerald-700 border border-emerald-200",
+               invoice.doc_status === "confirmed" && "bg-emerald-100 text-emerald-800 border border-emerald-300",
                invoice.doc_status === "review" && "bg-amber-50 text-amber-700 border border-amber-200",
                invoice.doc_status === "blocked" && "bg-red-50 text-red-700 border border-red-200",
+               invoice.doc_status === "cancelled" && "bg-orange-50 text-orange-700 border border-orange-200",
                invoice.doc_status === "error" && "bg-red-50 text-red-700 border border-red-200",
                invoice.doc_status === "processing" && "bg-slate-50 text-slate-600 border border-slate-200",
+               invoice.doc_status === "uploaded" && "bg-blue-50 text-blue-700 border border-blue-200",
+               invoice.doc_status === "retrying" && "bg-purple-50 text-purple-700 border border-purple-200",
              )}
              title="Estado del documento (sidecar .state.json)"
              >
                {invoice.doc_status}
+             </span>
+           )}
+           {invoiceSummaries[currentIdx]?.duplicate_of && (
+             <span
+               className="text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider bg-yellow-50 text-yellow-800 border border-yellow-300"
+               title={`Posible duplicado fiscal de '${invoiceSummaries[currentIdx]!.duplicate_of}' (mismo NIF emisor + nº factura + fecha)`}
+             >
+               ⚠ Duplicado
              </span>
            )}
            {invoice && (
@@ -719,24 +839,43 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         <Button
           variant="outline" size="lg"
           onClick={() => executeConfirmedAction("reject")}
+          // Permitir re-aprobar/re-rechazar tras editar campos. El estilo
+          // sigue indicando el estado actual (verde=aprobada, rojo=rechazada);
+          // si el operario hace cambios y quiere reenviar, los botones le
+          // dejan. Único guard real: ``submitting`` evita doble disparo durante
+          // la llamada API en curso.
           disabled={!invoice || loadingDetail || submitting}
           className={cn(
             "w-52 h-11 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none transition-all shadow-sm",
             isRejected
               ? "border-red-400 bg-red-50 text-red-600 hover:bg-red-100"
+              : isApproved
+              // Aprobada → click en Rechazar es válido (cambio de opinión).
+              // Estilo más sutil para indicar que no es la acción primaria,
+              // pero sigue accionable.
+              ? "border-slate-200 bg-white text-slate-400 hover:bg-slate-50 hover:text-slate-700"
               : "border border-slate-200 hover:bg-slate-50 hover:text-slate-900"
           )}
         >
-          Rechazar
+          {isRejected ? "Rechazada" : "Rechazar"}
         </Button>
         <Button
           size="lg"
           onClick={() => executeConfirmedAction("approve")}
+          // Permitir re-aprobar/re-rechazar tras editar campos. El estilo
+          // sigue indicando el estado actual (verde=aprobada, rojo=rechazada);
+          // si el operario hace cambios y quiere reenviar, los botones le
+          // dejan. Único guard real: ``submitting`` evita doble disparo durante
+          // la llamada API en curso.
           disabled={!invoice || loadingDetail || submitting}
           className={cn(
             "w-52 h-11 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
             isApproved
               ? "bg-green-700 border-green-700 hover:bg-green-800 text-white"
+              : isRejected
+              // Rechazada → click en Aprobar es válido (cambio de opinión tras
+              // edición). Estilo neutro accionable.
+              ? "bg-slate-700 border-slate-700 hover:bg-slate-900 text-white"
               : "bg-slate-900 border border-slate-900 hover:bg-black text-white"
           )}
         >

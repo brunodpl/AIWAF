@@ -24,7 +24,7 @@ interface PipelineProgressProps {
   onComplete: () => void;
   onBack: () => void;
   /** Saltar a la pantalla de revisión sin esperar a que termine el pipeline */
-  onJumpToReview?: () => void;
+  onJumpToReview?: (totalQueued: number) => void;
 }
 
 export function PipelineProgress({ onComplete, onBack, onJumpToReview }: PipelineProgressProps) {
@@ -34,6 +34,7 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
 
   const [retryCount, setRetryCount] = useState(0);
   const statusRef = useRef<PipelineStatus | null>(null);
+  const totalQueuedRef = useRef<number>(0);
   const hasSeenRunning = useRef(false);
   const errorCountRef = useRef(0);
 
@@ -62,6 +63,7 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
         setStatus(result);
         setError(null);
         errorCountRef.current = 0; // Reset backoff on success
+        if (result.total > 0) totalQueuedRef.current = result.total;
 
         if (result.status === "completed") {
           completionTimer = setTimeout(() => {
@@ -231,7 +233,7 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
         {isRunning && onJumpToReview && status && status.processed >= 1 && (
           <div className="mt-6">
             <Button
-              onClick={onJumpToReview}
+              onClick={() => onJumpToReview(totalQueuedRef.current)}
               variant="default"
               className="text-xs rounded-none uppercase tracking-[0.15em] bg-teal-600 hover:bg-teal-700"
             >

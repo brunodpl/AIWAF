@@ -28,7 +28,12 @@ import {
 } from "@/lib/csv";
 import { resolveClienteGestoria, resolveContraparteFactura } from "@/lib/cliente-gestoria";
 import { buildCsvBase64, confirmBatch } from "@/lib/api-clients";
-import type { AsientoConfirm, ConfirmBatchPayload, LineaAsiento } from "@/lib/types";
+import type {
+  AsientoConfirm,
+  ConfirmBatchPayload,
+  ConfirmBatchResponse,
+  LineaAsiento,
+} from "@/lib/types";
 import JSZip from "jszip";
 
 type ExportKind = "emitidas" | "recibidas";
@@ -162,7 +167,7 @@ function downloadCsvFile(file: IntermegaCsvFile) {
  */
 async function persistBatchToBackend(
   approvedInvoices: Map<string, ApprovedInvoiceData>,
-): Promise<{ ok: true; facturas_confirmadas: number; clientes_nuevos: number } | null> {
+): Promise<ConfirmBatchResponse | null> {
   if (approvedInvoices.size === 0) return null;
 
   const doc_ids: string[] = [];
@@ -253,12 +258,30 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
         toast.error("No hay facturas para confirmar");
         return;
       }
-      toast.success(
+      const baseMsg =
         `${res.facturas_confirmadas} factura${res.facturas_confirmadas === 1 ? "" : "s"} confirmada${res.facturas_confirmadas === 1 ? "" : "s"}` +
-          (res.clientes_nuevos > 0
-            ? ` · ${res.clientes_nuevos} cliente${res.clientes_nuevos === 1 ? "" : "s"} nuevo${res.clientes_nuevos === 1 ? "" : "s"}`
-            : ""),
-      );
+        (res.clientes_nuevos > 0
+          ? ` · ${res.clientes_nuevos} cliente${res.clientes_nuevos === 1 ? "" : "s"} nuevo${res.clientes_nuevos === 1 ? "" : "s"}`
+          : "") +
+        (res.inbox_pdfs_deleted && res.inbox_pdfs_deleted > 0
+          ? ` · ${res.inbox_pdfs_deleted} PDF${res.inbox_pdfs_deleted === 1 ? "" : "s"} archivad${res.inbox_pdfs_deleted === 1 ? "o" : "os"}`
+          : "");
+
+      if (res.ok) {
+        toast.success(baseMsg);
+      } else {
+        // Errores parciales: mostrar warning con detalle por doc.
+        const errCount = res.errors?.length ?? 0;
+        toast.warning(
+          `${baseMsg} · ${errCount} con error parcial — revisa la consola para detalle`,
+        );
+        if (res.errors) {
+          console.warn("[confirm] errores parciales:", res.errors);
+          res.errors.forEach((e) =>
+            toast.error(`${e.doc_id}: ${e.error} (fase: ${e.stage})`, { duration: 8000 }),
+          );
+        }
+      }
       onConfirmed?.({
         facturas_confirmadas: res.facturas_confirmadas,
         clientes_nuevos: res.clientes_nuevos,

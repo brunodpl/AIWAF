@@ -50,9 +50,54 @@ def _lock_for(folder: Path) -> threading.Lock:
         return lock
 
 # Valores válidos de ``status`` en cada evento.
+#
+# Ciclo de vida de un documento:
+#
+#   uploaded ─► processing ─► (done|review|blocked|error)
+#                  │             │       │
+#                  │ retrying    │       │
+#                  ▼             ▼       │
+#               (...)        confirmed   │
+#                                        │
+#   cancelled ◄── pipeline.cancel mid-doc en cualquier punto de processing
+#   renamed   ── tras cierre exitoso, evento intermedio
+#   reset     ── evento dejado en sidecar copia antes de borrar (forense)
+#
+# Único terminal contable = ``confirmed``. ``done`` es "esperando confirm humano".
 VALID_STATUSES = frozenset(
-    {"processing", "review", "done", "blocked", "error", "renamed", "reset"}
+    {
+        "uploaded",
+        "processing",
+        "retrying",
+        "review",
+        "done",
+        "confirmed",
+        "blocked",
+        "cancelled",
+        "error",
+        "renamed",
+        "reset",
+    }
 )
+
+# Transiciones aceptadas. Si una transición no está en la tabla, ``append()``
+# emite un WARNING al log técnico pero no lanza — preferimos resiliencia a
+# romper el sidecar de un documento. Si en producción aparecen muchos warnings
+# de una transición concreta, revisar la tabla.
+VALID_TRANSITIONS: dict[Optional[str], frozenset[str]] = {
+    None:         frozenset({"uploaded", "processing"}),
+    "uploaded":   frozenset({"processing", "cancelled", "error"}),
+    "processing": frozenset({"done", "review", "blocked", "error", "cancelled", "retrying", "renamed"}),
+    "retrying":   frozenset({"processing", "done", "review", "blocked", "error", "cancelled"}),
+    "review":     frozenset({"done", "review", "blocked", "renamed", "cancelled"}),
+    "done":       frozenset({"confirmed", "review", "renamed"}),
+    "confirmed":  frozenset({"renamed"}),
+    "blocked":    frozenset({"retrying", "renamed"}),
+    "cancelled":  frozenset({"retrying"}),
+    "error":      frozenset({"retrying", "processing"}),
+    "renamed":    frozenset({"done", "review", "blocked", "confirmed", "error", "cancelled", "retrying"}),
+    "reset":      frozenset(),
+}
 
 
 def _now_iso() -> str:
@@ -87,6 +132,11 @@ def init(folder: Path, doc_id: str, file_origin: str) -> None:
     Idempotente: si el sidecar ya existe, se respeta y no se sobreescribe
     (escenario de reproceso). En ese caso simplemente añade un evento
     nuevo de ``processing`` para señalar el reinicio.
+
+    Compat: este punto de entrada se mantiene para callers legacy (CLI
+    standalone, tests). El flujo nuevo via UI/API debe usar
+    ``init_uploaded`` en el endpoint de upload y luego registrar
+    ``processing`` con ``append`` cuando el pipeline lo recoja.
     """
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -115,6 +165,50 @@ def init(folder: Path, doc_id: str, file_origin: str) -> None:
         logger.info("[state] init doc_id=%s folder=%s", doc_id, folder.name)
 
 
+def init_uploaded(
+    folder: Path,
+    doc_id: str,
+    file_origin: str,
+    sha256_file: str,
+    size_bytes: int,
+) -> None:
+    """Crea el sidecar con primer evento ``uploaded`` (flujo via UI/API).
+
+    Llama al `state_writer` desde `POST /api/upload_files` tras confirmar
+    fsync + visibilidad del fichero. NO es idempotente: si el sidecar ya
+    existe, lanza ``FileExistsError`` — el caller debe haber comprobado
+    duplicados antes (via `find_by_file_sha256`).
+    """
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    with _lock_for(folder):
+        sidecar = _sidecar_path(folder)
+        if sidecar.exists():
+            raise FileExistsError(
+                f"Sidecar ya existe en {folder}; el upload no debe sobreescribir."
+            )
+
+        payload = {
+            "schema_v": SCHEMA_V,
+            "doc_id": doc_id,
+            "events": [
+                {
+                    "ts": _now_iso(),
+                    "status": "uploaded",
+                    "file_origin": file_origin,
+                    "folder": folder.name,
+                    "sha256_file": sha256_file,
+                    "size_bytes": size_bytes,
+                }
+            ],
+        }
+        _atomic_write(sidecar, payload)
+        logger.info(
+            "[state] init_uploaded doc_id=%s folder=%s size=%d",
+            doc_id, folder.name, size_bytes,
+        )
+
+
 def append(folder: Path, event: dict[str, Any]) -> None:
     """Añade un evento al final de la lista. Nunca sobreescribe entradas previas.
 
@@ -137,6 +231,19 @@ def _append_locked(folder: Path, event: dict[str, Any]) -> None:
         raise ValueError(f"status inválido: {status!r} (válidos: {sorted(VALID_STATUSES)})")
 
     data = read(folder)
+    events = data.get("events") or []
+    prev_status: Optional[str] = events[-1].get("status") if events else None
+
+    # Validación de transición: WARN, no lanza. Preferimos resiliencia a
+    # romper el sidecar de un documento si la realidad operativa diverge
+    # ligeramente de la tabla.
+    allowed = VALID_TRANSITIONS.get(prev_status)
+    if allowed is not None and status not in allowed:
+        logger.warning(
+            "[state] transición inusual doc_id=%s %s -> %s (permitidos: %s)",
+            data.get("doc_id"), prev_status, status, sorted(allowed),
+        )
+
     full_event = {"ts": _now_iso(), **event}
     data["events"].append(full_event)
     _atomic_write(sidecar, data)
@@ -162,24 +269,44 @@ def current_status(folder: Path) -> Optional[str]:
 
 
 def is_done(folder: Path) -> bool:
-    """True si el último evento del sidecar es ``status=done``."""
+    """True si el último evento del sidecar es ``status=done``.
+
+    Nota: ``done`` significa "lista para confirmar", NO terminal contable.
+    Para terminal contable usa ``is_confirmed`` o ``is_terminal``.
+    """
     return current_status(folder) == "done"
 
 
-def is_confirmed(folder: Path) -> bool:
-    """True si la carpeta ya tiene un evento ``status=done, action=confirmed``.
+def is_pending_confirm(folder: Path) -> bool:
+    """True si el último status del sidecar es ``done`` (listo para /confirm)."""
+    return current_status(folder) == "done"
 
-    Sirve para idempotencia específica del batch confirm
-    (``POST /api/pipeline/confirm``): una vez el operario pulsa
-    "CONFIRMAR Y SEGUIR ESCANEANDO" no debe duplicarse el evento si
-    reintenta. NO impide registrar ``confirmed`` cuando ya existe un
-    ``done, action=approve`` previo de la fase de revisión por factura —
-    ese evento es semánticamente distinto y la trazabilidad fiscal
-    necesita verlos ambos.
+
+def is_terminal(folder: Path) -> bool:
+    """True si la factura ya no se puede mover de estado por sí sola.
+
+    Estados terminales: ``confirmed``, ``blocked``, ``cancelled``, ``error``.
+    NOTA: ``done`` NO es terminal — está esperando confirm humano.
+    """
+    return current_status(folder) in {"confirmed", "blocked", "cancelled", "error"}
+
+
+def is_confirmed(folder: Path) -> bool:
+    """True si la factura está confirmada (asiento contable cerrado).
+
+    Acepta dos formatos:
+
+    - **Nuevo** (recomendado): último status del sidecar == ``confirmed``.
+    - **Legacy**: existe un evento con ``status="done", action="confirmed"``
+      (sidecars escritos antes del refactor de lifecycle). Se conserva
+      esta lectura para idempotencia del batch confirm sobre instalaciones
+      ya en producción.
     """
     folder = Path(folder)
     if not _sidecar_path(folder).exists():
         return False
+    if current_status(folder) == "confirmed":
+        return True
     data = read(folder)
     for ev in data.get("events") or []:
         if ev.get("status") == "done" and ev.get("action") == "confirmed":
@@ -253,6 +380,60 @@ def find_folder_by_doc_id(asientos_root: Path, doc_id: str) -> Optional[Path]:
                 data = json.load(f)
             if data.get("doc_id") == doc_id:
                 return child
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def find_by_file_sha256(asientos_root: Path, sha256_hex: str) -> Optional[Path]:
+    """Busca la carpeta cuyo evento ``uploaded`` tenga ``sha256_file==sha256_hex``.
+
+    Útil para detectar duplicados físicos en el endpoint de upload antes
+    de escribir nada en disco. Devuelve None si no hay match.
+    """
+    asientos_root = Path(asientos_root)
+    if not asientos_root.exists():
+        return None
+    for child in asientos_root.iterdir():
+        if not child.is_dir():
+            continue
+        sidecar = _sidecar_path(child)
+        if not sidecar.exists():
+            continue
+        try:
+            with sidecar.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            for ev in data.get("events") or []:
+                if ev.get("sha256_file") == sha256_hex:
+                    return child
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def find_by_fiscal_hash(asientos_root: Path, fiscal_hash: str) -> Optional[Path]:
+    """Busca la carpeta cuyo sidecar tenga un evento con ``fiscal_hash==fiscal_hash``.
+
+    El ``fiscal_hash`` se computa tras Fase 3 (identidad cabecera) como
+    sha256_16(nif_emisor + numero_factura + fecha_expedicion) y se anota
+    en el evento de cierre del pipeline. Permite detectar duplicados
+    fiscales aunque el PDF sea distinto.
+    """
+    asientos_root = Path(asientos_root)
+    if not asientos_root.exists():
+        return None
+    for child in asientos_root.iterdir():
+        if not child.is_dir():
+            continue
+        sidecar = _sidecar_path(child)
+        if not sidecar.exists():
+            continue
+        try:
+            with sidecar.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            for ev in data.get("events") or []:
+                if ev.get("fiscal_hash") == fiscal_hash:
+                    return child
         except (OSError, json.JSONDecodeError):
             continue
     return None
