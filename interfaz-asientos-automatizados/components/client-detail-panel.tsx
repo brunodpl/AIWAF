@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { X, ChevronRight, ChevronDown, ArrowLeft } from "lucide-react";
+import { useEffect, useMemo, useState, useCallback } from "react";
+import { X, ChevronRight, ChevronDown, ArrowLeft, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { ClientCard, ClientInvoice, LibroShort } from "@/lib/types";
@@ -17,7 +17,6 @@ function badgeForInvoice(inv: ClientInvoice): {
   label: string;
   className: string;
 } {
-  // AUTO verde, REVISADO amarillo, PENDIENTE gris.
   if (inv.decision_global === "auto" && !inv.tiene_ediciones) {
     return { label: "Auto", className: "bg-emerald-100 text-emerald-700" };
   }
@@ -53,10 +52,47 @@ function formatEuros(v: number): string {
   return `${v.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 }
 
+function escapeCsv(v: string | number | null | undefined): string {
+  if (v == null) return "";
+  const s = String(v);
+  if (s.includes(";") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function MetadataField({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string | number | null | undefined;
+  edited?: boolean;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+        {label}
+      </span>
+      <span
+        className={cn(
+          "text-sm text-slate-700",
+          mono && "font-mono",
+          !value && "text-slate-300 italic",
+        )}
+      >
+        {value ?? "—"}
+      </span>
+    </div>
+  );
+}
+
 export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPanelProps) {
   const [invoices, setInvoices] = useState<ClientInvoice[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -76,16 +112,50 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
     };
   }, [nif]);
 
-  // Agrupar por fecha_expedicion (YYYY-MM-DD).
+  const toggleExpand = useCallback((docId: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(docId)) next.delete(docId);
+      else next.add(docId);
+      return next;
+    });
+  }, []);
+
   const grouped = useMemo(() => {
     const map = new Map<string, ClientInvoice[]>();
     for (const inv of invoices) {
-      const k = inv.fecha_expedicion || "sin-fecha";
+      const k = inv.fecha_operacion ?? inv.fecha_expedicion ?? "sin-fecha";
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(inv);
     }
     return Array.from(map.entries()).sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0));
   }, [invoices]);
+
+  const downloadCsv = useCallback(() => {
+    const headers = [
+      "doc_id", "numero_factura", "libro", "fecha_operacion", "fecha_expedicion",
+      "total_euros", "concepto", "cuenta_contable", "decision_global",
+      "contraparte_nif", "contraparte_nombre",
+    ];
+    const rows = invoices.map((inv) =>
+      [
+        inv.doc_id, inv.numero_factura, inv.libro, inv.fecha_operacion,
+        inv.fecha_expedicion, inv.total_euros, inv.concepto, inv.cuenta_contable,
+        inv.decision_global, inv.contraparte_nif, inv.contraparte_nombre,
+      ].map(escapeCsv).join(";"),
+    );
+    const csv = "﻿" + headers.join(";") + "\n" + rows.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `historial_${nif}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [invoices, nif]);
+
+  const isEdited = (inv: ClientInvoice, field: string) =>
+    inv.campos_editados?.includes(field) ?? false;
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -94,14 +164,14 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
         onClick={onClose}
         aria-label="Cerrar panel"
       />
-      <aside className="w-full sm:w-[640px] bg-white shadow-xl overflow-y-auto flex flex-col">
+      <aside className="w-full sm:w-[780px] bg-white shadow-xl overflow-y-auto flex flex-col">
         <header className="flex-shrink-0 sticky top-0 bg-white border-b border-slate-100 px-6 py-4 z-10">
           <div className="flex items-center justify-between mb-3">
             <button
               onClick={onClose}
-              className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.15em] text-slate-500 hover:text-slate-900"
+              className="inline-flex items-center gap-1 text-[11px] uppercase tracking-[0.15em] text-slate-500 hover:text-slate-900"
             >
-              <ArrowLeft className="h-3 w-3" /> Volver a clientes
+              <ArrowLeft className="h-3.5 w-3.5" /> Volver a clientes
             </button>
             <button
               onClick={onClose}
@@ -117,47 +187,37 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
               {initialsFromName(clientCard?.nombre ?? nif)}
             </div>
             <div className="flex-1">
-              <p className="text-[9px] uppercase tracking-[0.15em] text-slate-400">
+              <p className="text-[10px] uppercase tracking-[0.15em] text-slate-400">
                 {tipoFromNif(nif)}
               </p>
-              <h2 className="font-semibold text-slate-900 leading-tight">
+              <h2 className="font-semibold text-lg text-slate-900 leading-tight">
                 {clientCard?.nombre ?? nif}
               </h2>
-              <p className="text-[10px] uppercase tracking-[0.1em] text-slate-500 mt-1">
+              <p className="text-[11px] uppercase tracking-[0.1em] text-slate-500 mt-1">
                 NIF · {nif} · Facturas con asiento {invoices.length} ·{" "}
                 Última {clientCard?.ultima_factura_fecha ?? "—"}
               </p>
             </div>
-            <div className="flex flex-col gap-1">
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-[10px] uppercase tracking-[0.15em] h-7 px-2 rounded-none"
-                disabled
-                title="Disponible próximamente"
-              >
-                Exportar listado
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-[10px] uppercase tracking-[0.15em] h-7 px-2 rounded-none"
-                disabled
-                title="Disponible próximamente"
-              >
-                Ver libro
-              </Button>
-            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[11px] uppercase tracking-[0.15em] h-8 px-3 rounded-none gap-1.5"
+              onClick={downloadCsv}
+              disabled={invoices.length === 0}
+            >
+              <Download className="h-3.5 w-3.5" />
+              Exportar listado
+            </Button>
           </div>
         </header>
 
         <div className="flex-1 px-6 py-4 space-y-6">
           {loading && (
-            <p className="text-xs text-slate-400 text-center mt-12">Cargando...</p>
+            <p className="text-sm text-slate-400 text-center mt-12">Cargando...</p>
           )}
 
           {!loading && invoices.length === 0 && (
-            <p className="text-xs text-slate-400 text-center mt-12">
+            <p className="text-sm text-slate-400 text-center mt-12">
               Sin facturas confirmadas para este cliente.
             </p>
           )}
@@ -165,8 +225,8 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
           {grouped.map(([fecha, items]) => (
             <section key={fecha}>
               <div className="flex items-center justify-between border-b border-slate-200 pb-1 mb-2">
-                <p className="text-[11px] font-medium text-slate-700">{fecha}</p>
-                <p className="text-[9px] uppercase tracking-[0.15em] text-slate-400">
+                <p className="text-xs font-medium text-slate-700">{fecha}</p>
+                <p className="text-[10px] uppercase tracking-[0.15em] text-slate-400">
                   {items.length} {items.length === 1 ? "factura" : "facturas"}
                 </p>
               </div>
@@ -175,33 +235,31 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
                 {items.map((inv) => {
                   const badge = badgeForInvoice(inv);
                   const importeNeg = inv.total_euros < 0;
-                  const isExpanded = selectedDocId === inv.doc_id;
+                  const isExpanded = expandedIds.has(inv.doc_id);
                   const lineas = inv.lineas_asiento ?? [];
                   return (
                     <li key={inv.doc_id} className="border border-slate-100 hover:border-slate-300">
                       <button
                         type="button"
-                        onClick={() =>
-                          setSelectedDocId(isExpanded ? null : inv.doc_id)
-                        }
-                        className="w-full grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-3 px-3 py-2 text-left"
+                        onClick={() => toggleExpand(inv.doc_id)}
+                        className="w-full grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-3 px-3 py-2.5 text-left"
                       >
-                        <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 bg-slate-100 text-slate-600">
+                        <span className="text-[10px] uppercase tracking-[0.1em] px-1.5 py-0.5 bg-slate-100 text-slate-600">
                           {libroLabel(inv.libro)}
                         </span>
                         <div className="flex flex-col min-w-[80px]">
-                          <span className="text-xs font-mono text-slate-700 truncate">
+                          <span className="text-sm font-mono text-slate-700 truncate">
                             {inv.numero_factura ?? inv.doc_id}
                           </span>
                           {inv.contraparte_nombre && (
-                            <span className="text-[9px] uppercase tracking-[0.1em] text-slate-400 truncate">
+                            <span className="text-[10px] uppercase tracking-[0.1em] text-slate-400 truncate">
                               {inv.libro === "ventas" ? "Cliente" : "Proveedor"} · {inv.contraparte_nombre}
                             </span>
                           )}
                         </div>
                         <span
                           className={cn(
-                            "text-[9px] uppercase tracking-[0.15em] px-1.5 py-0.5",
+                            "text-[10px] uppercase tracking-[0.15em] px-1.5 py-0.5",
                             badge.className,
                           )}
                         >
@@ -209,33 +267,102 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
                         </span>
                         <span
                           className={cn(
-                            "text-xs text-right",
+                            "text-sm text-right",
                             importeNeg ? "text-rose-600" : "text-slate-700",
                           )}
                         >
                           {formatEuros(inv.total_euros)}
                         </span>
                         {isExpanded ? (
-                          <ChevronDown className="h-3 w-3 text-slate-400" />
+                          <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
                         ) : (
-                          <ChevronRight className="h-3 w-3 text-slate-400" />
+                          <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
                         )}
                       </button>
 
                       {isExpanded && (
-                        <div className="px-3 pb-3 border-t border-slate-100">
+                        <div className="px-4 pb-4 border-t border-slate-100">
+                          {/* Sección A — Metadatos */}
+                          <div className="grid grid-cols-3 gap-x-6 gap-y-3 mt-3 mb-4 p-3 bg-slate-50 rounded">
+                            <MetadataField
+                              label="Factura"
+                              value={inv.numero_factura}
+                              edited={isEdited(inv, "numero_factura")}
+                              mono
+                            />
+                            <MetadataField
+                              label="Fecha operación"
+                              value={inv.fecha_operacion}
+                              edited={isEdited(inv, "fecha_operacion")}
+                            />
+                            <MetadataField
+                              label="Fecha expedición"
+                              value={inv.fecha_expedicion}
+                              edited={isEdited(inv, "fecha_expedicion")}
+                            />
+                            <MetadataField
+                              label="Concepto"
+                              value={inv.concepto}
+                              edited={isEdited(inv, "concepto")}
+                            />
+                            <MetadataField
+                              label="Cuenta contable"
+                              value={inv.cuenta_contable}
+                              edited={isEdited(inv, "cuenta_contable")}
+                              mono
+                            />
+                            <MetadataField
+                              label="Total"
+                              value={formatEuros(inv.total_euros)}
+                              edited={isEdited(inv, "total_euros")}
+                            />
+                            <MetadataField
+                              label="Emisor (NIF)"
+                              value={inv.nif_entidad}
+                              edited={isEdited(inv, "nif_entidad")}
+                              mono
+                            />
+                            <MetadataField
+                              label="Emisor (nombre)"
+                              value={inv.nombre_entidad}
+                              edited={isEdited(inv, "nombre_entidad")}
+                            />
+                            <MetadataField
+                              label="Libro"
+                              value={inv.libro}
+                            />
+                            <MetadataField
+                              label="Receptor (NIF)"
+                              value={inv.nif_receptor}
+                              edited={isEdited(inv, "nif_receptor")}
+                              mono
+                            />
+                            <MetadataField
+                              label="Receptor (nombre)"
+                              value={inv.nombre_receptor}
+                              edited={isEdited(inv, "nombre_receptor")}
+                            />
+                            <MetadataField
+                              label="Decisión"
+                              value={inv.decision_global}
+                            />
+                          </div>
+
+                          {/* Sección B — Líneas de asiento */}
                           {lineas.length === 0 ? (
-                            <p className="text-[10px] text-slate-400 mt-2">
+                            <p className="text-[11px] text-slate-400 mt-2">
                               Sin líneas de asiento registradas.
                             </p>
                           ) : (
-                            <table className="w-full text-[10px] mt-2">
+                            <table className="w-full text-[11px] mt-1">
                               <thead>
-                                <tr className="text-slate-400 uppercase tracking-[0.1em] border-b border-slate-100">
-                                  <th className="text-left py-1 pr-2 font-medium">Cuenta</th>
-                                  <th className="text-left py-1 pr-2 font-medium">Concepto</th>
-                                  <th className="text-right py-1 pr-2 font-medium">Debe</th>
-                                  <th className="text-right py-1 font-medium">Haber</th>
+                                <tr className="text-slate-400 uppercase tracking-[0.1em] border-b border-slate-200">
+                                  <th className="text-left py-1.5 pr-2 font-medium">Cuenta</th>
+                                  <th className="text-left py-1.5 pr-2 font-medium">Concepto</th>
+                                  <th className="text-right py-1.5 pr-2 font-medium">Debe</th>
+                                  <th className="text-right py-1.5 pr-2 font-medium">Haber</th>
+                                  <th className="text-right py-1.5 pr-2 font-medium">Tipo IVA</th>
+                                  <th className="text-right py-1.5 font-medium">Base Imp.</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -244,13 +371,19 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
                                     key={idx}
                                     className="border-b border-slate-50 text-slate-700"
                                   >
-                                    <td className="py-1 pr-2 font-mono">{l.cuenta}</td>
-                                    <td className="py-1 pr-2">{l.concepto}</td>
-                                    <td className="py-1 pr-2 text-right">
+                                    <td className="py-1.5 pr-2 font-mono">{l.cuenta}</td>
+                                    <td className="py-1.5 pr-2">{l.concepto}</td>
+                                    <td className="py-1.5 pr-2 text-right">
                                       {l.debe > 0 ? formatEuros(l.debe) : "—"}
                                     </td>
-                                    <td className="py-1 text-right">
+                                    <td className="py-1.5 pr-2 text-right">
                                       {l.haber > 0 ? formatEuros(l.haber) : "—"}
+                                    </td>
+                                    <td className="py-1.5 pr-2 text-right">
+                                      {l.tipo_iva != null ? `${l.tipo_iva}%` : "—"}
+                                    </td>
+                                    <td className="py-1.5 text-right">
+                                      {l.base_imponible != null ? formatEuros(l.base_imponible) : "—"}
                                     </td>
                                   </tr>
                                 ))}

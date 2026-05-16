@@ -25,10 +25,14 @@ export type Libro = "gastos" | "ingresos" | "bienes";
 
 /** Estado operativo del documento — último evento del .state.json (trazabilidad 2.0). */
 export type DocStatus =
+  | "uploaded"
   | "processing"
+  | "retrying"
   | "review"
   | "done"
+  | "confirmed"
   | "blocked"
+  | "cancelled"
   | "error"
   | "renamed"
   | "reset";
@@ -121,16 +125,22 @@ export interface ClientInvoice {
   doc_id: string;
   numero_factura: string | null;
   fecha_expedicion: string | null;
+  fecha_operacion?: string | null;
   total_euros: number;
   decision_global: "auto" | "warn" | "block" | "pendiente" | null;
   status: DocStatus | null;
   libro: LibroShort | null;
   tiene_ediciones: boolean;
   lineas_asiento?: LineaAsiento[];
-  /** NIF de la contraparte del asiento (proveedor en compras/bienes,
-   *  cliente final en ventas). Null si no se resolvió. */
   contraparte_nif?: string | null;
   contraparte_nombre?: string | null;
+  concepto?: string | null;
+  cuenta_contable?: string | null;
+  nif_entidad?: string | null;
+  nombre_entidad?: string | null;
+  nif_receptor?: string | null;
+  nombre_receptor?: string | null;
+  campos_editados?: string[];
 }
 
 // ──────────────────────────────────────────────────────────
@@ -161,8 +171,19 @@ export interface ConfirmBatchPayload {
   asientos: Record<string, AsientoConfirm>;
 }
 
+export interface ConfirmBatchErrorEntry {
+  doc_id: string;
+  error: string;
+  stage: string;
+}
+
 export interface ConfirmBatchResponse {
-  ok: true;
+  /** True si TODOS los docs se confirmaron sin error. */
+  ok: boolean;
   facturas_confirmadas: number;
   clientes_nuevos: number;
+  /** PDFs del inbox eliminados tras la confirmación (uno por doc OK). */
+  inbox_pdfs_deleted?: number;
+  /** Errores parciales por doc — vacío en path feliz. */
+  errors?: ConfirmBatchErrorEntry[];
 }
