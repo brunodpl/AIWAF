@@ -1665,8 +1665,10 @@ def reset_pipeline(wipe_inbox: bool = True):
     """
     Reset operativo del pipeline (trazabilidad 2.0):
 
-    1. Borra TODAS las carpetas de asiento (`libros/asientos/*`) — incluye
-       sus `.state.json` y artefactos JSON.
+    1. Borra las carpetas de asiento NO confirmadas (`libros/asientos/*` con
+       último status del sidecar != ``confirmed``) — incluye sus `.state.json`
+       y artefactos JSON. Las confirmadas se preservan: son historial fiscal
+       visible en /asientos y eliminarlas sería pérdida de datos contables.
     2. Limpia el estado transitorio (`libros/.runtime/*`).
     3. Si ``wipe_inbox=True`` (default), borra también los PDFs del inbox
        (`libros/facturas/*/*.pdf`). El flujo "Nuevo escaneo" pasa por aquí
@@ -1689,6 +1691,8 @@ def reset_pipeline(wipe_inbox: bool = True):
     audit_dir = Path(cfg.audit_path())
     dump_dir = audit_dir / "state_dumps" / ts_reset
     sidecars_dumped = 0
+    # Solo volcamos sidecars de los que SÍ vamos a borrar (no-confirmados).
+    # Los confirmados se preservan en disco, no necesitan dump forense.
     try:
         if asientos_root.exists():
             dump_dir.mkdir(parents=True, exist_ok=True)
@@ -1697,6 +1701,8 @@ def reset_pipeline(wipe_inbox: bool = True):
                     continue
                 sidecar = entry / state_writer.SIDECAR_NAME
                 if not sidecar.exists():
+                    continue
+                if state_writer.is_confirmed(entry):
                     continue
                 try:
                     target = dump_dir / f"{entry.name}.json"
@@ -1707,16 +1713,22 @@ def reset_pipeline(wipe_inbox: bool = True):
     except Exception as e:
         logger.error("[reset] Error preparando dump de sidecars: %s", e, exc_info=True)
 
-    # 1. Borrar carpetas de asiento (incluye .state.json + artefactos JSON).
+    # 1. Borrar carpetas de asiento NO confirmadas (incluye .state.json +
+    #    artefactos JSON). Las confirmadas son historial fiscal: se preservan.
     asientos_deleted = 0
+    asientos_preserved = 0
     if asientos_root.exists():
         for entry in asientos_root.iterdir():
-            if entry.is_dir():
-                try:
-                    shutil.rmtree(entry)
-                    asientos_deleted += 1
-                except OSError as e:
-                    logger.error("[reset] Error borrando %s: %s", entry, e, exc_info=True)
+            if not entry.is_dir():
+                continue
+            if state_writer.is_confirmed(entry):
+                asientos_preserved += 1
+                continue
+            try:
+                shutil.rmtree(entry)
+                asientos_deleted += 1
+            except OSError as e:
+                logger.error("[reset] Error borrando %s: %s", entry, e, exc_info=True)
 
     # 2. Limpiar runtime (lock, cancel, status).
     if runtime_root.exists():
@@ -1756,6 +1768,7 @@ def reset_pipeline(wipe_inbox: bool = True):
             "ts_proceso": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "event": "reset_batch",
             "asientos_deleted": asientos_deleted,
+            "asientos_preserved": asientos_preserved,
             "sidecars_dumped": sidecars_dumped,
             "inbox_files_deleted": inbox_files_deleted,
             "wipe_inbox": wipe_inbox,
@@ -1772,13 +1785,14 @@ def reset_pipeline(wipe_inbox: bool = True):
     _stats_cache.clear()
 
     logger.info(
-        "[reset] Completado: %d carpetas eliminadas, %d sidecars volcados, %d PDFs inbox borrados (wipe=%s)",
-        asientos_deleted, sidecars_dumped, inbox_files_deleted, wipe_inbox,
+        "[reset] Completado: %d eliminadas, %d preservadas (confirmed), %d sidecars volcados, %d PDFs inbox borrados (wipe=%s)",
+        asientos_deleted, asientos_preserved, sidecars_dumped, inbox_files_deleted, wipe_inbox,
     )
 
     return {
         "status": "ok",
         "asientos_deleted": asientos_deleted,
+        "asientos_preserved": asientos_preserved,
         "sidecars_dumped": sidecars_dumped,
         "inbox_files_deleted": inbox_files_deleted,
         "wipe_inbox": wipe_inbox,

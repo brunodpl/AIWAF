@@ -337,6 +337,35 @@ def test_reset_blocked_when_pipeline_locked(client, libros_root, monkeypatch):
     assert r.status_code == 409
 
 
+def test_reset_preserves_confirmed_asientos(client, libros_root):
+    """Regresión v0.5.0: "Nuevo escaneo" → /api/pipeline/reset NO debe
+    borrar asientos ya confirmados (status=confirmed en sidecar). Esos
+    son historial fiscal visible en /asientos y eliminarlos es pérdida
+    de datos contables irrecuperable.
+    """
+    # Confirmed: último evento del sidecar tiene status=confirmed
+    _make_asiento(
+        libros_root,
+        "compras_confirmed",
+        "confirmed_doc",
+        decision="auto",
+        events_extra=[{"status": "confirmed", "action": "confirmed"}],
+    )
+    # Pending (review): debe ser borrado por reset
+    _make_asiento(libros_root, "compras_pending", "pending_doc", decision="warn")
+
+    r = client.post("/api/pipeline/reset")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["asientos_deleted"] == 1
+    assert body["asientos_preserved"] == 1
+
+    assert (libros_root / "asientos" / "compras_confirmed").exists(), \
+        "Asiento confirmado NO debe borrarse en reset (historial fiscal)"
+    assert not (libros_root / "asientos" / "compras_pending").exists(), \
+        "Asiento pending sí debe borrarse en reset"
+
+
 # --- /api/stats ------------------------------------------------------------
 
 
