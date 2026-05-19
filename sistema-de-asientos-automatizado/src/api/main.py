@@ -1850,14 +1850,48 @@ def list_clients():
         nif_norm = str(nif_cliente).strip().upper()
         fecha = (campos.get("fecha_expedicion") or {}).get("valor")
         libro = final.get("libro")
+        # nombre_cliente es el campo canónico del frontend, pero si llegó
+        # null (cliente.nombre era falsy en el confirm) caemos al campo que
+        # juega el rol de cliente de la gestoría según el libro:
+        #   ventas         → nombre_entidad (emisor = cliente de la gestoría)
+        #   compras/bienes → nombre_receptor (receptor = cliente de la gestoría)
+        nombre_doc = str(
+            (campos.get("nombre_cliente") or {}).get("valor") or ""
+        ).strip()
+        if not nombre_doc:
+            fallback_key = "nombre_entidad" if libro == "ventas" else "nombre_receptor"
+            nombre_doc = str(
+                (campos.get(fallback_key) or {}).get("valor") or ""
+            ).strip()
         entry = asientos_por_nif.setdefault(
-            nif_norm, {"count": 0, "ultima_factura_fecha": None, "libros": set()}
+            nif_norm,
+            {
+                "count": 0,
+                "ultima_factura_fecha": None,
+                "libros": set(),
+                # nombre = el de la factura confirmada más reciente con
+                # nombre_cliente no vacío. Permite que el historial muestre el
+                # nombre correcto aunque el maestro tenga la entrada con
+                # nombre="" por un OCR fallido en la primera confirmación.
+                "nombre": "",
+                "_nombre_fecha": None,
+            },
         )
         entry["count"] += 1
         if fecha and (entry["ultima_factura_fecha"] is None or fecha > entry["ultima_factura_fecha"]):
             entry["ultima_factura_fecha"] = fecha
         if libro:
             entry["libros"].add(libro)
+        if nombre_doc:
+            # Más reciente gana; si la nueva no tiene fecha pero la entry está
+            # vacía, también rellena (mejor algo que nada).
+            current_fecha = entry["_nombre_fecha"]
+            if (
+                not entry["nombre"]
+                or (fecha and (current_fecha is None or fecha >= current_fecha))
+            ):
+                entry["nombre"] = nombre_doc
+                entry["_nombre_fecha"] = fecha
 
     # Dedupe entradas del maestro por NIF normalizado. El maestro aporta
     # metadatos no-derivables (nombre, fecha_alta, tipos_activos).
@@ -1884,9 +1918,14 @@ def list_clients():
         info = meta_by_upper.get(upper_nif)
         if info is None:
             continue
+        # Verdad fiscal del documento prima sobre el maestro: si algún
+        # resultado_final.json del NIF trae nombre_cliente no vacío, ese gana.
+        # Cae al maestro solo cuando todos los documentos del NIF están sin
+        # nombre (caso patológico que el frontend no debería producir).
+        nombre = agg.get("nombre") or info.get("nombre", "")
         items.append({
             "nif": upper_nif,
-            "nombre": info.get("nombre", ""),
+            "nombre": nombre,
             "fecha_alta": info.get("fecha_alta"),
             "ultima_factura_fecha": agg["ultima_factura_fecha"],
             "documentos_procesados": agg["count"],

@@ -163,6 +163,16 @@ def registrar_cliente(
     entry.setdefault("documentos_procesados", 0)
     entry.setdefault("tipos_activos", [])
 
+    # Backfill del nombre: si la primera confirmación de este NIF llegó con
+    # nombre vacío (OCR no extrajo razón social y el operario no la editó),
+    # la entrada quedaba con nombre="" para siempre. Si un confirm posterior
+    # trae un nombre no vacío, lo rellenamos. Nunca pisamos un nombre bueno
+    # con vacío.
+    nombre_nuevo = (nombre or "").strip()
+    nombre_existente = (entry.get("nombre") or "").strip()
+    if nombre_nuevo and not nombre_existente:
+        entry["nombre"] = nombre_nuevo
+
     entry["documentos_procesados"] = entry["documentos_procesados"] + 1
 
     if fecha_expedicion and (

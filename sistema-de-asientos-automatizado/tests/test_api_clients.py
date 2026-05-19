@@ -170,6 +170,85 @@ def test_clients_solo_devuelve_clientes_gestoria(api_client):
     assert body["clients"][0]["tipos_activos"] == ["cliente"]
 
 
+def test_clients_prefiere_nombre_de_resultado_final_si_maestro_vacio(api_client):
+    """Si el maestro tiene nombre="" para un NIF (porque la primera confirmación
+    se hizo con nombre_entidad vacío), el historial debe mostrar el nombre que
+    aparece en el resultado_final.json más reciente — la verdad fiscal del
+    documento, no el maestro stale.
+
+    Regresión: /api/clients devolvía nombre="" porque solo leía maestro.
+    """
+    client, asientos_root, maestro_path = api_client
+    _seed_maestro(maestro_path, [
+        {"nif": "49915950Q", "nombre": "",
+         "fecha_alta": "2026-05-19", "documentos_procesados": 1,
+         "ultima_factura_fecha": "2026-05-19",
+         "libros_activos": ["ventas"], "tipos_activos": ["cliente"]},
+    ])
+    # Seed asiento de ventas con nombre_cliente bien rellenado.
+    folder = asientos_root / "ventas_20265000763-N0208"
+    folder.mkdir(parents=True)
+    from src import state_writer
+    state_writer.init(folder, "20265000763-N0208",
+                      "libros/facturas/ventas/20265000763-N0208.pdf")
+    (folder / "resultado_final.json").write_text(json.dumps({
+        "schema_v": 1, "doc_id": "20265000763-N0208", "libro": "ventas",
+        "confirmado_en": "2026-05-19T08:42:24+00:00",
+        "origen_decision": "auto",
+        "campos_finales": {
+            "nif_cliente": {"valor": "49915950Q", "editado": False},
+            "nombre_cliente": {"valor": "DAVILA PEREZ RECHE", "editado": True},
+            "fecha_expedicion": {"valor": "2026-05-19", "editado": False},
+        },
+        "lineas_asiento": [],
+        "csv_filename": "asiento_20265000763-N0208.csv",
+        "hash_csv": "sha256:abc",
+    }), encoding="utf-8")
+
+    body = client.get("/api/clients").json()
+    assert body["total"] == 1
+    assert body["clients"][0]["nif"] == "49915950Q"
+    assert body["clients"][0]["nombre"] == "DAVILA PEREZ RECHE"
+
+
+def test_clients_usa_nombre_resultado_final_mas_reciente(api_client):
+    """Cuando hay varios resultado_final.json para el mismo NIF, el historial
+    debe quedarse con el nombre de la factura con fecha de expedición más
+    reciente (a igualdad de fechas, el último no-vacío encontrado)."""
+    client, asientos_root, maestro_path = api_client
+    _seed_maestro(maestro_path, [
+        {"nif": "49915950Q", "nombre": "",
+         "fecha_alta": "2026-05-19", "documentos_procesados": 2,
+         "ultima_factura_fecha": "2026-05-19",
+         "libros_activos": ["ventas"], "tipos_activos": ["cliente"]},
+    ])
+
+    def _seed_venta(doc_id: str, fecha: str, nombre: str) -> None:
+        folder = asientos_root / f"ventas_{doc_id}"
+        folder.mkdir(parents=True)
+        from src import state_writer
+        state_writer.init(folder, doc_id, f"libros/facturas/ventas/{doc_id}.pdf")
+        (folder / "resultado_final.json").write_text(json.dumps({
+            "schema_v": 1, "doc_id": doc_id, "libro": "ventas",
+            "confirmado_en": "2026-05-19T08:42:24+00:00",
+            "origen_decision": "auto",
+            "campos_finales": {
+                "nif_cliente": {"valor": "49915950Q", "editado": False},
+                "nombre_cliente": {"valor": nombre, "editado": False},
+                "fecha_expedicion": {"valor": fecha, "editado": False},
+            },
+            "lineas_asiento": [],
+            "csv_filename": f"asiento_{doc_id}.csv",
+            "hash_csv": "sha256:abc",
+        }), encoding="utf-8")
+
+    _seed_venta("N0208", "2026-04-01", "DAVILA NOMBRE VIEJO")
+    _seed_venta("N0209", "2026-05-19", "DAVILA PEREZ RECHE")
+
+    body = client.get("/api/clients").json()
+    assert body["clients"][0]["nombre"] == "DAVILA PEREZ RECHE"
+
+
 def test_invoices_by_client_includes_lineas_asiento(api_client):
     """GET /api/clients/{nif}/invoices must return lineas_asiento per invoice."""
     client, asientos_root, _ = api_client

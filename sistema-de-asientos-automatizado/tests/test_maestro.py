@@ -61,3 +61,56 @@ def test_tipos_activos_backfill_entry_sin_campo(tmp_path):
     guardar_maestro(str(path), m)
     data = yaml.safe_load(path.read_text())
     assert "tipos_activos" in data["clientes"]["B12345678"]
+
+
+def test_registrar_cliente_rellena_nombre_si_estaba_vacio(tmp_path):
+    """Si la primera confirmación dejó nombre="" (OCR falló y operario no editó),
+    la siguiente confirmación con el nombre correcto debe rellenarlo.
+
+    Regresión: registrar_cliente solo seteaba nombre al crear la entrada;
+    invocaciones posteriores con un nombre no vacío se ignoraban y el
+    historial se quedaba sin nombre para siempre.
+    """
+    path = tmp_path / "maestro_clientes.yaml"
+    path.write_text("{}\n")
+    m = cargar_maestro(str(path))
+    registrar_cliente(m, "49915950Q", "", fecha_expedicion="2026-05-19",
+                      libro="ventas", decision="auto", tipo="cliente")
+    registrar_cliente(m, "49915950Q", "DAVILA PEREZ RECHE",
+                      fecha_expedicion="2026-05-19",
+                      libro="ventas", decision="auto", tipo="cliente")
+    guardar_maestro(str(path), m)
+    data = yaml.safe_load(path.read_text())
+    assert data["clientes"]["49915950Q"]["nombre"] == "DAVILA PEREZ RECHE"
+
+
+def test_registrar_cliente_no_pisa_nombre_existente_con_vacio(tmp_path):
+    """Si la entrada ya tiene un nombre bueno, una confirmación posterior con
+    nombre vacío NO debe pisarlo."""
+    path = tmp_path / "maestro_clientes.yaml"
+    path.write_text("{}\n")
+    m = cargar_maestro(str(path))
+    registrar_cliente(m, "49915950Q", "DAVILA PEREZ RECHE",
+                      fecha_expedicion="2026-05-19",
+                      libro="ventas", decision="auto", tipo="cliente")
+    registrar_cliente(m, "49915950Q", "",
+                      fecha_expedicion="2026-05-19",
+                      libro="ventas", decision="auto", tipo="cliente")
+    guardar_maestro(str(path), m)
+    data = yaml.safe_load(path.read_text())
+    assert data["clientes"]["49915950Q"]["nombre"] == "DAVILA PEREZ RECHE"
+
+
+def test_registrar_cliente_ignora_nombre_solo_espacios(tmp_path):
+    """Un nombre con solo whitespace cuenta como vacío para el backfill."""
+    path = tmp_path / "maestro_clientes.yaml"
+    path.write_text("{}\n")
+    m = cargar_maestro(str(path))
+    registrar_cliente(m, "49915950Q", "   ", fecha_expedicion="2026-05-19",
+                      libro="ventas", decision="auto", tipo="cliente")
+    registrar_cliente(m, "49915950Q", "DAVILA PEREZ RECHE",
+                      fecha_expedicion="2026-05-19",
+                      libro="ventas", decision="auto", tipo="cliente")
+    guardar_maestro(str(path), m)
+    data = yaml.safe_load(path.read_text())
+    assert data["clientes"]["49915950Q"]["nombre"] == "DAVILA PEREZ RECHE"
