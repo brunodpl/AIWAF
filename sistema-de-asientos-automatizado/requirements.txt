@@ -22,3 +22,6 @@ structlog>=23.2.0
 
 # Image processing for multimodal LLM
 Pillow>=10.0.0
+
+# PDF page extraction (phase1 splitter)
+PyMuPDF>=1.24.0

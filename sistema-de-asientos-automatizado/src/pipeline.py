@@ -33,6 +33,7 @@ from src.phase2_ocr.file_queue_service import (
 )
 from src.phase2_ocr.invoice_parser_client import VisionOcrClient
 from src.phase2_ocr.mapper_document_ai_to_json import _init_gemini_model
+from src.phase1_splitter import run_split
 from src.config import LIBRO_SHORT, settings as get_settings
 from src.phase3_identidad_cabecera.main import run_identidad
 from src.phase3_fiscal.main import run_fiscal
@@ -328,6 +329,22 @@ def run_pipeline(
     audit = AuditWriter(cfg.audit_path(), libro)
 
     logger.info(f"[pipeline] Iniciando carpeta={folder_path} libro={libro}")
+
+    # Fase 1: split de PDFs multi-factura (MFP con ADF entrega un único PDF
+    # con varias facturas). Idempotente; PDFs de 1 página no llaman a Gemini.
+    try:
+        split_outcomes = run_split(folder_path)
+        n_split = sum(1 for o in split_outcomes if o.status == "split")
+        if n_split:
+            logger.info(
+                "[pipeline] splitter: %d PDF(s) multi-factura divididos en %d facturas",
+                n_split,
+                sum(o.n_facturas for o in split_outcomes if o.status == "split"),
+            )
+    except Exception as e:
+        # El splitter nunca debe tumbar el pipeline; sin él, cada PDF se
+        # procesa como un único asiento (comportamiento previo).
+        logger.error(f"[pipeline] splitter falló: {e}", exc_info=True)
 
     try:
         files = scan_folder(folder_path)
