@@ -92,6 +92,45 @@ export interface PipelineStatus {
   error_message: string | null;
 }
 
+/** Estado por factura mostrado en la vista en vivo de Fase 2/3. */
+export type BatchFileStatus =
+  | "pending"
+  | "processing"
+  | "done"
+  | "review"
+  | "confirmed"
+  | "blocked"
+  | "error";
+
+/** Una factura dentro del lote actual (uno por doc_id de `.pending_confirm.json`). */
+export interface BatchFileEntry {
+  doc_id: string;
+  filename: string;
+  status: BatchFileStatus;
+  folder_name?: string | null;
+  decision?: string | null;
+  /** Si la factura proviene del splitter (`X__NofM.pdf`), nombre original. */
+  split_origin?: string | null;
+  split_index?: number | null;
+  split_total?: number | null;
+}
+
+/** Sección por libro de la respuesta de `/api/pipeline/batch`. */
+export interface BatchBookSection {
+  book_id: Libro;
+  libro: LibroShort;
+  label: string;
+  files: BatchFileEntry[];
+}
+
+/** Composición del lote actual durante un run del pipeline. */
+export interface PipelineBatch {
+  in_flight: boolean;
+  current_file: string | null;
+  current_libro: LibroShort | null;
+  books: BatchBookSection[];
+}
+
 /** A client from the gestoria's client registry */
 export interface Client {
   nif: string;

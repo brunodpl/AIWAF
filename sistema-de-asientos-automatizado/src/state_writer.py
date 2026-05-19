@@ -64,6 +64,12 @@ def _lock_for(folder: Path) -> threading.Lock:
 #   reset     ── evento dejado en sidecar copia antes de borrar (forense)
 #
 # Único terminal contable = ``confirmed``. ``done`` es "esperando confirm humano".
+#
+# ``split``: el splitter pre-OCR (Fase 1) marca con este estado el sidecar del
+# PDF original cuando lo divide en N facturas individuales. Es terminal — el
+# original ya no será procesado; la trazabilidad continúa en los doc_ids de
+# ``split_into``. Permite que ``is_terminal()`` skipee la carpeta en runs
+# posteriores y a la vez conservar la cadena de custodia (RGPD).
 VALID_STATUSES = frozenset(
     {
         "uploaded",
@@ -77,6 +83,7 @@ VALID_STATUSES = frozenset(
         "error",
         "renamed",
         "reset",
+        "split",
     }
 )
 
@@ -86,8 +93,8 @@ VALID_STATUSES = frozenset(
 # de una transición concreta, revisar la tabla.
 VALID_TRANSITIONS: dict[Optional[str], frozenset[str]] = {
     None:         frozenset({"uploaded", "processing"}),
-    "uploaded":   frozenset({"processing", "cancelled", "error"}),
-    "processing": frozenset({"done", "review", "blocked", "error", "cancelled", "retrying", "renamed"}),
+    "uploaded":   frozenset({"processing", "cancelled", "error", "split"}),
+    "processing": frozenset({"done", "review", "blocked", "error", "cancelled", "retrying", "renamed", "split"}),
     "retrying":   frozenset({"processing", "done", "review", "blocked", "error", "cancelled"}),
     "review":     frozenset({"done", "review", "blocked", "renamed", "cancelled"}),
     "done":       frozenset({"confirmed", "review", "renamed"}),
@@ -97,6 +104,7 @@ VALID_TRANSITIONS: dict[Optional[str], frozenset[str]] = {
     "error":      frozenset({"retrying", "processing"}),
     "renamed":    frozenset({"done", "review", "blocked", "confirmed", "error", "cancelled", "retrying"}),
     "reset":      frozenset(),
+    "split":      frozenset(),
 }
 
 
@@ -285,10 +293,19 @@ def is_pending_confirm(folder: Path) -> bool:
 def is_terminal(folder: Path) -> bool:
     """True si la factura ya no se puede mover de estado por sí sola.
 
-    Estados terminales: ``confirmed``, ``blocked``, ``cancelled``, ``error``.
-    NOTA: ``done`` NO es terminal — está esperando confirm humano.
+    Estados terminales: ``confirmed``, ``blocked``, ``cancelled``, ``error``,
+    ``split``. NOTA: ``done`` NO es terminal — está esperando confirm humano.
     """
-    return current_status(folder) in {"confirmed", "blocked", "cancelled", "error"}
+    return current_status(folder) in {"confirmed", "blocked", "cancelled", "error", "split"}
+
+
+def is_split(folder: Path) -> bool:
+    """True si el sidecar refleja que el PDF fue dividido por el splitter Fase 1.
+
+    Carpeta inerte para el pipeline: el original vive en `_originales/` y la
+    trazabilidad continúa en los doc_ids listados en ``split_into`` del evento.
+    """
+    return current_status(folder) == "split"
 
 
 def is_confirmed(folder: Path) -> bool:

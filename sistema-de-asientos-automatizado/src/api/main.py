@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import time
 from collections import deque
@@ -880,9 +881,22 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
 
     No hay paso intermedio en `PENDIENTES/` — el inbox y la "bandeja de entrada"
     son el mismo sitio (trazabilidad 2.0).
+
+    Rechaza con 409 si hay un pipeline en curso: el splitter Fase 1 corre al
+    inicio del run y un PDF subido mid-run no entraría en la corrida actual,
+    confundiendo al operario sobre si "se procesó o no".
     """
     if book_id not in BOOK_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}. Valid: {list(BOOK_CONFIGS.keys())}")
+
+    if is_pipeline_locked():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pipeline_running",
+                "message": "Hay un procesado en curso. Espera a que termine para subir nuevas facturas.",
+            },
+        )
 
     upload_dir = _inbox_for_book(book_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1484,6 +1498,156 @@ def _load_pending_confirm() -> dict | None:
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("[pending_confirm] no se pudo leer: %s", e)
         return None
+
+
+_SPLIT_NAME_RE = re.compile(r"^(.+)__(\d+)of(\d+)$", re.IGNORECASE)
+
+
+def _derive_split_meta(filename_stem: str) -> tuple[Optional[str], Optional[int], Optional[int]]:
+    """Si ``filename_stem`` cumple el patrón ``X__NofM``, devuelve (X.pdf, N, M)."""
+    m = _SPLIT_NAME_RE.match(filename_stem)
+    if not m:
+        return None, None, None
+    stem, idx_s, total_s = m.group(1), m.group(2), m.group(3)
+    try:
+        return f"{stem}.pdf", int(idx_s), int(total_s)
+    except ValueError:
+        return None, None, None
+
+
+@app.get("/api/pipeline/batch")
+def pipeline_batch():
+    """Composición del lote del run actual con estado por factura, agrupado por libro.
+
+    Fuente del lote: ``.pending_confirm.json`` (escrito por ``pipeline.run_pipeline``
+    al inicio, después del splitter, contiene los doc_ids reales que se van a procesar).
+    Para cada doc_id se localiza su carpeta de asiento, se lee el status del
+    ``.state.json`` y se deriva metadata de split (si su nombre cumple ``X__NofM``).
+
+    Si no hay lote en curso o el status global está en ``completed``/``idle``,
+    devuelve ``in_flight=false`` con la lista vacía — la UI cae al modo legacy.
+    """
+    pending = _load_pending_confirm()
+    doc_ids = list((pending or {}).get("doc_ids_lote") or [])
+
+    # Status global para current_file y para saber si seguimos "in flight".
+    status_data: dict = {}
+    status_path = _status_path()
+    if status_path.exists():
+        try:
+            with status_path.open(encoding="utf-8") as f:
+                status_data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            status_data = {}
+    global_status = status_data.get("status")
+    current_file = status_data.get("current_file")
+
+    in_flight = bool(doc_ids) and global_status not in {"completed", "idle", None}
+    if not in_flight:
+        return {
+            "in_flight": False,
+            "current_file": current_file,
+            "current_libro": None,
+            "books": [],
+        }
+
+    asientos_root = get_asientos_dir()
+    grouped: dict[str, list[dict]] = {bid: [] for bid in BOOK_CONFIGS}
+    current_libro: Optional[str] = None
+
+    for doc_id in doc_ids:
+        folder = state_writer.find_folder_by_doc_id(asientos_root, doc_id)
+        st = state_writer.current_status(folder) if folder is not None else None
+        # Derivar libro_short y filename
+        libro_short: Optional[str] = None
+        filename = f"{doc_id}.pdf"
+        decision: Optional[str] = None
+        folder_name: Optional[str] = None
+        if folder is not None:
+            folder_name = folder.name
+            libro_short = _libro_from_folder(folder_name)
+            sidecar_data = get_state(folder) or {}
+            events = sidecar_data.get("events") or []
+            for ev in events:
+                origin = ev.get("file_origin")
+                if origin:
+                    filename = os.path.basename(origin)
+                    break
+            # `decision` aparece como campo opcional en eventos cierre del pipeline.
+            for ev in reversed(events):
+                if ev.get("decision"):
+                    decision = ev.get("decision")
+                    break
+
+        if libro_short is None:
+            # Fallback: buscar el filename en los 3 inboxes (caso degenerado
+            # sin sidecar aún — no debería pasar tras Bloque 1 pero defendemos).
+            for bid in BOOK_CONFIGS:
+                inbox = _inbox_for_book(bid)
+                if (inbox / filename).exists():
+                    libro_short = BOOK_CONFIGS[bid]["libro_short"]
+                    break
+
+        # Mapear status del sidecar a `BatchFileStatus`.
+        if current_file and filename == current_file:
+            ui_status = "processing"
+        elif st in {None, "uploaded"}:
+            ui_status = "pending"
+        elif st in {"done", "review", "confirmed", "blocked", "error", "processing", "retrying"}:
+            # `processing` del sidecar significa "se está procesando"; si no
+            # coincide con current_file es un sidecar dejado a medias por un
+            # run anterior — tratamos como `pending` operativo para no engañar.
+            ui_status = "processing" if st in {"processing", "retrying"} and current_file is None else (
+                st if st in {"done", "review", "confirmed", "blocked", "error"} else "pending"
+            )
+        elif st in {"split", "cancelled", "renamed", "reset"}:
+            # Estos no deberían aparecer en el lote (los splits originales son
+            # archivados, los cancelados/reset no entran). Si aparecen, pending.
+            ui_status = "pending"
+        else:
+            ui_status = "pending"
+
+        split_origin, split_index, split_total = _derive_split_meta(doc_id)
+
+        entry = {
+            "doc_id": doc_id,
+            "filename": filename,
+            "status": ui_status,
+            "folder_name": folder_name,
+            "decision": decision,
+            "split_origin": split_origin,
+            "split_index": split_index,
+            "split_total": split_total,
+        }
+
+        if ui_status == "processing":
+            current_libro = libro_short
+
+        target_book_id = _LIBRO_SHORT_TO_BOOK.get(libro_short) if libro_short else None
+        if target_book_id is None:
+            # Sin libro identificable: lo metemos en la primera caja para que
+            # el operario lo vea. Mejor visible que perdido.
+            target_book_id = next(iter(BOOK_CONFIGS))
+        grouped[target_book_id].append(entry)
+
+    books_out = []
+    for bid, cfg_book in BOOK_CONFIGS.items():
+        entries = grouped.get(bid) or []
+        if not entries:
+            continue
+        books_out.append({
+            "book_id": bid,
+            "libro": cfg_book["libro_short"],
+            "label": cfg_book["label"],
+            "files": entries,
+        })
+
+    return {
+        "in_flight": True,
+        "current_file": current_file,
+        "current_libro": current_libro,
+        "books": books_out,
+    }
 
 
 @app.get("/api/pipeline/status")

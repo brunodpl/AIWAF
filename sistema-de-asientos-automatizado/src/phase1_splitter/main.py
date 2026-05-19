@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from src import state_writer
 from src.config import settings as get_settings
 from src.phase2_ocr.mapper_document_ai_to_json import _init_gemini_model
 
@@ -171,6 +172,18 @@ def _apply_split(pdf: Path, n_pages: int, decision: SplitDecision) -> SplitOutco
     confidence_min = min(confidences) if confidences else None
     confidence_avg = sum(confidences) / len(confidences) if confidences else None
 
+    # Cadena de custodia en .state.json (best-effort, no rompe el split):
+    # 1) marcar el sidecar del original como `split` con la lista de doc_ids
+    #    derivados (evita ghosts en find_folder_by_doc_id y permite skipear
+    #    en runs posteriores vía is_terminal()).
+    # 2) inicializar sidecars `uploaded` para cada split, para que el endpoint
+    #    /api/pipeline/batch los liste como pendientes desde el primer poll
+    #    aunque OCR aún no haya llegado a ellos.
+    output_doc_ids = [p.stem for p in outputs]
+    _update_state_for_split(
+        pdf, archived, outputs, output_doc_ids, source_sha,
+    )
+
     logger.info(
         "[splitter] %s → %d facturas (páginas=%s, latency=%dms, conf_min=%s)",
         pdf.name, n, [list(g.pages) for g in decision.groups],
@@ -187,6 +200,87 @@ def _apply_split(pdf: Path, n_pages: int, decision: SplitDecision) -> SplitOutco
         confidence_min=confidence_min,
         confidence_avg=confidence_avg,
     )
+
+
+def _update_state_for_split(
+    original_pdf: Path,
+    archived_pdf: Path,
+    splits: List[Path],
+    output_doc_ids: List[str],
+    source_sha: str,
+) -> None:
+    """Marca el sidecar original como `split` y crea sidecars `uploaded` por cada split.
+
+    Best-effort: cualquier fallo se loggea pero no interrumpe el splitter,
+    los PDFs ya están en disco y el pipeline puede continuar.
+    """
+    try:
+        cfg = get_settings()
+        asientos_root = Path(cfg.asientos_path())
+        libros_base = Path(cfg.libros_base).resolve()
+        libro_short = original_pdf.parent.name
+    except Exception:
+        logger.warning(
+            "[splitter] no se pudo resolver settings para actualizar .state.json",
+            exc_info=True,
+        )
+        return
+
+    # 1) Sidecar original → status=split (solo si existía).
+    original_doc_id = original_pdf.stem
+    try:
+        original_folder = state_writer.find_folder_by_doc_id(
+            asientos_root, original_doc_id
+        )
+        if original_folder is not None:
+            try:
+                rel_archived = archived_pdf.resolve().relative_to(libros_base)
+                archived_rel_str = str(rel_archived).replace(os.sep, "/")
+            except (ValueError, OSError):
+                archived_rel_str = archived_pdf.name
+            state_writer.append(original_folder, {
+                "status": "split",
+                "split_into": list(output_doc_ids),
+                "archived_pdf": archived_rel_str,
+            })
+    except Exception:
+        logger.warning(
+            "[splitter] no se pudo marcar sidecar original como split: %s",
+            original_doc_id, exc_info=True,
+        )
+
+    # 2) Sidecar uploaded por cada split.
+    for split_pdf, doc_id in zip(splits, output_doc_ids):
+        folder_name = f"{libro_short}_{doc_id}"
+        asiento_folder = asientos_root / folder_name
+        try:
+            if state_writer.find_folder_by_doc_id(asientos_root, doc_id) is not None:
+                # Idempotencia: si por alguna razón ya existe sidecar para
+                # este doc_id, no lo tocamos (caso rerun manual).
+                continue
+            try:
+                rel_pdf = split_pdf.resolve().relative_to(libros_base)
+                pdf_rel_str = str(rel_pdf).replace(os.sep, "/")
+            except (ValueError, OSError):
+                pdf_rel_str = split_pdf.name
+            try:
+                size_bytes = split_pdf.stat().st_size
+            except OSError:
+                size_bytes = 0
+            state_writer.init_uploaded(
+                asiento_folder,
+                doc_id=doc_id,
+                file_origin=pdf_rel_str,
+                # Reusa el sha256 del origen + sufijo del índice para tener un
+                # hash determinista por split sin re-leer el fichero entero.
+                sha256_file=f"{source_sha}#{doc_id}",
+                size_bytes=size_bytes,
+            )
+        except Exception:
+            logger.warning(
+                "[splitter] no se pudo inicializar sidecar para %s",
+                doc_id, exc_info=True,
+            )
 
 
 def _write_split_log(cfg, outcomes: List[SplitOutcome]) -> None:

@@ -16,9 +16,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { Loader2, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
-import { fetchPipelineStatus, runPipeline } from "@/lib/api";
+import { fetchPipelineBatch, fetchPipelineStatus, runPipeline } from "@/lib/api";
 import { toast } from "sonner";
-import type { PipelineStatus } from "@/lib/types";
+import type { PipelineBatch, PipelineStatus } from "@/lib/types";
+import { BatchOverview } from "@/components/batch-overview";
 
 interface PipelineProgressProps {
   onComplete: () => void;
@@ -29,6 +30,7 @@ interface PipelineProgressProps {
 
 export function PipelineProgress({ onComplete, onBack, onJumpToReview }: PipelineProgressProps) {
   const [status, setStatus] = useState<PipelineStatus | null>(null);
+  const [batch, setBatch] = useState<PipelineBatch | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,9 +60,14 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
     const poll = async () => {
       if (cancelled) return;
       try {
-        const result = await fetchPipelineStatus();
+        const [result, batchResult] = await Promise.all([
+          fetchPipelineStatus(),
+          // Vista en vivo del lote — si falla, no rompe el polling de status.
+          fetchPipelineBatch().catch(() => null),
+        ]);
         if (cancelled) return;
         setStatus(result);
+        if (batchResult) setBatch(batchResult);
         setError(null);
         errorCountRef.current = 0; // Reset backoff on success
         if (result.total > 0) totalQueuedRef.current = result.total;
@@ -229,6 +236,8 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
             )}
           </div>
         )}
+
+        <BatchOverview batch={batch} />
 
         {isRunning && onJumpToReview && status && status.processed >= 1 && (
           <div className="mt-6">

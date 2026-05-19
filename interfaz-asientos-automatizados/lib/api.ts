@@ -8,6 +8,7 @@ import type {
   Book,
   BookFile,
   PipelineStatus,
+  PipelineBatch,
   Client,
   Libro,
   DocStatus,
@@ -451,9 +452,25 @@ export async function uploadFiles(
 
     if (!response.ok) {
       let errorMessage = `Error subiendo archivos (${response.status})`;
+      // Caso especial 409: pipeline en curso. Lo señalamos con un código
+      // estable que BooksManager mapea a toast amarillo "Espera a que termine".
+      if (response.status === 409) {
+        try {
+          const errorBody = await response.json();
+          const code = errorBody?.detail?.code;
+          if (code === "pipeline_running") {
+            throw new Error("PIPELINE_RUNNING");
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message === "PIPELINE_RUNNING") throw e;
+          // sigue al fallback
+        }
+      }
       try {
         const errorBody = await response.json();
-        if (errorBody.detail) errorMessage = errorBody.detail;
+        if (errorBody.detail) errorMessage = typeof errorBody.detail === "string"
+          ? errorBody.detail
+          : (errorBody.detail.message || JSON.stringify(errorBody.detail));
       } catch {
         const errorText = await response.text();
         if (errorText) errorMessage = errorText;
@@ -500,6 +517,25 @@ export async function fetchPipelineStatus(): Promise<PipelineStatus> {
     const response = await fetchWithTimeout(`${API_URL}/api/pipeline/status`);
     if (!response.ok) {
       throw new Error(`Failed to fetch pipeline status: ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Request timed out. The server may still be processing.");
+    }
+    throw error;
+  }
+}
+
+/**
+ * Fetch composición del lote actual con estado por factura, agrupado por libro.
+ * Vacío (in_flight=false) si no hay run en curso.
+ */
+export async function fetchPipelineBatch(): Promise<PipelineBatch> {
+  try {
+    const response = await fetchWithTimeout(`${API_URL}/api/pipeline/batch`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch pipeline batch: ${response.statusText}`);
     }
     return response.json();
   } catch (error) {

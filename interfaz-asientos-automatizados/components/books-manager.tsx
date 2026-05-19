@@ -225,7 +225,11 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
       } catch (err) {
         if (!mountedRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
-        if (message.includes("timed out") || message.includes("AbortError")) {
+        if (message === "PIPELINE_RUNNING") {
+          toast.warning(
+            "Hay un procesado en curso. Espera a que termine para subir nuevas facturas."
+          );
+        } else if (message.includes("timed out") || message.includes("AbortError")) {
           toast.error("Timeout al subir archivos. El servidor puede estar sobrecargado.");
         } else {
           toast.error(`Error de red al subir archivos: ${message}`);
