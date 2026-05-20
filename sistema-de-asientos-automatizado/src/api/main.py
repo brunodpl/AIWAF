@@ -2385,7 +2385,7 @@ def request_system_update():
         resp = httpx.post(
             f"{WATCHTOWER_URL}/v1/update",
             headers={"Authorization": f"Bearer {WATCHTOWER_TOKEN}"},
-            timeout=10.0,
+            timeout=120.0,
         )
         resp.raise_for_status()
     except httpx.ConnectError as exc:
