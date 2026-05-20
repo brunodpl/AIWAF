@@ -28,6 +28,7 @@ import { ApprovedInvoiceData, DocStatus, FiscalLine, InvoiceDocument, Libro, Lib
 import {
   fetchInvoices,
   fetchInvoiceDetail,
+  fetchPipelineBatch,
   sendInvoiceAction,
   transformToInvoice,
   API_URL,
@@ -104,6 +105,15 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   const currentIdxRef = useRef(0);
   const invoiceSummariesRef = useRef<InvoiceSummary[]>([]);
 
+  // Total real del lote según /api/pipeline/batch (post-splitter). Null hasta el
+  // primer poll exitoso. Permite mostrar placeholders correctos cuando el
+  // operario sube un PDF multi-factura: el splitter de Fase 1 genera N
+  // sidecars `uploaded` y este endpoint los lista desde el primer momento,
+  // incluso antes de que OCR los procese.
+  const [batchTotal, setBatchTotal] = useState<number | null>(null);
+  const batchTotalRef = useRef<number | null>(null);
+  useEffect(() => { batchTotalRef.current = batchTotal; }, [batchTotal]);
+
   useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
   useEffect(() => { invoiceSummariesRef.current = invoiceSummaries; }, [invoiceSummaries]);
   useEffect(() => { cacheRef.current = detailsCache; }, [detailsCache]);
@@ -175,19 +185,61 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     }
   }, [invoiceSummaries.length, currentIdx]);
 
-  // Polling para facturas pendientes de escaneo (al saltar a revisión anticipadamente).
+  // Polling a /api/pipeline/batch — fuente de verdad del total post-splitter.
+  //
+  // Se ejecuta mientras el lote esté `in_flight` (o no hayamos hecho aún el
+  // primer poll). En cuanto el backend marca el lote como cerrado, hacemos
+  // un último poll y paramos. Cualquier fallo se ignora silenciosamente para
+  // no engañar al operario con errores transitorios.
+  useEffect(() => {
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const batch = await fetchPipelineBatch();
+        if (cancelled) return;
+        const sum = batch.books.reduce((acc, b) => acc + b.files.length, 0);
+        // Solo actualizamos si crece — protege contra una respuesta vacía
+        // tardía (in_flight=false con books=[]) que borraría placeholders
+        // mientras /api/invoices aún no ha alcanzado el total real.
+        setBatchTotal((prev) => (prev == null ? sum : Math.max(prev, sum)));
+        if (!batch.in_flight && interval) {
+          clearInterval(interval);
+          interval = null;
+        }
+      } catch {
+        // Silencioso: el endpoint puede no estar listo o el server estar
+        // reiniciando. El siguiente tick reintenta.
+      }
+    };
+
+    poll();  // primer poll inmediato
+    interval = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
+  }, []);
+
+  // Polling para facturas pendientes de escaneo. Usa el max entre `totalQueued`
+  // (pista de PipelineProgress.onJumpToReview, legacy) y `batchTotal`
+  // (verdad post-splitter desde /api/pipeline/batch).
   //
   // Condiciones de salida:
-  // 1. Hemos cargado al menos totalQueued facturas (pipeline completó).
+  // 1. Hemos cargado al menos `target` facturas (pipeline completó).
   // 2. Máximo 30 intentos (~90s) — evita polling infinito si el pipeline
   //    falla o se cancela y nunca alcanza el target.
   // 3. Cleanup al unmount.
   useEffect(() => {
-    if (!totalQueued || totalQueued === 0) return;
+    const target = Math.max(batchTotal ?? 0, totalQueued ?? 0);
+    if (target === 0) return;
     let attempts = 0;
     const MAX_ATTEMPTS = 30;
     const interval = setInterval(() => {
-      if (invoiceSummariesRef.current.length >= totalQueued) {
+      const currentTarget = Math.max(batchTotalRef.current ?? 0, totalQueued ?? 0);
+      if (currentTarget > 0 && invoiceSummariesRef.current.length >= currentTarget) {
         clearInterval(interval);
         return;
       }
@@ -200,7 +252,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       loadInvoices(true);
     }, 3000);
     return () => clearInterval(interval);
-  }, [totalQueued, loadInvoices]);
+  }, [totalQueued, batchTotal, loadInvoices]);
 
   useEffect(() => {
     const summary = invoiceSummaries[currentIdx];
@@ -433,7 +485,17 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   const invoice = detailsCache.get(invoiceSummaries[currentIdx]?.id);
   const isApproved = invoice ? approvedInvoices.has(invoice.id) : false;
   const isRejected = invoice ? rejectedInvoices.has(invoice.id) : false;
-  const totalVisible = totalQueued && totalQueued > invoiceSummaries.length ? totalQueued : invoiceSummaries.length;
+  // `effectiveTotal` es el max de: total real del lote post-splitter (batchTotal),
+  // pista legacy de PipelineProgress (totalQueued), y facturas ya cargadas. Esto
+  // garantiza placeholders correctos para PDFs multi-factura (batchTotal manda),
+  // y no muestra placeholders fantasma cuando el reviewer entra fuera de un run
+  // (todos en 0 → cae a invoiceSummaries.length).
+  const effectiveTotal = Math.max(
+    batchTotal ?? 0,
+    totalQueued ?? 0,
+    invoiceSummaries.length,
+  );
+  const totalVisible = effectiveTotal;
   const totalInvoices = totalVisible;
   const loadedCount = invoiceSummaries.length;
   const approvedCount = invoiceSummaries.filter(inv => approvedInvoices.has(inv.id)).length;
