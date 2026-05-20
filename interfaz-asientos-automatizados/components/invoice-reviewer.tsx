@@ -45,6 +45,12 @@ import {
 
 const HEADER_FIELDS = new Set(["nif_cliente", "nombre_cliente", "concepto"]);
 
+// Umbral del pager: por debajo se muestran dots numerados (uno por factura);
+// por encima se cambia a control compacto "N / total" + input. Con 60 dots
+// inline (≈1560 px) el header desbordaba y recortaba el botón "Generar
+// Asientos →" por el overflow-hidden del wrapper raíz.
+const PAGER_DOTS_MAX = 12;
+
 interface InvoiceSummary {
   id: string;
   /** Nombre actual de la carpeta (operario-friendly tras rename). */
@@ -91,6 +97,10 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   const dirtyRef = useRef(false);
   // Navegación pendiente (cuando hay cambios sin guardar)
   const [pendingNavIdx, setPendingNavIdx] = useState<number | null>(null);
+  // Texto del input del pager compacto. Vive como state local del input para
+  // permitir borrar y reescribir libremente; el commit a currentIdx ocurre en
+  // blur/Enter. Se resincroniza desde currentIdx vía useEffect.
+  const [pageInputValue, setPageInputValue] = useState<string>("1");
   // Auto-advance timeout ref para cancelar en navegación manual
   const autoAdvanceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Último id de factura cargado en el formulario. Protege contra resets
@@ -115,6 +125,11 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   useEffect(() => { batchTotalRef.current = batchTotal; }, [batchTotal]);
 
   useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
+  // Resincronizar el texto del input del pager compacto cuando currentIdx
+  // cambia por causas externas (navegación con flechas, auto-advance tras
+  // aprobar). El usuario puede borrar/reescribir libremente entre tanto;
+  // este efecto solo aplica cuando el cambio viene de fuera del input.
+  useEffect(() => { setPageInputValue(String(currentIdx + 1)); }, [currentIdx]);
   useEffect(() => { invoiceSummariesRef.current = invoiceSummaries; }, [invoiceSummaries]);
   useEffect(() => { cacheRef.current = detailsCache; }, [detailsCache]);
   useEffect(() => { approvedInvoicesRef.current = approvedInvoices; }, [approvedInvoices]);
@@ -556,7 +571,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         </div>
 
         {/* Navigation */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 min-w-0">
           <div className="flex items-center gap-1 bg-white border p-1 rounded-sm shadow-sm">
             <Button
                variant="ghost" size="icon"
@@ -568,43 +583,86 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                <ChevronLeft className="h-4 w-4 text-slate-400" />
             </Button>
 
-            <div className="flex items-center gap-1.5 px-3">
-               {Array.from({ length: totalVisible }).map((_, idx) => {
-                  const inv = invoiceSummaries[idx];
-                  if (!inv) {
+            {totalVisible <= PAGER_DOTS_MAX ? (
+              <div className="flex items-center gap-1.5 px-3">
+                 {Array.from({ length: totalVisible }).map((_, idx) => {
+                    const inv = invoiceSummaries[idx];
+                    if (!inv) {
+                      return (
+                        <span
+                          key={`pending-${idx}`}
+                          className="w-5 h-5 text-[9px] font-black rounded-full flex items-center justify-center text-slate-200 bg-slate-50 border border-slate-100"
+                          title="Factura aún no procesada"
+                        >
+                          {idx + 1}
+                        </span>
+                      );
+                    }
+                    const done = approvedInvoices.has(inv.id);
+                    const rejected = rejectedInvoices.has(inv.id);
+                    const active = currentIdx === idx;
                     return (
-                      <span
-                        key={`pending-${idx}`}
-                        className="w-5 h-5 text-[9px] font-black rounded-full flex items-center justify-center text-slate-200 bg-slate-50 border border-slate-100"
-                        title="Factura aún no procesada"
+                      <button
+                        key={inv.id}
+                        onClick={() => navigateTo(idx)}
+                        className={cn(
+                          "w-5 h-5 text-[9px] font-black rounded-full flex items-center justify-center transition-all",
+                          active && !done && !rejected && "bg-slate-900 text-white scale-110 shadow-md",
+                          !active && !done && !rejected && "hover:bg-slate-100 text-slate-300",
+                          done && !active && "text-green-500 bg-green-50/50",
+                          done && active && "bg-green-600 text-white scale-110 shadow-md",
+                          rejected && !active && "text-red-400 bg-red-50/60",
+                          rejected && active && "bg-red-500 text-white scale-110 shadow-md"
+                        )}
+                        aria-label={`Ir a factura ${inv.id}`}
                       >
-                        {idx + 1}
-                      </span>
+                        {done && !active ? <Check className="h-2.5 w-2.5 stroke-[4]" /> : idx + 1}
+                      </button>
                     );
-                  }
-                  const done = approvedInvoices.has(inv.id);
-                  const rejected = rejectedInvoices.has(inv.id);
-                  const active = currentIdx === idx;
-                  return (
-                    <button
-                      key={inv.id}
-                      onClick={() => navigateTo(idx)}
-                      className={cn(
-                        "w-5 h-5 text-[9px] font-black rounded-full flex items-center justify-center transition-all",
-                        active && !done && !rejected && "bg-slate-900 text-white scale-110 shadow-md",
-                        !active && !done && !rejected && "hover:bg-slate-100 text-slate-300",
-                        done && !active && "text-green-500 bg-green-50/50",
-                        done && active && "bg-green-600 text-white scale-110 shadow-md",
-                        rejected && !active && "text-red-400 bg-red-50/60",
-                        rejected && active && "bg-red-500 text-white scale-110 shadow-md"
-                      )}
-                      aria-label={`Ir a factura ${inv.id}`}
-                    >
-                      {done && !active ? <Check className="h-2.5 w-2.5 stroke-[4]" /> : idx + 1}
-                    </button>
-                  );
-               })}
-            </div>
+                 })}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 px-3">
+                <div className="text-[11px] font-mono font-bold text-slate-600 tabular-nums flex items-center gap-1">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={pageInputValue}
+                    onChange={(e) => {
+                      // Solo dígitos; permite cadena vacía para reescribir.
+                      setPageInputValue(e.target.value.replace(/\D/g, ""));
+                    }}
+                    onBlur={() => {
+                      const n = parseInt(pageInputValue, 10);
+                      if (!Number.isNaN(n) && n >= 1 && n <= totalVisible) {
+                        navigateTo(n - 1);
+                      } else {
+                        // Inválido o vacío: descartar y restaurar al currentIdx.
+                        setPageInputValue(String(currentIdx + 1));
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        (e.target as HTMLInputElement).blur();
+                      } else if (e.key === "Escape") {
+                        setPageInputValue(String(currentIdx + 1));
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                    className="w-10 text-center bg-transparent border-b border-slate-200 focus:outline-none focus:border-teal-500"
+                    aria-label="Ir a factura número"
+                  />
+                  <span className="text-slate-400">/</span>
+                  <span>{totalVisible}</span>
+                </div>
+                {approvedCount > 0 && (
+                  <span className="text-[10px] text-emerald-500 font-bold">
+                    ({approvedCount} ✓)
+                  </span>
+                )}
+              </div>
+            )}
 
             <Button
                variant="ghost" size="icon"
@@ -630,7 +688,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         </div>
 
         {/* Right side */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-shrink-0">
            {invoiceSummaries[currentIdx]?.folder_name && (
              <span
                className="text-[10px] text-slate-500 font-mono truncate max-w-[280px]"
@@ -685,15 +743,19 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
              </span>
            )}
            {(() => {
-             const totalInvoices = invoiceSummaries.length;
+             // Usa `effectiveTotal` del scope externo (max de batchTotal,
+             // totalQueued e invoiceSummaries.length) — el total real del lote
+             // post-splitter, no solo las facturas ya cargadas en memoria.
+             // Sin esto, en lotes multi-factura el botón se ponía "ready"
+             // prematuramente al aprobar las cargadas mientras OCR seguía.
              const decidedCount = approvedInvoices.size + rejectedInvoices.size;
-             const allDecided = totalInvoices > 0 && decidedCount === totalInvoices;
+             const allDecided = effectiveTotal > 0 && decidedCount === effectiveTotal;
              const hasApproved = approvedInvoices.size > 0;
              const ready = allDecided && hasApproved;
              const title = !hasApproved
                ? "Aprueba al menos una factura para exportar"
                : !allDecided
-                 ? `Faltan ${totalInvoices - decidedCount} factura(s) por aceptar o rechazar`
+                 ? `Faltan ${effectiveTotal - decidedCount} factura(s) por aceptar o rechazar`
                  : "Ir a exportar asientos";
              return (
                <Button
