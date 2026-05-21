@@ -13,6 +13,8 @@ import type {
   Libro,
   DocStatus,
   LibroShort,
+  PreScanResult,
+  DetectedSummary,
 } from "./types";
 
 /**
@@ -58,10 +60,18 @@ export const LIBRO_FRONT_TO_SHORT: Record<Libro, LibroShort> = {
 export const API_URL = "";
 
 const API_TIMEOUT_MS = 30000;
+/** Timeout extendido para /upload: el pre-scan Fase 1 puede tardar 3-8s por
+ *  PDF multi-página, con concurrencia 2 en backend. Un lote de 5 PDFs con
+ *  varias facturas → ~15-25s. Damos margen amplio. */
+const UPLOAD_TIMEOUT_MS = 120000;
 
-async function fetchWithTimeout(url: string, options?: RequestInit): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  options?: RequestInit,
+  timeoutMs: number = API_TIMEOUT_MS,
+): Promise<Response> {
   const timeoutController = new AbortController();
-  const timeoutId = setTimeout(() => timeoutController.abort(), API_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
 
   // Si el caller pasó un signal propio, lo combinamos con el de timeout para
   // que cualquiera de los dos abortos cancele el fetch. AbortSignal.any está
@@ -413,10 +423,28 @@ export interface BooksResponse {
   books: Book[];
 }
 
+export interface AlreadyProcessedPendingChild {
+  doc_id: string;
+  folder_name: string;
+  status: string;
+}
+
+export interface AlreadyProcessedInfo {
+  file: string;
+  original: string;
+  original_status: string;
+  pending: AlreadyProcessedPendingChild[];
+}
+
 export interface UploadResponse {
   uploaded: string[];
   errors: Array<{ file: string; error: string }>;
+  already_processed?: AlreadyProcessedInfo[];
   files?: BookFile[];
+  /** Agregado del pre-scan Fase 1 (presente desde la versión con pre-scan
+   *  síncrono en /upload). Si falta, asumir comportamiento legacy
+   *  (1 archivo = 1 factura). */
+  detected_summary?: DetectedSummary;
 }
 
 export interface PipelineRunResponse {
@@ -457,10 +485,11 @@ export async function uploadFiles(
   files.forEach((file) => formData.append("files", file));
 
   try {
-    const response = await fetchWithTimeout(`${API_URL}/api/books/${bookId}/upload`, {
-      method: "POST",
-      body: formData,
-    });
+    const response = await fetchWithTimeout(
+      `${API_URL}/api/books/${bookId}/upload`,
+      { method: "POST", body: formData },
+      UPLOAD_TIMEOUT_MS,
+    );
 
     if (!response.ok) {
       let errorMessage = `Error subiendo archivos (${response.status})`;
@@ -497,6 +526,64 @@ export async function uploadFiles(
     }
     throw error;
   }
+}
+
+/**
+ * Reintenta el pre-scan Fase 1 sobre un archivo que quedó en `pre_scan_failed`.
+ *
+ * El backend re-llama a Gemini Vision: si tiene éxito, el sidecar termina en
+ * `uploaded` (single factura) o `split` (multi-factura, hijos ya creados).
+ * Si vuelve a fallar, sidecar permanece en `pre_scan_failed` con nuevo error.
+ */
+export async function retryPreScan(
+  bookId: "gastos" | "ingresos" | "bienes",
+  docId: string,
+): Promise<{ doc_id: string; pre_scan: PreScanResult }> {
+  const encoded = encodeURIComponent(docId);
+  const response = await fetchWithTimeout(
+    `${API_URL}/api/books/${bookId}/files/${encoded}/retry-prescan`,
+    { method: "POST" },
+    UPLOAD_TIMEOUT_MS,
+  );
+  if (!response.ok) {
+    let msg = `Error reintentando pre-scan (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body.detail) msg = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return response.json();
+}
+
+/**
+ * Marca un archivo en `pre_scan_failed` como factura única forzada, saltándose
+ * el splitter Gemini. El operario asume la responsabilidad de que el PDF
+ * contiene 1 sola factura.
+ */
+export async function overridePreScan(
+  bookId: "gastos" | "ingresos" | "bienes",
+  docId: string,
+  opts: { asSingle: true },
+): Promise<{ doc_id: string; status: string; forced_as_single: boolean }> {
+  const encoded = encodeURIComponent(docId);
+  const response = await fetchWithTimeout(
+    `${API_URL}/api/books/${bookId}/files/${encoded}/override-prescan`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ as_single: opts.asSingle }),
+    },
+  );
+  if (!response.ok) {
+    let msg = `Error overrideando pre-scan (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body.detail) msg = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return response.json();
 }
 
 /**

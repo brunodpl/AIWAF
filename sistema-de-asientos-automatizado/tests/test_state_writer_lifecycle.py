@@ -181,6 +181,7 @@ def test_is_pending_confirm_only_when_last_is_done(tmp_path: Path) -> None:
     ("blocked", True),
     ("cancelled", True),
     ("error", True),
+    ("pre_scan_failed", True),  # terminal para pipeline.run, requiere acción humana
 ])
 def test_is_terminal_by_last_status(tmp_path: Path, status: str, expected: bool) -> None:
     folder = _folder(tmp_path, f"compras_term_{status}")

@@ -62,6 +62,28 @@ class Settings(BaseSettings):
         validation_alias="VISION_MAX_RETRIES"
     )
 
+    # ── Pre-scan síncrono en upload (Fase 1 anticipada) ───────
+    # El splitter Fase 1 se ejecuta dentro del endpoint /upload para que la
+    # UI conozca el nº real de facturas antes de pulsar "Escanear". Si Gemini
+    # Vision falla tras N intentos, el archivo queda bloqueado en estado
+    # `pre_scan_failed` y requiere acción humana (retry o override-as-single).
+    prescan_enabled: bool = Field(
+        default=True, validation_alias="PRESCAN_ENABLED",
+        description="Feature flag para apagar el pre-scan en emergencia (vuelve al flujo legacy: splitter solo en pipeline.run).",
+    )
+    prescan_max_attempts: int = Field(
+        default=2, validation_alias="PRESCAN_MAX_ATTEMPTS",
+        description="Intentos máximos por PDF antes de marcar pre_scan_failed.",
+    )
+    prescan_max_concurrency: int = Field(
+        default=2, validation_alias="PRESCAN_MAX_CONCURRENCY",
+        description="Pre-scans paralelos por upload (Semaphore Gemini).",
+    )
+    prescan_timeout_seconds: int = Field(
+        default=30, validation_alias="PRESCAN_TIMEOUT_SECONDS",
+        description="Timeout por pre-scan individual (s).",
+    )
+
     # ── Gemini LLM árbitro (Fase 3) ──────────────────────────
     # Sin defaults — modelo y location deben ser explícitos en .env.
     # Usar siempre versión anclada (ej: gemini-2.0-flash-001), nunca alias flotante.

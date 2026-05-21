@@ -6,6 +6,6 @@ previo a Fase 2 OCR; cada PDF de salida sigue siendo "1 factura = 1 doc"
 para el resto del pipeline.
 """
 
-from .main import run_split, SplitOutcome
+from .main import run_split, split_single_file, SplitOutcome
 
-__all__ = ["run_split", "SplitOutcome"]
+__all__ = ["run_split", "split_single_file", "SplitOutcome"]

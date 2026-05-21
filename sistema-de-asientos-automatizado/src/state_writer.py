@@ -84,6 +84,10 @@ VALID_STATUSES = frozenset(
         "renamed",
         "reset",
         "split",
+        # Pre-scan síncrono en /upload: el splitter Fase 1 corrió pero falló
+        # (timeout/error Gemini Vision tras N intentos). Bloqueante — no entra
+        # al pipeline hasta que el operario decida (retry o override-as-single).
+        "pre_scan_failed",
     }
 )
 
@@ -92,19 +96,23 @@ VALID_STATUSES = frozenset(
 # romper el sidecar de un documento. Si en producción aparecen muchos warnings
 # de una transición concreta, revisar la tabla.
 VALID_TRANSITIONS: dict[Optional[str], frozenset[str]] = {
-    None:         frozenset({"uploaded", "processing"}),
-    "uploaded":   frozenset({"processing", "cancelled", "error", "split"}),
-    "processing": frozenset({"done", "review", "blocked", "error", "cancelled", "retrying", "renamed", "split"}),
-    "retrying":   frozenset({"processing", "done", "review", "blocked", "error", "cancelled"}),
-    "review":     frozenset({"done", "review", "blocked", "renamed", "cancelled"}),
-    "done":       frozenset({"confirmed", "review", "renamed"}),
-    "confirmed":  frozenset({"renamed"}),
-    "blocked":    frozenset({"retrying", "renamed"}),
-    "cancelled":  frozenset({"retrying"}),
-    "error":      frozenset({"retrying", "processing"}),
-    "renamed":    frozenset({"done", "review", "blocked", "confirmed", "error", "cancelled", "retrying"}),
-    "reset":      frozenset(),
-    "split":      frozenset(),
+    None:              frozenset({"uploaded", "processing"}),
+    "uploaded":        frozenset({"processing", "cancelled", "error", "split", "pre_scan_failed"}),
+    "processing":      frozenset({"done", "review", "blocked", "error", "cancelled", "retrying", "renamed", "split"}),
+    "retrying":        frozenset({"processing", "done", "review", "blocked", "error", "cancelled"}),
+    "review":          frozenset({"done", "review", "blocked", "renamed", "cancelled"}),
+    "done":            frozenset({"confirmed", "review", "renamed", "cancelled"}),
+    "confirmed":       frozenset({"renamed"}),
+    "blocked":         frozenset({"retrying", "renamed", "cancelled"}),
+    "cancelled":       frozenset({"retrying"}),
+    "error":           frozenset({"retrying", "processing", "cancelled"}),
+    "renamed":         frozenset({"done", "review", "blocked", "confirmed", "error", "cancelled", "retrying"}),
+    "reset":           frozenset(),
+    "split":           frozenset(),
+    # Desbloqueo manual: retry (vuelve a llamar al splitter), override→uploaded
+    # (forzar como factura única), cancelled (descartar), o split (si el retry
+    # tuvo éxito y descubrió que sí eran N facturas).
+    "pre_scan_failed": frozenset({"retrying", "uploaded", "cancelled", "split"}),
 }
 
 
@@ -294,9 +302,27 @@ def is_terminal(folder: Path) -> bool:
     """True si la factura ya no se puede mover de estado por sí sola.
 
     Estados terminales: ``confirmed``, ``blocked``, ``cancelled``, ``error``,
-    ``split``. NOTA: ``done`` NO es terminal — está esperando confirm humano.
+    ``split``, ``pre_scan_failed``. NOTA: ``done`` NO es terminal — está
+    esperando confirm humano.
+
+    ``pre_scan_failed`` es "terminal para el pipeline": requiere acción
+    humana (retry o override-as-single) para volver a entrar al flujo. El
+    pipeline.run() debe skipear la carpeta — no es seguro asumir 1 factura
+    si el splitter no pudo confirmarlo.
     """
-    return current_status(folder) in {"confirmed", "blocked", "cancelled", "error", "split"}
+    return current_status(folder) in {
+        "confirmed", "blocked", "cancelled", "error", "split", "pre_scan_failed",
+    }
+
+
+def is_pre_scan_failed(folder: Path) -> bool:
+    """True si el último status del sidecar es ``pre_scan_failed``.
+
+    Distinto de ``is_terminal`` por claridad de llamada: hay sitios en la
+    API que necesitan diferenciar "terminal y no recuperable" de "bloqueado
+    esperando decisión humana sobre el split".
+    """
+    return current_status(folder) == "pre_scan_failed"
 
 
 def is_split(folder: Path) -> bool:
@@ -454,3 +480,47 @@ def find_by_fiscal_hash(asientos_root: Path, fiscal_hash: str) -> Optional[Path]
         except (OSError, json.JSONDecodeError):
             continue
     return None
+
+
+def get_split_children_status(folder: Path) -> list[dict[str, str]]:
+    """Devuelve ``[{doc_id, folder_name, status}]`` para los hijos del evento ``split``.
+
+    El estado de cada hijo se resuelve leyendo su propio sidecar — no se confía
+    en lo que pudiera haber quedado cacheado en el evento ``split`` del padre.
+    Si la carpeta no tiene evento ``split`` o no es localizable, devuelve [].
+
+    Usado por el endpoint de upload para distinguir "PDF ya completamente
+    procesado" vs "PDF ya procesado pero con facturas hijo aún en cola".
+    """
+    folder = Path(folder)
+    sidecar = _sidecar_path(folder)
+    if not sidecar.exists():
+        return []
+    try:
+        with sidecar.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    split_event = None
+    for ev in reversed(data.get("events") or []):
+        if ev.get("status") == "split":
+            split_event = ev
+            break
+    if split_event is None:
+        return []
+
+    doc_ids = split_event.get("split_into") or []
+    asientos_root = folder.parent
+    out: list[dict[str, str]] = []
+    for doc_id in doc_ids:
+        child_folder = find_folder_by_doc_id(asientos_root, doc_id)
+        if child_folder is None:
+            continue
+        status = current_status(child_folder) or "unknown"
+        out.append({
+            "doc_id": doc_id,
+            "folder_name": child_folder.name,
+            "status": status,
+        })
+    return out

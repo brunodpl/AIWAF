@@ -35,7 +35,14 @@ export type DocStatus =
   | "cancelled"
   | "error"
   | "renamed"
-  | "reset";
+  | "reset"
+  // Pre-scan Fase 1 (Gemini Vision) corrió en /upload y falló. Bloqueante:
+  // requiere acción humana (retry-prescan u override-as-single) antes de
+  // poder entrar al pipeline OCR.
+  | "pre_scan_failed"
+  // Sidecar original de un PDF multi-factura ya dividido — la trazabilidad
+  // continúa en los doc_ids hijos. Terminal para esta carpeta.
+  | "split";
 
 /** Forma corta del libro — coincide con el prefijo del folder_name del asiento. */
 export type LibroShort = "compras" | "ventas" | "bienes";
@@ -69,6 +76,42 @@ export interface BookFile {
   status?: DocStatus | null;
   /** Nombre de la carpeta de asiento si ya existe. */
   folder_name?: string | null;
+  /** Resultado del pre-scan Fase 1 (presente solo en respuesta de /upload).
+   *  No se persiste en /api/books: tras refrescar la página, la UI deriva
+   *  el estado de cada archivo desde el sidecar (`status`). */
+  pre_scan?: PreScanResult | null;
+}
+
+/** Hijo de un PDF multi-factura tal como lo creó el splitter Fase 1. */
+export interface PreScanChild {
+  doc_id: string;
+  folder_name: string;
+  status: string;
+  /** Rango de páginas del PDF original (no siempre disponible en /api/books). */
+  pages?: number[];
+  emisor_cif?: string | null;
+  confidence?: number | null;
+}
+
+/** Sub-objeto `pre_scan` por archivo en la respuesta de /upload. */
+export interface PreScanResult {
+  /** "single" = 1 factura. "split" = N facturas (ver `children`).
+   *  "failed" = bloqueado, requiere acción humana.
+   *  "skipped_non_pdf" = imagen, no se llama a Gemini.
+   *  "skipped_disabled" = feature flag PRESCAN_ENABLED=false (legacy). */
+  status: "single" | "split" | "failed" | "skipped_non_pdf" | "skipped_disabled";
+  n_pages: number;
+  detected_invoices: number;
+  children: PreScanChild[];
+  error: { kind: string; message: string; attempts: number } | null;
+}
+
+/** Resumen agregado del pre-scan para todo el lote subido. */
+export interface DetectedSummary {
+  total_invoices: number;
+  files_ok: number;
+  files_blocked: number;
+  files_skipped: number;
 }
 
 /** An accounting book (gastos, ingresos, bienes) */

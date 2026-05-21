@@ -364,11 +364,13 @@ def run_pipeline(
     # reprocese facturas anteriores que la UI ya oculta del inbox.
     #
     # Estados que se saltan:
-    #   - ``done``       — esperando confirm humano (no reprocesar para no perder revisión)
-    #   - ``confirmed``  — asiento contable cerrado
-    #   - ``blocked``    — bloqueado por regla (ej. duplicado fiscal)
-    #   - ``cancelled``  — cancelado por usuario
-    #   - ``error``      — error técnico (re-OCR explícito requiere acción humana via UI)
+    #   - ``done``             — esperando confirm humano (no reprocesar para no perder revisión)
+    #   - ``confirmed``        — asiento contable cerrado
+    #   - ``blocked``          — bloqueado por regla (ej. duplicado fiscal)
+    #   - ``cancelled``        — cancelado por usuario
+    #   - ``error``            — error técnico (re-OCR explícito requiere acción humana via UI)
+    #   - ``split``            — original ya dividido, los hijos se procesan por separado
+    #   - ``pre_scan_failed``  — pre-scan Fase 1 falló en /upload, requiere retry u override-as-single humano
     asientos_root_for_skip = cfg.asientos_path()
     pending_files: list[str] = []
     skipped = 0

@@ -15,10 +15,11 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 
-type Stage = "books" | "processing" | "review" | "export";
+type Stage = "books" | "pre-review" | "processing" | "review" | "export";
 
 const STAGES: { key: Stage; label: string }[] = [
   { key: "books", label: "Gestión" },
+  { key: "pre-review", label: "Pre-revisión" },
   { key: "processing", label: "Escaneando" },
   { key: "review", label: "Revisión" },
   { key: "export", label: "Exportar" },

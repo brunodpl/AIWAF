@@ -41,6 +41,10 @@ interfaz-asientos-automatizados/playwright-report/
 
 # Pytest MagicMock leftover dirs (when tests escape sandboxing)
 sistema-de-asientos-automatizado/MagicMock/
+MagicMock/
+
+# docker-compose build / deploy logs
+compose-build.log
 
 # Local [AI assistant] Code settings (user-specific)
 .[AI assistant]/settings.local.json

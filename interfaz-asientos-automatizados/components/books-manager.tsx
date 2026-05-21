@@ -13,11 +13,24 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { Book, BookFile } from "@/lib/types";
+import { Book, BookFile, Libro } from "@/lib/types";
 import { fetchBooks, uploadFiles, runPipeline, deleteBookFile } from "@/lib/api";
 
 interface BooksManagerProps {
   onPipelineStart: () => void;
+  // Activado cuando el usuario clica "Abrir reviewer" en el toast de
+  // ``already_processed`` (PDF ya conocido con hijos en estado no-terminal).
+  // ``focusDocIds`` se propaga al InvoiceReviewer para posicionarlo en la
+  // primera factura pendiente y opcionalmente filtrar la cola.
+  onNavigateToReview?: (focusDocIds: string[]) => void;
+  // Llamado tras un upload exitoso con resultados del pre-scan. El padre
+  // decide si transitar al stage "pre-review" según `detected_summary`.
+  onUploadComplete?: (bookId: Libro, files: BookFile[]) => void;
+  // Datos de pre-revisión ya conocidos por el padre (sobreviven al unmount
+  // de este componente cuando el operario navega a pre-review y vuelve).
+  // Si está presente y no está vacío, "Escanear" enruta a pre-review
+  // incluso si el accumulator local de esta instancia está vacío.
+  parentPreReviewFilesByBook?: Record<string, BookFile[]>;
 }
 
 interface UploadProgress {
@@ -33,11 +46,36 @@ interface PendingFile {
 
 const ALLOWED_EXTENSIONS = new Set([".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp", ".bmp"]);
 
-// `confirmed` = asiento cerrado en Intermega; `split` = PDF original ya
-// dividido por el splitter. El backend rechaza DELETE en ambos casos.
-const TERMINAL_STATUSES = new Set(["done", "confirmed", "split"]);
+// Estados "no escanear de nuevo" desde Gestión: el pipeline los saltaría y
+// el operario tiene que resolverlos desde el Reviewer (review/blocked), o
+// son terminales contables (done/confirmed), o terminales por error/cancel,
+// o requieren acción específica (pre_scan_failed, split).
+//
+// - confirmed: asiento contable cerrado en Intermega (backend rechaza DELETE).
+// - done:      lista para confirmar humano (espera acción en Reviewer).
+// - review:    decisión humana pendiente — vive en Reviewer.
+// - blocked:   bloqueada por regla fiscal — el operario revisa en Reviewer.
+// - cancelled: soft-deleted por usuario.
+// - error:     fallo técnico (re-OCR explícito requerido).
+// - split:     PDF original ya dividido; sus hijos son los facturables.
+// - pre_scan_failed: pre-scan falló; retry/override desde Pre-revisión.
+const TERMINAL_STATUSES = new Set([
+  "done",
+  "confirmed",
+  "review",
+  "blocked",
+  "cancelled",
+  "error",
+  "split",
+  "pre_scan_failed",
+]);
 
-export function BooksManager({ onPipelineStart }: BooksManagerProps) {
+export function BooksManager({
+  onPipelineStart,
+  onNavigateToReview,
+  onUploadComplete,
+  parentPreReviewFilesByBook,
+}: BooksManagerProps) {
   const [books, setBooks] = useState<Book[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +85,11 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
   const [dragFileCount, setDragFileCount] = useState(0);
   const [deletingFile, setDeletingFile] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<Record<string, PendingFile[]>>({});
+  // Acumulador de resultados de pre-scan por libro. Se rellena tras cada
+  // upload exitoso con `result.files` (que ya trae el sub-objeto `pre_scan`).
+  // No dispara navegación: la transición a Pre-revisión sólo ocurre cuando
+  // el operario pulsa "Escanear" en el footer.
+  const [accumulatedUploads, setAccumulatedUploads] = useState<Record<string, BookFile[]>>({});
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const uploadingRef = useRef(false);
@@ -117,7 +160,30 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
     (bookId: string, _uploadedNames: string[], serverBooks: Book[] | null, resultFiles: BookFile[] | undefined) => {
       if (!mountedRef.current) return;
 
-      if (resultFiles && resultFiles.length > 0) {
+      if (serverBooks) {
+        // Usamos serverBooks como verdad (incluye hijos del split que el
+        // splitter creó dentro de /upload) y enriquecemos cada archivo con
+        // el `pre_scan` que devolvió la respuesta del upload — los hijos
+        // viven en /api/books pero su `pre_scan` solo se conoce vía padre
+        // (que está en _originales/ y no aparece en /api/books).
+        const resultByName = new Map<string, BookFile>();
+        for (const f of resultFiles ?? []) resultByName.set(f.name, f);
+        setBooks(
+          serverBooks.map((b) => {
+            if (b.id !== bookId) return b;
+            return {
+              ...b,
+              files: b.files.map((f) => {
+                const enriched = resultByName.get(f.name);
+                return enriched
+                  ? { ...f, pre_scan: enriched.pre_scan ?? f.pre_scan }
+                  : f;
+              }),
+            };
+          }),
+        );
+      } else if (resultFiles && resultFiles.length > 0) {
+        // Sin serverBooks (poll falló) — caemos al merge optimista anterior.
         setBooks((prev) =>
           prev
             ? prev.map((b) => {
@@ -126,10 +192,8 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                 const newFiles = resultFiles.filter((f) => !existingNames.has(f.name));
                 return { ...b, files: [...b.files, ...newFiles] };
               })
-            : prev
+            : prev,
         );
-      } else if (serverBooks) {
-        setBooks(serverBooks);
       }
 
       // Borra TODOS los pending del bookId. El backend puede renombrar archivos
@@ -169,10 +233,17 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
       }));
 
       setUploadingBooks((prev) => new Set(prev).add(bookId));
+      // El backend hace pre-scan síncrono Fase 1 (Gemini Vision) por PDF,
+      // así que la subida puede tardar varios segundos por archivo multi-página.
+      // Mostramos un mensaje explícito para que el operario no piense que está
+      // colgado.
+      const hasPdf = droppedFiles.some((f) => f.name.toLowerCase().endsWith(".pdf"));
       setUploadProgress({
         bookId,
         percent: 0,
-        fileName: `${droppedFiles.length} archivo(s)`,
+        fileName: hasPdf
+          ? `Subiendo y analizando ${droppedFiles.length} archivo(s)…`
+          : `${droppedFiles.length} archivo(s)`,
       });
 
       try {
@@ -187,23 +258,58 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
           result.errors.forEach((e) => toast.error(`${e.file}: ${e.error}`));
         }
 
+        // PDFs ya conocidos cuyos hijos siguen pendientes de revisión.
+        // Informamos al operario pero NO ofrecemos "Abrir reviewer": el
+        // acceso al Reviewer desde Gestión está intencionalmente cerrado para
+        // mantener el workspace limpio tras un Nuevo escaneo.
+        const alreadyProcessed = result.already_processed ?? [];
+        if (alreadyProcessed.length > 0) {
+          for (const info of alreadyProcessed) {
+            const n = info.pending.length;
+            const facturas = n === 1 ? "factura pendiente" : "facturas pendientes";
+            toast.info(
+              `${info.file}: ya procesado. ${n} ${facturas} de revisión.`,
+              { duration: 8000 },
+            );
+          }
+        }
+
         const uploadedCount = result.uploaded.length;
-        if (uploadedCount === 0 && result.errors.length > 0) {
+        if (
+          uploadedCount === 0 &&
+          (result.errors.length > 0 || alreadyProcessed.length > 0)
+        ) {
           setPendingFiles((prev) => {
             const next = { ...prev };
             delete next[bookId];
             return next;
           });
           setUploadProgress(null);
-          toast.error("Ningún archivo pudo subirse. Revisa los errores.");
+          if (alreadyProcessed.length > 0 && result.errors.length === 0) {
+            // Caso limpio: TODO el lote eran PDFs ya conocidos con pendientes.
+            // El toast info ya está mostrado; no añadimos toast de error.
+          } else {
+            toast.error("Ningún archivo pudo subirse. Revisa los errores.");
+          }
           return;
         }
 
         setUploadProgress({ bookId, percent: 30, fileName: "Sincronizando con el servidor…" });
 
+        // Si un PDF se splitteó, el original se mueve a `_originales/` y los
+        // hijos aparecen en el inbox con sufijo ``__iofN.pdf``. Esperamos los
+        // hijos (no el padre) para no marcar "missing" el original que ya no
+        // está visible.
+        const expectedNames = result.uploaded.flatMap((name) => {
+          const info = result.files?.find((f) => f.name === name);
+          if (info?.pre_scan?.status === "split" && info.pre_scan.children.length > 0) {
+            return info.pre_scan.children.map((c) => `${c.doc_id}.pdf`);
+          }
+          return [name];
+        });
         const { missing, books: serverBooks } = await pollBooksUntilSynced(
           bookId,
-          result.uploaded
+          expectedNames
         );
 
         if (!mountedRef.current) return;
@@ -226,6 +332,26 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
           if (!mountedRef.current) return;
           setUploadProgress((prev) => (prev?.bookId === bookId ? null : prev));
         }, 600);
+
+        // Acumulamos los resultados con `pre_scan` para pasárselos al stage
+        // Pre-revisión, pero NO transicionamos automáticamente. El operario
+        // pulsará "Escanear" para confirmar el paso (ver handleRunPipeline).
+        if (
+          result.files &&
+          result.files.length > 0 &&
+          (result.detected_summary?.total_invoices ?? 0) > 0
+        ) {
+          const uploadedNames = new Set(result.uploaded);
+          const newFiles = result.files.filter((f) => uploadedNames.has(f.name));
+          if (newFiles.length > 0) {
+            setAccumulatedUploads((prev) => {
+              const existing = prev[bookId] || [];
+              const byName = new Map(existing.map((f) => [f.name, f] as const));
+              for (const f of newFiles) byName.set(f.name, f);
+              return { ...prev, [bookId]: [...byName.values()] };
+            });
+          }
+        }
       } catch (err) {
         if (!mountedRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
@@ -326,6 +452,16 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
             )
           : prev
       );
+      // Si el archivo borrado estaba en el acumulador de pre-scan, retirarlo.
+      setAccumulatedUploads((prev) => {
+        if (!(bookId in prev)) return prev;
+        const filtered = prev[bookId].filter((f) => f.name !== filename);
+        if (filtered.length === prev[bookId].length) return prev;
+        const next = { ...prev };
+        if (filtered.length === 0) delete next[bookId];
+        else next[bookId] = filtered;
+        return next;
+      });
       toast.success(`Archivo eliminado: ${filename}`);
     } catch (err) {
       if (!mountedRef.current) return;
@@ -336,7 +472,51 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
     }
   }, []);
 
+  // Total real de facturas detectadas. Mergeamos accumulator local + datos del
+  // padre (que sobreviven a un round-trip pre-review → volver a Gestión).
+  // El merge es por nombre de archivo dentro de cada libro — los archivos
+  // recién subidos pisan a versiones anteriores con el mismo nombre.
+  const mergedFilesByBook: Record<string, BookFile[]> = (() => {
+    const out: Record<string, BookFile[]> = {};
+    const allBookIds = new Set([
+      ...Object.keys(parentPreReviewFilesByBook || {}),
+      ...Object.keys(accumulatedUploads),
+    ]);
+    for (const bid of allBookIds) {
+      const byName = new Map<string, BookFile>();
+      for (const f of parentPreReviewFilesByBook?.[bid] || []) byName.set(f.name, f);
+      for (const f of accumulatedUploads[bid] || []) byName.set(f.name, f);
+      out[bid] = [...byName.values()];
+    }
+    return out;
+  })();
+
+  const totalDetectedInvoices = Object.values(mergedFilesByBook).reduce(
+    (sum, files) =>
+      sum +
+      files.reduce((s, f) => s + (f.pre_scan?.detected_invoices ?? 1), 0),
+    0,
+  );
+
   const handleRunPipeline = useCallback(async () => {
+    // Si hay resultados de pre-scan disponibles (locales o conservados por el
+    // padre desde una sesión anterior), vamos al stage Pre-revisión para
+    // confirmar el desglose. El pipeline lo lanza el botón "Escanear" de
+    // PreReviewStage.
+    const mergedBookIds = Object.keys(mergedFilesByBook);
+    if (onUploadComplete && mergedBookIds.length > 0) {
+      for (const bid of mergedBookIds) {
+        const files = mergedFilesByBook[bid];
+        if (files && files.length > 0) {
+          onUploadComplete(bid as Libro, files);
+        }
+      }
+      return;
+    }
+
+    // Fallback (sin uploads recientes con pre-scan): pipeline directo,
+    // sin pasar por Pre-revisión. Mantiene el flujo legacy para PDFs ya
+    // presentes en el inbox de sesiones anteriores.
     try {
       const result = await runPipeline();
       toast.success(`Pipeline iniciado: ${result.total} archivo(s) a procesar`);
@@ -351,12 +531,79 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
         toast.error(`Error iniciando pipeline: ${message}`);
       }
     }
-  }, [onPipelineStart]);
+  }, [mergedFilesByBook, onUploadComplete, onPipelineStart]);
 
   const isPendingFile = (f: BookFile) =>
     !f.status || !TERMINAL_STATUSES.has(f.status);
-  const totalFiles =
-    books?.reduce((sum, b) => sum + b.files.filter(isPendingFile).length, 0) ?? 0;
+
+  // Vista derivada por libro: oculta los hijos `__iofN.pdf` cuyo padre ya
+  // está cubierto por el pre-scan (acumulador) y añade el padre virtual con
+  // su badge "N facturas". Resultado: 1 fila por upload, no N filas por split.
+  const splitParentStemsByBook: Record<string, Set<string>> = (() => {
+    const out: Record<string, Set<string>> = {};
+    for (const [bid, files] of Object.entries(mergedFilesByBook)) {
+      const stems = new Set<string>();
+      for (const f of files) {
+        if (f.pre_scan?.status === "split") {
+          stems.add(f.name.replace(/\.[^.]+$/, ""));
+        }
+      }
+      out[bid] = stems;
+    }
+    return out;
+  })();
+  const isChildOfKnownParent = (bookId: string, fileName: string) => {
+    const stems = splitParentStemsByBook[bookId];
+    if (!stems || stems.size === 0) return false;
+    const m = fileName.match(/^(.+?)__\d+of\d+\.pdf$/i);
+    return m ? stems.has(m[1]) : false;
+  };
+
+  const displayedFilesByBook: Record<string, BookFile[]> = (() => {
+    const out: Record<string, BookFile[]> = {};
+    for (const b of books ?? []) {
+      const knownNames = new Set(b.files.map((f) => f.name));
+      const visible = b.files.filter(
+        (f) => isPendingFile(f) && !isChildOfKnownParent(b.id, f.name),
+      );
+      // Injecta padres virtuales del acumulador que ya no están en el inbox
+      // (típicamente porque el splitter los movió a `_originales/`).
+      const virtualParents = (mergedFilesByBook[b.id] ?? []).filter(
+        (f) => !knownNames.has(f.name) && f.pre_scan?.status === "split",
+      );
+      out[b.id] = [...visible, ...virtualParents];
+    }
+    return out;
+  })();
+
+  // Conteo del CTA: suma de facturas detectadas en los padres del acumulador
+  // + archivos pendientes que no están cubiertos por ningún padre (stale del
+  // inbox, imágenes recién subidas, etc.).
+  let ctaCount = 0;
+  for (const b of books ?? []) {
+    for (const f of b.files) {
+      if (!isPendingFile(f)) continue;
+      if (isChildOfKnownParent(b.id, f.name)) continue; // contado en el padre
+      // Pre-scan info conocido para este archivo concreto (no padre):
+      const fromAcc = mergedFilesByBook[b.id]?.find((a) => a.name === f.name);
+      const detected = fromAcc?.pre_scan?.detected_invoices;
+      ctaCount += detected ?? 1;
+    }
+    // Padres virtuales (no en inbox pero sí en acumulador).
+    for (const f of mergedFilesByBook[b.id] ?? []) {
+      const inInbox = b.files.some((bf) => bf.name === f.name);
+      if (inInbox) continue;
+      if (f.pre_scan?.status === "split") {
+        ctaCount += f.pre_scan.detected_invoices;
+      } else if (f.pre_scan?.status === "single") {
+        ctaCount += 1;
+      }
+    }
+  }
+  const totalDisplayedFiles = Object.values(displayedFilesByBook).reduce(
+    (sum, files) => sum + files.length,
+    0,
+  );
 
   if (loading && !books) {
     return (
@@ -392,7 +639,7 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[10px] font-bold text-slate-400 font-mono">
-            {totalFiles} archivo(s) pendiente(s)
+            {totalDisplayedFiles} archivo(s) pendiente(s)
           </span>
           <Button
             variant="ghost"
@@ -414,7 +661,7 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
             const isUploading = uploadingBooks.has(book.id);
             const isDragOver = dragOverBook === book.id;
             const progress = uploadProgress?.bookId === book.id ? uploadProgress.percent : 0;
-            const visibleFiles = book.files.filter(isPendingFile);
+            const visibleFiles = displayedFilesByBook[book.id] ?? [];
             const bookPending = pendingFiles[book.id] || [];
             const hasPending = bookPending.length > 0;
             const showPlaceholder = visibleFiles.length === 0 && !isUploading && !hasPending;
@@ -510,20 +757,37 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                       const fileKey = `${book.id}/${file.name}`;
                       const isDeleting = deletingFile === fileKey;
                       const isFresh = bookPending.some((pf) => pf.name === file.name) === false;
+                      // Si el archivo acaba de ser pre-scaneado en esta sesión,
+                      // mostramos el desglose detectado. Buscamos primero en el
+                      // merge (local + heredado del padre) y, en último caso,
+                      // en el propio file.pre_scan (sólo presente en respuestas
+                      // de /upload, no en /api/books).
+                      const accFile = mergedFilesByBook[book.id]?.find((f) => f.name === file.name);
+                      const preScan = accFile?.pre_scan ?? file.pre_scan ?? null;
+                      const detectedBadge =
+                        preScan && preScan.status === "split"
+                          ? `${preScan.detected_invoices} facturas`
+                          : preScan && preScan.status === "failed"
+                          ? "pre-scan ko"
+                          : null;
                       const statusLabel = file.status
                         ? file.status === "done" ? "procesada"
                         : file.status === "review" ? "revisar"
                         : file.status === "blocked" ? "bloqueada"
                         : file.status === "error" ? "error"
                         : file.status === "processing" ? "procesando…"
+                        : file.status === "pre_scan_failed" ? "pre-scan ko"
+                        : file.status === "split" ? "dividida"
                         : null
                         : null;
                       const statusClass = file.status === "done"
                         ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                         : file.status === "review"
                         ? "bg-amber-50 text-amber-700 border-amber-200"
-                        : file.status === "blocked" || file.status === "error"
+                        : file.status === "blocked" || file.status === "error" || file.status === "pre_scan_failed"
                         ? "bg-red-50 text-red-700 border-red-200"
+                        : file.status === "split"
+                        ? "bg-violet-50 text-violet-700 border-violet-200"
                         : "bg-slate-50 text-slate-600 border-slate-200";
                       return (
                         <div
@@ -538,6 +802,23 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
                             <p className="text-xs font-mono truncate">{file.name}</p>
                             <p className="text-[10px] text-slate-400">{file.size_kb} KB</p>
                           </div>
+                          {detectedBadge && (
+                            <span
+                              className={cn(
+                                "text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full border",
+                                preScan?.status === "failed"
+                                  ? "bg-red-50 text-red-700 border-red-200"
+                                  : "bg-violet-50 text-violet-700 border-violet-200",
+                              )}
+                              title={
+                                preScan?.status === "split"
+                                  ? `${preScan.n_pages} páginas → ${preScan.detected_invoices} facturas detectadas`
+                                  : preScan?.error?.message ?? undefined
+                              }
+                            >
+                              {detectedBadge}
+                            </span>
+                          )}
                           {statusLabel && (
                             <span
                               className={cn(
@@ -593,13 +874,13 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
         <Button
           size="lg"
           onClick={handleRunPipeline}
-          disabled={totalFiles === 0}
+          disabled={ctaCount === 0}
           className={cn(
             "w-64 h-11 bg-slate-900 border border-slate-900 hover:bg-black text-white font-bold uppercase text-[10px] tracking-[0.2em] rounded-none shadow-lg transition-all",
-            totalFiles === 0 && "opacity-50 cursor-not-allowed"
+            ctaCount === 0 && "opacity-50 cursor-not-allowed"
           )}
         >
-          {totalFiles === 0 ? "Sin archivos pendientes" : <>Escanear {totalFiles} Factura(s) →</>}
+          {ctaCount === 0 ? "Sin archivos pendientes" : <>Escanear {ctaCount} Factura(s) →</>}
         </Button>
       </footer>
     </div>

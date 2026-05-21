@@ -21,6 +21,10 @@ def patched_settings(monkeypatch, tmp_path):
     cfg = SimpleNamespace(
         gemini_ocr_model="gemini-2.5-flash",
         audit_path=lambda: str(audit),
+        # Pre-scan: 1 intento es suficiente para los tests del orquestador
+        # (estos no validan reintentos — eso vive en test_split_single_file).
+        prescan_max_attempts=1,
+        prescan_timeout_seconds=30,
     )
     monkeypatch.setattr(splitter_main, "get_settings", lambda: cfg)
     return cfg, audit

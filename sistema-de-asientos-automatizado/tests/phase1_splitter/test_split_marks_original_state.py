@@ -29,6 +29,8 @@ def patched_env(monkeypatch, tmp_path):
         audit_path=lambda: str(audit),
         asientos_path=lambda: str(asientos),
         libros_base=str(libros),
+        prescan_max_attempts=1,
+        prescan_timeout_seconds=30,
     )
     monkeypatch.setattr(splitter_main, "get_settings", lambda: cfg)
     return cfg, inbox, asientos

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,11 @@ logger = logging.getLogger("pipeline.splitter")
 
 ORIGINALES_DIRNAME = "_originales"
 
+# Backoff entre reintentos cuando Gemini Vision devuelve error transitorio.
+# Pequeño y fijo: el splitter corre en /upload síncrono y no queremos
+# inflar la latencia percibida.
+_RETRY_BACKOFF_SECONDS = 1.0
+
 
 @dataclass
 class SplitOutcome:
@@ -49,6 +55,91 @@ class SplitOutcome:
     confidence_avg: Optional[float] = None
 
 
+def split_single_file(
+    pdf_path: Path,
+    *,
+    client=None,
+    model: Optional[str] = None,
+    max_attempts: Optional[int] = None,
+) -> SplitOutcome:
+    """Ejecuta el splitter Fase 1 sobre **un único** PDF.
+
+    Punto de entrada usado por:
+
+    - ``/api/books/{book_id}/upload`` (pre-scan síncrono por archivo).
+    - ``run_split`` (safeguard durante ``pipeline.run`` — itera carpeta).
+
+    Política de reintentos: si Gemini Vision lanza, reintenta hasta
+    ``max_attempts`` veces (default = ``settings().prescan_max_attempts``)
+    con backoff fijo de 1s. Tras agotar intentos devuelve ``status="error"``
+    con el último mensaje — el caller decide qué hacer con el sidecar.
+
+    NO escribe el JSONL de auditoría — eso es responsabilidad del orquestador
+    (``run_split`` lo hace tras procesar la carpeta entera). El caller del
+    upload puede llamar a ``_write_split_log`` con la lista de outcomes
+    agregados al final del request.
+    """
+    pdf = Path(pdf_path)
+    cfg = get_settings()
+    if model is None:
+        model = cfg.gemini_ocr_model
+    if max_attempts is None:
+        max_attempts = max(1, int(cfg.prescan_max_attempts))
+
+    try:
+        n_pages = page_count(pdf)
+    except Exception as e:
+        logger.warning("[splitter] no se pudo leer %s: %s", pdf.name, e)
+        return SplitOutcome(
+            source=str(pdf), status="error", error=f"page_count: {e}",
+        )
+
+    if n_pages <= 1:
+        return SplitOutcome(
+            source=str(pdf), status="single_page", n_pages=n_pages,
+            n_facturas=1, outputs=[str(pdf)],
+        )
+
+    # PDF multi-página: hace falta Gemini. Lazy init del cliente.
+    active_client = client if client is not None else _init_gemini_model()
+
+    last_error: Optional[Exception] = None
+    decision: Optional[SplitDecision] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            decision = detect_splits(
+                active_client, read_bytes(pdf), model=model, n_pages_total=n_pages,
+            )
+            break
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "[splitter] Gemini falló intento %d/%d para %s: %s",
+                attempt, max_attempts, pdf.name, e,
+            )
+            if attempt < max_attempts:
+                time.sleep(_RETRY_BACKOFF_SECONDS)
+
+    if decision is None:
+        logger.error(
+            "[splitter] Gemini agotó %d intentos para %s — última excepción: %s",
+            max_attempts, pdf.name, last_error, exc_info=last_error,
+        )
+        return SplitOutcome(
+            source=str(pdf), status="error", n_pages=n_pages,
+            error=f"gemini: {last_error}",
+        )
+
+    if len(decision.groups) <= 1:
+        return SplitOutcome(
+            source=str(pdf), status="single_factura",
+            n_pages=n_pages, n_facturas=1, outputs=[str(pdf)],
+            latency_ms=decision.latency_ms,
+        )
+
+    return _apply_split(pdf, n_pages, decision)
+
+
 def run_split(folder_path: str, client=None, model: Optional[str] = None) -> List[SplitOutcome]:
     """Ejecuta el splitter sobre todos los PDFs de ``folder_path``.
 
@@ -56,6 +147,10 @@ def run_split(folder_path: str, client=None, model: Optional[str] = None) -> Lis
     (la subcarpeta se ignora). Los PDFs producidos por una corrida previa
     (sufijo ``__\\dof\\d``) se reconocen, pero si vuelven a entrar al splitter
     al ser de 1 página el ``page_count`` los descarta sin llamar a Gemini.
+
+    Delega cada PDF a ``split_single_file`` (que aplica reintentos internos).
+    Se mantiene como punto de entrada del orquestador y como safeguard
+    durante ``pipeline.run`` para PDFs legacy que no pasaron por pre-scan.
     """
     folder = Path(folder_path)
     if not folder.is_dir():
@@ -73,50 +168,18 @@ def run_split(folder_path: str, client=None, model: Optional[str] = None) -> Lis
     outcomes: List[SplitOutcome] = []
     lazy_client = client
     for pdf in pdfs:
-        try:
-            n_pages = page_count(pdf)
-        except Exception as e:
-            logger.warning("[splitter] no se pudo leer %s: %s", pdf.name, e)
-            outcomes.append(SplitOutcome(
-                source=str(pdf), status="error", error=f"page_count: {e}",
-            ))
-            continue
-
-        if n_pages <= 1:
-            outcomes.append(SplitOutcome(
-                source=str(pdf), status="single_page", n_pages=n_pages,
-                n_facturas=1, outputs=[str(pdf)],
-            ))
-            continue
-
+        # Reusar lazy client entre PDFs de la misma carpeta evita pagar
+        # el init de Gemini múltiples veces en runs legacy.
         if lazy_client is None:
-            lazy_client = _init_gemini_model()
-
-        try:
-            decision = detect_splits(
-                lazy_client, read_bytes(pdf), model=model, n_pages_total=n_pages,
-            )
-        except Exception as e:
-            logger.error(
-                "[splitter] Gemini falló para %s: %s — se deja sin dividir",
-                pdf.name, e, exc_info=True,
-            )
-            outcomes.append(SplitOutcome(
-                source=str(pdf), status="error", n_pages=n_pages,
-                error=f"gemini: {e}",
-            ))
-            continue
-
-        if len(decision.groups) <= 1:
-            outcomes.append(SplitOutcome(
-                source=str(pdf), status="single_factura",
-                n_pages=n_pages, n_facturas=1, outputs=[str(pdf)],
-                latency_ms=decision.latency_ms,
-            ))
-            continue
-
-        outcome = _apply_split(pdf, n_pages, decision)
-        outcomes.append(outcome)
+            try:
+                # Si el primer PDF es single-page, split_single_file no usa
+                # cliente — diferimos el init hasta que aparezca un multi-página.
+                pages_first = page_count(pdf)
+            except Exception:
+                pages_first = 1
+            if pages_first > 1:
+                lazy_client = _init_gemini_model()
+        outcomes.append(split_single_file(pdf, client=lazy_client, model=model))
 
     _write_split_log(cfg, outcomes)
     return outcomes

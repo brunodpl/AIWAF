@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -80,9 +80,15 @@ interface InvoiceReviewerProps {
   onExport: () => void;
   /** Total de facturas en cola en el pipeline (para mostrar dots pendientes al saltar a revisión anticipadamente). */
   totalQueued?: number;
+  /** doc_ids a enfocar al cargar — set cuando el usuario llega vía toast "Abrir reviewer"
+   *  tras resubir un PDF ya conocido con hijos pendientes. Posiciona el cursor en
+   *  la primera factura que coincida. Se consume una sola vez y luego se limpia. */
+  focusDocIds?: string[];
+  /** Callback para que el padre limpie ``focusDocIds`` una vez aplicado. */
+  onClearFocus?: () => void;
 }
 
-export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove, onReject, onExport, totalQueued }: InvoiceReviewerProps) {
+export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove, onReject, onExport, totalQueued, focusDocIds, onClearFocus }: InvoiceReviewerProps) {
   const [invoiceSummaries, setInvoiceSummaries] = useState<InvoiceSummary[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -124,6 +130,16 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   const [batchTotal, setBatchTotal] = useState<number | null>(null);
   const batchTotalRef = useRef<number | null>(null);
   useEffect(() => { batchTotalRef.current = batchTotal; }, [batchTotal]);
+
+  // Set de doc_ids del lote actual (post-splitter), derivado de /api/pipeline/batch.
+  // Sirve para FILTRAR ``invoiceSummaries`` y mostrar SOLO las facturas del run en
+  // curso — evita que facturas viejas en estados activos (review/blocked) de
+  // escaneos anteriores se mezclen con las nuevas. Null hasta el primer poll.
+  // Una vez poblado, se conserva aunque el backend devuelva in_flight=false
+  // (típicamente al final del run, mientras el operario revisa antes de confirmar).
+  const [batchDocIds, setBatchDocIds] = useState<Set<string> | null>(null);
+  const batchDocIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => { batchDocIdsRef.current = batchDocIds; }, [batchDocIds]);
 
   useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
   // Resincronizar el texto del input del pager compacto cuando currentIdx
@@ -207,16 +223,80 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   useEffect(() => { loadInvoices(); }, [loadInvoices]);
 
-  // Clamp de currentIdx: si tras un merge la lista se redujo (delete externo,
-  // reset mid-polling), evitamos quedar fuera de rango. Apuntamos a la última
-  // factura disponible — preferimos no saltar a 0 para no desorientar al
-  // usuario si solo cayeron las del final.
+  // Aplica ``focusDocIds`` una sola vez por valor recibido: tras cargar la lista,
+  // posiciona el cursor en la primera factura cuyo id esté en la lista de focus
+  // y limpia el focus en el padre. Si ningún id matchea (las facturas pueden
+  // haber sido ya aprobadas/confirmadas), lo dejamos en silencio.
+  //
+  // Buscamos en ``invoiceSummaries`` (lista cruda) para asegurar match incluso
+  // si el filtro de lote aún no se ha aplicado — y reseteamos currentIdx a 0
+  // porque ``visibleSummaries`` con focusDocIds activo ya es solo las del set
+  // (el currentIdx sobre la lista cruda no encajaría con el render).
+  const focusAppliedRef = useRef<string[] | null>(null);
   useEffect(() => {
+    if (!focusDocIds || focusDocIds.length === 0) return;
     if (invoiceSummaries.length === 0) return;
-    if (currentIdx >= invoiceSummaries.length) {
-      setCurrentIdx(invoiceSummaries.length - 1);
+    // Identidad por contenido — no por referencia — para tolerar re-renders
+    // del padre con el mismo array.
+    const sig = focusDocIds.join(",");
+    if (focusAppliedRef.current && focusAppliedRef.current.join(",") === sig) return;
+
+    const targetSet = new Set(focusDocIds);
+    const found = invoiceSummaries.some(
+      (inv) => targetSet.has(inv.id) || (inv.folder_name ? targetSet.has(inv.folder_name) : false)
+    );
+    if (found) {
+      // ``visibleSummaries`` ya filtra por focusDocIds, así que la primera
+      // pendiente está en la posición 0.
+      setCurrentIdx(0);
+      const n = focusDocIds.length;
+      toast.info(
+        n === 1
+          ? "Mostrando la factura pendiente del PDF resubido."
+          : `Mostrando ${n} facturas pendientes del PDF resubido.`,
+        { duration: 4000 }
+      );
     }
-  }, [invoiceSummaries.length, currentIdx]);
+    focusAppliedRef.current = focusDocIds;
+    onClearFocus?.();
+  }, [focusDocIds, invoiceSummaries, onClearFocus]);
+
+  // Lista que se PINTA en el reviewer (filtrada por lote / focus).
+  //
+  // Prioridad:
+  // 1. ``focusDocIds``: el usuario llegó vía "Abrir reviewer" tras resubir un
+  //    PDF padre con hijos pendientes. Solo mostramos esas facturas.
+  // 2. ``batchDocIds``: filtra a las facturas del lote en curso
+  //    (``/api/pipeline/batch``). Evita que facturas viejas en estados activos
+  //    (``review``/``blocked``/``done``) de runs anteriores contaminen el lote.
+  // 3. Sin lote activo y sin focus: vacío. El JSX pinta un mensaje "vuelve a
+  //    Gestión" en lugar de listar ghosts.
+  //
+  // ``invoiceSummaries`` sigue siendo la fuente cruda del backend (para cache,
+  // matching de focus y `loadInvoices`). Solo la UI usa ``visibleSummaries``.
+  const visibleSummaries = useMemo(() => {
+    if (focusDocIds && focusDocIds.length > 0) {
+      const fset = new Set(focusDocIds);
+      return invoiceSummaries.filter(
+        (inv) => fset.has(inv.id) || (inv.folder_name ? fset.has(inv.folder_name) : false)
+      );
+    }
+    if (batchDocIds && batchDocIds.size > 0) {
+      return invoiceSummaries.filter((inv) => batchDocIds.has(inv.id));
+    }
+    return [];
+  }, [invoiceSummaries, focusDocIds, batchDocIds]);
+
+  // Clamp de currentIdx: si tras un merge / filtro la lista visible se redujo
+  // (delete externo, reset mid-polling, batchDocIds cambia), evitamos quedar
+  // fuera de rango. Apuntamos a la última factura disponible — preferimos no
+  // saltar a 0 para no desorientar al usuario si solo cayeron las del final.
+  useEffect(() => {
+    if (visibleSummaries.length === 0) return;
+    if (currentIdx >= visibleSummaries.length) {
+      setCurrentIdx(visibleSummaries.length - 1);
+    }
+  }, [visibleSummaries.length, currentIdx]);
 
   // Polling a /api/pipeline/batch — fuente de verdad del total post-splitter.
   //
@@ -238,6 +318,29 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         // tardía (in_flight=false con books=[]) que borraría placeholders
         // mientras /api/invoices aún no ha alcanzado el total real.
         setBatchTotal((prev) => (prev == null ? sum : Math.max(prev, sum)));
+
+        // Set de doc_ids del lote: filtra el reviewer a SOLO las facturas
+        // del run actual (evita ghosts de runs anteriores). Misma política
+        // que batchTotal: solo actualizamos cuando llegan datos útiles, para
+        // no borrar el set al final del run (in_flight=false) si el usuario
+        // sigue revisando antes de confirmar.
+        const ids = new Set<string>();
+        for (const b of batch.books) {
+          for (const f of b.files) ids.add(f.doc_id);
+        }
+        if (batch.in_flight || ids.size > 0) {
+          setBatchDocIds((prev) => {
+            if (!prev) return ids.size > 0 ? ids : null;
+            // Unimos: si el lote crece (splitter añade hijos) se acumulan.
+            // Si el backend deja de reportarlos (in_flight false post-confirm)
+            // mantenemos el set anterior para que el operario pueda terminar.
+            if (ids.size === 0) return prev;
+            const merged = new Set(prev);
+            ids.forEach((id) => merged.add(id));
+            return merged.size > prev.size ? merged : prev;
+          });
+        }
+
         if (!batch.in_flight && interval) {
           clearInterval(interval);
           interval = null;
@@ -288,7 +391,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   }, [totalQueued, batchTotal, loadInvoices]);
 
   useEffect(() => {
-    const summary = invoiceSummaries[currentIdx];
+    const summary = visibleSummaries[currentIdx];
     if (!summary) return;
 
     // Salvaguardia anti-clobber: si la factura es la MISMA que ya teníamos
@@ -385,16 +488,16 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     return () => { cancelled = true; controller.abort(); };
     // Deps:
     // - currentIdx: fires al navegar.
-    // - invoiceSummaries[currentIdx]?.id: fires si el summary actual cambia
-    //   de id (raro — solo si backend reordena).
-    // NO ponemos ``invoiceSummaries`` entero porque el polling cada 3s lo
+    // - visibleSummaries[currentIdx]?.id: fires si el summary actual cambia
+    //   de id (raro — solo si backend reordena o el filtro batch cambia).
+    // NO ponemos ``visibleSummaries`` entero porque el polling cada 3s lo
     // reemplaza con la misma lista y clobberaría el formData mientras el
     // usuario teclea. Bug reportado por operario en fase 3 con pipeline
     // todavía procesando.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIdx, invoiceSummaries[currentIdx]?.id]);
+  }, [currentIdx, visibleSummaries[currentIdx]?.id]);
 
-  const currentSummary = invoiceSummaries[currentIdx];
+  const currentSummary = visibleSummaries[currentIdx];
   const displayFileUrl = currentSummary ? `${API_URL}/api/invoices/${currentSummary.id}/file` : "";
   const activeFileUrl = fileUrl || displayFileUrl;
 
@@ -618,12 +721,22 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     );
   }
 
-  if (error || invoiceSummaries.length === 0) {
+  if (error || visibleSummaries.length === 0) {
+    // Mensaje distinto según haya backend con facturas crudas o lote vacío:
+    // - error o sin facturas crudas: el clásico "no hay facturas, reintentar".
+    // - facturas crudas pero filtradas a 0: el lote acabó / no hay lote en
+    //   curso. Indicamos al operario que vuelva a Gestión a subir.
+    const hasRawButFiltered = !error && invoiceSummaries.length > 0;
     return (
       // FIX #3: h-full en lugar de h-screen
       <div className="flex h-full items-center justify-center bg-slate-50">
         <div className="text-center max-w-md p-8">
-          <p className="text-sm text-slate-600 mb-4">{error || "No hay facturas disponibles"}</p>
+          <p className="text-sm text-slate-600 mb-4">
+            {error
+              ?? (hasRawButFiltered
+                ? "No hay facturas en proceso. Vuelve a Gestión y sube un PDF para empezar un nuevo escaneo."
+                : "No hay facturas disponibles")}
+          </p>
           <Button onClick={() => loadInvoices()} variant="outline" className="text-xs">
             Reintentar
           </Button>
@@ -632,23 +745,23 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     );
   }
 
-  const invoice = detailsCache.get(invoiceSummaries[currentIdx]?.id);
+  const invoice = detailsCache.get(visibleSummaries[currentIdx]?.id);
   const isApproved = invoice ? approvedInvoices.has(invoice.id) : false;
   const isRejected = invoice ? rejectedInvoices.has(invoice.id) : false;
   // `effectiveTotal` es el max de: total real del lote post-splitter (batchTotal),
-  // pista legacy de PipelineProgress (totalQueued), y facturas ya cargadas. Esto
+  // pista legacy de PipelineProgress (totalQueued), y facturas ya visibles. Esto
   // garantiza placeholders correctos para PDFs multi-factura (batchTotal manda),
   // y no muestra placeholders fantasma cuando el reviewer entra fuera de un run
-  // (todos en 0 → cae a invoiceSummaries.length).
+  // (todos en 0 → cae a visibleSummaries.length).
   const effectiveTotal = Math.max(
     batchTotal ?? 0,
     totalQueued ?? 0,
-    invoiceSummaries.length,
+    visibleSummaries.length,
   );
   const totalVisible = effectiveTotal;
   const totalInvoices = totalVisible;
-  const loadedCount = invoiceSummaries.length;
-  const approvedCount = invoiceSummaries.filter(inv => approvedInvoices.has(inv.id)).length;
+  const loadedCount = visibleSummaries.length;
+  const approvedCount = visibleSummaries.filter(inv => approvedInvoices.has(inv.id)).length;
 
   return (
     <div
@@ -721,7 +834,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
             {totalVisible <= PAGER_DOTS_MAX ? (
               <div className="flex items-center gap-1.5 px-3">
                  {Array.from({ length: totalVisible }).map((_, idx) => {
-                    const inv = invoiceSummaries[idx];
+                    const inv = visibleSummaries[idx];
                     if (!inv) {
                       return (
                         <span
@@ -803,7 +916,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                variant="ghost" size="icon"
                className="h-7 w-7 hover:bg-slate-100 rounded-none"
                onClick={goToNext}
-               disabled={currentIdx === invoiceSummaries.length - 1}
+               disabled={currentIdx === visibleSummaries.length - 1}
                aria-label="Factura siguiente"
             >
                <ChevronRight className="h-4 w-4 text-slate-400" />
@@ -824,16 +937,16 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
         {/* Right side */}
         <div className="flex items-center gap-3 flex-shrink-0">
-           {invoiceSummaries[currentIdx]?.folder_name && (
+           {visibleSummaries[currentIdx]?.folder_name && (
              <span
                className="text-[10px] text-slate-500 font-mono truncate max-w-[280px]"
-               title={invoiceSummaries[currentIdx].folder_name}
+               title={visibleSummaries[currentIdx].folder_name}
              >
-               {invoiceSummaries[currentIdx].folder_name}
+               {visibleSummaries[currentIdx].folder_name}
              </span>
            )}
            <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest font-mono">
-             #{invoiceSummaries[currentIdx]?.id}
+             #{visibleSummaries[currentIdx]?.id}
              {loadingDetail && (
                <Loader2 className="h-3 w-3 animate-spin inline ml-1 text-slate-400" />
              )}
@@ -856,10 +969,10 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                {invoice.doc_status}
              </span>
            )}
-           {invoiceSummaries[currentIdx]?.duplicate_of && (
+           {visibleSummaries[currentIdx]?.duplicate_of && (
              <span
                className="text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider bg-yellow-50 text-yellow-800 border border-yellow-300"
-               title={`Posible duplicado fiscal de '${invoiceSummaries[currentIdx]!.duplicate_of}' (mismo NIF emisor + nº factura + fecha)`}
+               title={`Posible duplicado fiscal de '${visibleSummaries[currentIdx]!.duplicate_of}' (mismo NIF emisor + nº factura + fecha)`}
              >
                ⚠ Duplicado
              </span>

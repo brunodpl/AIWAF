@@ -5,16 +5,25 @@ import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { StageIndicator } from "@/components/stage-indicator";
 import { BooksManager } from "@/components/books-manager";
+import {
+  PreReviewStage,
+  type PreReviewUploadEntry,
+} from "@/components/pre-review-stage";
 import { PipelineProgress } from "@/components/pipeline-progress";
 import { InvoiceReviewer } from "@/components/invoice-reviewer";
 import { ExportStage } from "@/components/export-stage";
 import { FeedbackButton } from "@/components/feedback-button";
 import { UpdateBanner } from "@/components/update-banner";
 import { HistorialOverlay } from "@/components/historial-overlay";
-import { ApprovedInvoiceData, FiscalLine, Libro } from "@/lib/types";
+import {
+  ApprovedInvoiceData,
+  BookFile,
+  FiscalLine,
+  Libro,
+} from "@/lib/types";
 import { fetchInvoices, resetPipeline } from "@/lib/api";
 
-type Stage = "books" | "processing" | "review" | "export";
+type Stage = "books" | "pre-review" | "processing" | "review" | "export";
 
 const STORAGE_KEY_INVOICES = "horeca_approved_invoices";
 const STORAGE_KEY_STAGE = "horeca_current_stage";
@@ -83,6 +92,15 @@ export default function Home() {
   const [resetting, setResetting] = useState(false);
   const [booksNonce, setBooksNonce] = useState(0);
   const [totalQueued, setTotalQueued] = useState<number>(0);
+  // Snapshot de los uploads que llevan al stage `pre-review`. Cada entrada
+  // mantiene el `pre_scan` por archivo devuelto por POST /upload — sólo en
+  // memoria; si el operario refresca la página, vuelve a "books" y los
+  // archivos siguen visibles allí con su `status` (uploaded/pre_scan_failed
+  // /split/...) desde /api/books.
+  const [preReviewEntries, setPreReviewEntries] = useState<PreReviewUploadEntry[]>([]);
+  // doc_ids a enfocar en el reviewer (set por BooksManager cuando el usuario
+  // resube un PDF ya conocido con hijos pendientes — ver toast "Abrir reviewer").
+  const [reviewFocusIds, setReviewFocusIds] = useState<string[] | undefined>(undefined);
   // "Nuevo escaneo" = empezar un lote limpio. Llama a /api/pipeline/reset
   // para descartar asientos pendientes (status != done) que se quedarían
   // fantasma en /review tras un escaneo abortado. Los PDFs originales en
@@ -99,12 +117,70 @@ export default function Home() {
     setApprovedInvoices(new Map());
     setRejectedInvoices(new Set());
     setTotalQueued(0);
+    setPreReviewEntries([]);
     setStage("books");
     localStorage.removeItem(STORAGE_KEY_INVOICES);
     localStorage.removeItem(STORAGE_KEY_STAGE);
     setBooksNonce((n) => n + 1);
     setResetting(false);
   }, []);
+
+  /** Llamado por BooksManager tras un upload exitoso con detected_summary>0.
+   *  Acumula los archivos por libro y transiciona a pre-review. */
+  const handleUploadComplete = useCallback(
+    (bookId: Libro, files: BookFile[]) => {
+      if (files.length === 0) return;
+      setPreReviewEntries((prev) => {
+        const existingIdx = prev.findIndex((e) => e.bookId === bookId);
+        if (existingIdx === -1) return [...prev, { bookId, files }];
+        // Merge: reemplazar archivos por nombre, añadir los nuevos.
+        const merged = [...prev[existingIdx].files];
+        for (const f of files) {
+          const idx = merged.findIndex((m) => m.name === f.name);
+          if (idx >= 0) merged[idx] = f;
+          else merged.push(f);
+        }
+        const copy = [...prev];
+        copy[existingIdx] = { bookId, files: merged };
+        return copy;
+      });
+      setStage("pre-review");
+    },
+    [],
+  );
+
+  const handlePreReviewFileUpdated = useCallback(
+    (bookId: Libro, fileName: string, patch: Partial<BookFile>) => {
+      setPreReviewEntries((prev) =>
+        prev.map((entry) =>
+          entry.bookId !== bookId
+            ? entry
+            : {
+                ...entry,
+                files: entry.files.map((f) =>
+                  f.name === fileName ? { ...f, ...patch } : f,
+                ),
+              },
+        ),
+      );
+    },
+    [],
+  );
+
+  const handlePreReviewFileRemoved = useCallback(
+    (bookId: Libro, fileName: string) => {
+      setPreReviewEntries((prev) =>
+        prev
+          .map((entry) =>
+            entry.bookId !== bookId
+              ? entry
+              : { ...entry, files: entry.files.filter((f) => f.name !== fileName) },
+          )
+          .filter((entry) => entry.files.length > 0),
+      );
+    },
+    [],
+  );
 
   const handleApprove = useCallback(
     (
@@ -161,7 +237,31 @@ export default function Home() {
 
       <div className="flex-1 overflow-hidden">
         {stage === "books" && (
-          <BooksManager key={booksNonce} onPipelineStart={() => setStage("processing")} />
+          <BooksManager
+            key={booksNonce}
+            onPipelineStart={() => setStage("processing")}
+            onUploadComplete={handleUploadComplete}
+            parentPreReviewFilesByBook={Object.fromEntries(
+              preReviewEntries.map((e) => [e.bookId, e.files] as const),
+            )}
+            onNavigateToReview={(focusDocIds) => {
+              setReviewFocusIds(focusDocIds);
+              setStage("review");
+            }}
+          />
+        )}
+
+        {stage === "pre-review" && (
+          <PreReviewStage
+            entries={preReviewEntries}
+            onFileUpdated={handlePreReviewFileUpdated}
+            onFileRemoved={handlePreReviewFileRemoved}
+            onBack={() => setStage("books")}
+            onPipelineStart={() => {
+              setPreReviewEntries([]);
+              setStage("processing");
+            }}
+          />
         )}
 
         {stage === "processing" && (
@@ -177,6 +277,8 @@ export default function Home() {
             approvedInvoices={approvedInvoices}
             rejectedInvoices={rejectedInvoices}
             totalQueued={totalQueued > 0 ? totalQueued : undefined}
+            focusDocIds={reviewFocusIds}
+            onClearFocus={() => setReviewFocusIds(undefined)}
             onApprove={handleApprove}
             onReject={handleReject}
             onExport={() => setStage("export")}
