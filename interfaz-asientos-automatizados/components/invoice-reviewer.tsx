@@ -292,6 +292,15 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     return [];
   }, [invoiceSummaries, focusDocIds, batchDocIds]);
 
+  // Espejo en ref de la lista VISIBLE (filtrada). Los handlers async resuelven
+  // la factura accionada por ``visibleSummariesRef.current[currentIdxRef.current]``
+  // — exactamente como pinta el render (``visibleSummaries[currentIdx]``). Sin
+  // esto, leer del array crudo ``invoiceSummaries`` con un ``currentIdx`` que
+  // indexa la lista visible accionaba OTRA factura cuando el filtro de lote/focus
+  // reducía la lista. Definido tras el useMemo para evitar TDZ en su dependencia.
+  const visibleSummariesRef = useRef<InvoiceSummary[]>([]);
+  useEffect(() => { visibleSummariesRef.current = visibleSummaries; }, [visibleSummaries]);
+
   // Clamp de currentIdx: si tras un merge / filtro la lista visible se redujo
   // (delete externo, reset mid-polling, batchDocIds cambia), evitamos quedar
   // fuera de rango. Apuntamos a la última factura disponible — preferimos no
@@ -546,7 +555,9 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   }, [navigateTo]);
 
   const goToNext = useCallback(() => {
-    const summaries = invoiceSummariesRef.current;
+    // Acota contra la lista VISIBLE (no la cruda): ``currentIdx`` indexa
+    // ``visibleSummaries``, así que el límite superior es su longitud.
+    const summaries = visibleSummariesRef.current;
     if (currentIdxRef.current < summaries.length - 1) navigateTo(currentIdxRef.current + 1);
   }, [navigateTo]);
 
@@ -650,17 +661,19 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     // Guard síncrono: si dos clicks llegan en el mismo tick antes de que
     // React propague setSubmitting(true), el segundo ve submittingRef=true.
     if (submittingRef.current) return;
-    const currentInvoice = detailsCache.get(invoiceSummariesRef.current[currentIdxRef.current]?.id);
+    // Resolvemos la factura accionada desde la lista VISIBLE (filtrada), igual
+    // que el render (``visibleSummaries[currentIdx]``). Leer del array crudo
+    // ``invoiceSummaries`` accionaba otra factura cuando focus/lote filtraba.
+    const currentSummaryForAction = visibleSummariesRef.current[currentIdxRef.current];
+    const currentInvoice = detailsCache.get(currentSummaryForAction?.id);
     if (!currentInvoice) return;
 
     // Segundo rechazo → diálogo de borrado definitivo (no se llama al backend
     // reject: la factura ya vivía en `review` desde el primer rechazo + carry-over).
     if (action === "reject") {
-      // Resolvemos el summary por id (no por índice): así `rejection_count`
-      // corresponde siempre a la factura realmente accionada, igual que el
-      // label del botón, aunque `visibleSummaries` esté filtrada respecto a
-      // `invoiceSummaries`.
-      const summary = invoiceSummariesRef.current.find((s) => s.id === currentInvoice.id);
+      // `rejection_count` de la MISMA factura mostrada (el summary visible),
+      // igual que el label del botón.
+      const summary = currentSummaryForAction;
       const previousRejects = summary?.rejection_count ?? 0;
       if (previousRejects >= 1) {
         if (!currentInvoice.libro) {
@@ -710,12 +723,13 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       }
 
       // Auto-advance solo si el usuario NO ha navegado durante el await.
+      // Acota contra la lista VISIBLE (currentIdx la indexa), no la cruda.
       if (
         currentIdxRef.current === idxAtSubmit &&
-        currentIdxRef.current < invoiceSummariesRef.current.length - 1
+        currentIdxRef.current < visibleSummariesRef.current.length - 1
       ) {
         autoAdvanceRef.current = setTimeout(() => {
-          const summaries = invoiceSummariesRef.current;
+          const summaries = visibleSummariesRef.current;
           const idx = currentIdxRef.current;
           // Re-chequear: si el usuario navegó dentro de los 500ms, no avanzamos.
           if (idx === idxAtSubmit && idx < summaries.length - 1) {
