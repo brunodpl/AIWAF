@@ -849,7 +849,15 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                   toast.success("Factura eliminada definitivamente");
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
-                  toast.error(`Error eliminando: ${msg}`);
+                  // El hard delete pasa por /api/books DELETE, que devuelve 409
+                  // si el pipeline sigue corriendo (posible al entrar al reviewer
+                  // anticipadamente con el CTA "Empezar a revisar"). Traducimos a
+                  // un mensaje claro en vez de exponer el texto crudo del backend.
+                  if (/pipeline is running/i.test(msg)) {
+                    toast.error("El escaneo sigue en curso — espera a que termine para eliminar.");
+                  } else {
+                    toast.error(`Error eliminando: ${msg}`);
+                  }
                 } finally {
                   setConfirmHardDelete(null);
                 }
