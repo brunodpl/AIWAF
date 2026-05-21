@@ -33,6 +33,10 @@ interface PendingFile {
 
 const ALLOWED_EXTENSIONS = new Set([".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp", ".bmp"]);
 
+// `confirmed` = asiento cerrado en Intermega; `split` = PDF original ya
+// dividido por el splitter. El backend rechaza DELETE en ambos casos.
+const TERMINAL_STATUSES = new Set(["done", "confirmed", "split"]);
+
 export function BooksManager({ onPipelineStart }: BooksManagerProps) {
   const [books, setBooks] = useState<Book[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -349,7 +353,8 @@ export function BooksManager({ onPipelineStart }: BooksManagerProps) {
     }
   }, [onPipelineStart]);
 
-  const isPendingFile = (f: BookFile) => f.status !== "done";
+  const isPendingFile = (f: BookFile) =>
+    !f.status || !TERMINAL_STATUSES.has(f.status);
   const totalFiles =
     books?.reduce((sum, b) => sum + b.files.filter(isPendingFile).length, 0) ?? 0;
 
