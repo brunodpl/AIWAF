@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -15,7 +14,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { Loader2, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, RotateCcw, ChevronRight } from "lucide-react";
 import { fetchPipelineBatch, fetchPipelineStatus, runPipeline } from "@/lib/api";
 import { toast } from "sonner";
 import type { PipelineBatch, PipelineStatus } from "@/lib/types";
@@ -121,9 +120,6 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
   }, [retryCount]);
 
   const isRunning = status?.status === "running";
-  const progress = status && status.total > 0
-    ? Math.round((status.processed / status.total) * 100)
-    : 0;
 
   if (loading) {
     return (
@@ -181,9 +177,16 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
   return (
     <div className="flex h-full items-center justify-center bg-slate-50">
       <div className="text-center max-w-md w-full px-8">
-        <h2 className="text-xs font-black uppercase tracking-[0.15em] text-slate-800 mb-8">
-          Asientos Automatizados
+        <h2 className="text-xs font-black uppercase tracking-[0.15em] text-slate-800 mb-2">
+          Escaneando facturas
         </h2>
+        <p className="text-[10px] text-slate-400 font-mono mb-6">
+          {status?.status === "running"
+            ? "Procesamiento OCR en curso — puedes empezar a revisar cuando esté la primera factura."
+            : status?.status === "completed"
+            ? "Escaneo completado — pulsa 'Empezar a revisar' para continuar."
+            : "Conectando con el pipeline..."}
+        </p>
 
         <div className="flex justify-center mb-6">
           {status?.status === "running" && (
@@ -200,56 +203,20 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
           )}
         </div>
 
-        {/* FIX #8: progress bar indeterminada — wrapper con overflow-hidden y position relative */}
-        <div className="mb-4">
-          {status?.total === 0 ? (
-            <div className="relative h-2 w-full bg-slate-100 overflow-hidden rounded-full">
-              <style>{`
-                @keyframes indeterminate {
-                  0%   { transform: translateX(-100%); }
-                  50%  { transform: translateX(100%); }
-                  100% { transform: translateX(-100%); }
-                }
-                .bar-indeterminate {
-                  position: absolute;
-                  top: 0; left: 0; right: 0; bottom: 0;
-                  background: linear-gradient(90deg, transparent, hsl(173 80% 40%), transparent);
-                  animation: indeterminate 1.5s ease-in-out infinite;
-                }
-              `}</style>
-              <div className="bar-indeterminate" />
-            </div>
-          ) : (
-            <Progress value={progress} className="h-2 bg-slate-100" />
-          )}
-        </div>
-
-        {status && (
-          <div className="space-y-2">
-            <p className="text-sm text-slate-500">
-              Procesando {status.current_file || "facturas"}... ({status.processed}/{status.total})
-            </p>
-            {status.total > 0 && (
-              <p className="text-xs font-mono text-slate-300">
-                {progress}% completado
-              </p>
-            )}
-          </div>
-        )}
-
         <BatchOverview batch={batch} />
 
         {isRunning && onJumpToReview && status && status.processed >= 1 && (
-          <div className="mt-6">
+          <div className="mt-8">
             <Button
               onClick={() => onJumpToReview(totalQueuedRef.current)}
-              variant="default"
-              className="text-xs rounded-none uppercase tracking-[0.15em] bg-teal-600 hover:bg-teal-700"
+              size="lg"
+              className="h-12 px-8 bg-teal-600 hover:bg-teal-700 text-white font-bold uppercase text-xs tracking-[0.2em] rounded-none shadow-lg"
             >
-              Ver {status.processed} factura{status.processed === 1 ? "" : "s"} ya procesada{status.processed === 1 ? "" : "s"}
+              Empezar a revisar ({status.processed} factura{status.processed === 1 ? "" : "s"} lista{status.processed === 1 ? "" : "s"})
+              <ChevronRight className="h-4 w-4 ml-2" />
             </Button>
-            <p className="text-[10px] text-slate-400 mt-2">
-              El procesamiento continúa en segundo plano. Las nuevas facturas se irán añadiendo a la lista de revisión.
+            <p className="text-[10px] text-slate-400 mt-3">
+              El escaneo continúa en segundo plano. Las nuevas facturas se irán activando en el reviewer.
             </p>
           </div>
         )}
