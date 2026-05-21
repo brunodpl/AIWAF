@@ -357,6 +357,33 @@ def is_confirmed(folder: Path) -> bool:
     return False
 
 
+def rejection_count(folder: Path) -> int:
+    """Cuenta cuántas veces el operario ha rechazado esta factura en revisión.
+
+    Un "rechazo" es un evento con ``status="review"`` y
+    ``actor="user"`` + ``action="reject"`` — el orquestador también
+    puede generar ``status="review"`` automáticamente (clasificación),
+    pero esos eventos NO tienen ``action="reject"``.
+
+    Útil para el frontend: con count=1 el botón 'X' del reviewer pide
+    confirmación de hard delete; con count=0 el botón 'Rechazar' solo
+    transiciona a review.
+    """
+    folder = Path(folder)
+    if not _sidecar_path(folder).exists():
+        return 0
+    data = read(folder)
+    count = 0
+    for ev in data.get("events") or []:
+        if (
+            ev.get("status") == "review"
+            and ev.get("actor") == "user"
+            and ev.get("action") == "reject"
+        ):
+            count += 1
+    return count
+
+
 def rename(folder: Path, new_name: str) -> Path:
     """Renombra la carpeta a ``new_name``, resolviendo colisiones con sufijo ``_2``, ``_3``...
 

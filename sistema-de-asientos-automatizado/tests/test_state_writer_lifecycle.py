@@ -299,3 +299,27 @@ def test_was_rejected_by_human_false_when_folder_missing(tmp_path: Path) -> None
 
     nonexistent = tmp_path / "no_existe"
     assert _was_rejected_by_human(nonexistent) is False
+
+
+# --- rejection_count ------------------------------------------------------
+
+
+def test_rejection_count_counts_user_reject_events(tmp_path):
+    folder = tmp_path / "compras_doc_abc"
+    state_writer.init_uploaded(folder, "doc_abc", "in/abc.pdf", "sha", 100)
+    state_writer.append(folder, {"status": "processing"})
+    # rechazo automático del orquestador — no cuenta
+    state_writer.append(folder, {"status": "review", "actor": "system"})
+    assert state_writer.rejection_count(folder) == 0
+    # rechazo manual del operario — cuenta
+    state_writer.append(folder, {"status": "review", "actor": "user", "action": "reject"})
+    assert state_writer.rejection_count(folder) == 1
+    # segundo rechazo del operario tras nuevo intento
+    state_writer.append(folder, {"status": "processing"})
+    state_writer.append(folder, {"status": "review", "actor": "user", "action": "reject"})
+    assert state_writer.rejection_count(folder) == 2
+
+
+def test_rejection_count_zero_when_no_sidecar(tmp_path):
+    folder = tmp_path / "nonexistent"
+    assert state_writer.rejection_count(folder) == 0

@@ -449,6 +449,7 @@ def list_invoices(
             "nombre_entidad": campos.get("nombre_entidad", {}).get("valor_final", ""),
             "numero_factura": campos.get("numero_factura", {}).get("valor_final", ""),
             "total_euros": campos.get("total_euros", {}).get("valor_final", 0),
+            "rejection_count": state_writer.rejection_count(folder),
         }
         if duplicate_of:
             record["duplicate_of"] = duplicate_of
