@@ -278,7 +278,7 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
         // Errores parciales: mostrar warning con detalle por doc.
         const errCount = res.errors?.length ?? 0;
         toast.warning(
-          `${baseMsg} · ${errCount} con error parcial — revisa la consola para detalle`,
+          `${baseMsg} · ${errCount} con error parcial — ver detalle abajo`,
         );
         if (res.errors) {
           res.errors.forEach((e) =>
