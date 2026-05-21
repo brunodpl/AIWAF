@@ -62,6 +62,9 @@ export interface InvoiceDocument {
   libro?: Libro;
   /** Veces que el operario ha pulsado 'Rechazar' en este sidecar. */
   rejection_count?: number;
+  /** Nombre del PDF/imagen en el inbox (libros/facturas/{libro}/). Necesario
+   *  para hard delete via DELETE /api/books/{book}/files/{filename}. */
+  invoice_filename?: string;
 }
 
 /** A file pending or already processed in a libro inbox.

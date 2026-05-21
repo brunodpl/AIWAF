@@ -335,6 +335,7 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
     fiscalLines,
     libro,
     rejection_count: detail.rejection_count ?? 0,
+    invoice_filename: detail.invoice_filename ?? undefined,
   };
 }
 

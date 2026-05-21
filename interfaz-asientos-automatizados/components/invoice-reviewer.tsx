@@ -30,6 +30,7 @@ import {
   fetchInvoiceDetail,
   fetchPipelineBatch,
   sendInvoiceAction,
+  deleteBookFile,
   transformToInvoice,
   API_URL,
 } from "@/lib/api";
@@ -106,6 +107,9 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   const dirtyRef = useRef(false);
   // Navegación pendiente (cuando hay cambios sin guardar)
   const [pendingNavIdx, setPendingNavIdx] = useState<number | null>(null);
+  // Confirmación de borrado definitivo (segundo rechazo): la factura ya volvió
+  // una vez en el escaneo de carry-over; un segundo rechazo la elimina del todo.
+  const [confirmHardDelete, setConfirmHardDelete] = useState<{ id: string; filename: string; bookId: Libro } | null>(null);
   // Texto del input del pager compacto. Vive como state local del input para
   // permitir borrar y reescribir libremente; el commit a currentIdx ocurre en
   // blur/Enter. Se resincroniza desde currentIdx vía useEffect.
@@ -651,6 +655,29 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     const currentInvoice = detailsCache.get(invoiceSummariesRef.current[currentIdxRef.current]?.id);
     if (!currentInvoice) return;
 
+    // Segundo rechazo → diálogo de borrado definitivo (no se llama al backend
+    // reject: la factura ya vivía en `review` desde el primer rechazo + carry-over).
+    if (action === "reject") {
+      // Resolvemos el summary por id (no por índice): así `rejection_count`
+      // corresponde siempre a la factura realmente accionada, igual que el
+      // label del botón, aunque `visibleSummaries` esté filtrada respecto a
+      // `invoiceSummaries`.
+      const summary = invoiceSummariesRef.current.find((s) => s.id === currentInvoice.id);
+      const previousRejects = summary?.rejection_count ?? 0;
+      if (previousRejects >= 1) {
+        if (!currentInvoice.libro) {
+          toast.error("No se pudo determinar el libro de la factura — recarga e intenta de nuevo.");
+          return;
+        }
+        setConfirmHardDelete({
+          id: currentInvoice.id,
+          filename: currentInvoice.invoice_filename ?? `${currentInvoice.id}.pdf`,
+          bookId: currentInvoice.libro,
+        });
+        return;  // espera confirmación del diálogo; sin submit, sin auto-advance.
+      }
+    }
+
     submittingRef.current = true;
     setSubmitting(true);
     // Capturamos el índice ANTES de la llamada async. El auto-advance solo
@@ -681,7 +708,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         toast.success("Factura aprobada correctamente");
       } else {
         onReject(currentInvoice.id);
-        toast.error("Factura rechazada — movida a INCIDENCIAS");
+        toast.info("Factura rechazada. Volverá a aparecer en el próximo escaneo.");
       }
 
       // Auto-advance solo si el usuario NO ha navegado durante el await.
@@ -750,6 +777,10 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   const invoice = detailsCache.get(visibleSummaries[currentIdx]?.id);
   const isApproved = invoice ? approvedInvoices.has(invoice.id) : false;
   const isRejected = invoice ? rejectedInvoices.has(invoice.id) : false;
+  // Segundo rechazo: si la factura ya fue rechazada en un escaneo previo, el
+  // botón "Rechazar" pasa a "Eliminar definitivamente" (hard delete).
+  const currentRejectionCount = visibleSummaries[currentIdx]?.rejection_count ?? 0;
+  const isSecondReject = currentRejectionCount >= 1;
   // `effectiveTotal` es el max de: total real del lote post-splitter (batchTotal),
   // pista legacy de PipelineProgress (totalQueued), y facturas ya visibles. Esto
   // garantiza placeholders correctos para PDFs multi-factura (batchTotal manda),
@@ -790,6 +821,44 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
               }}
             >
               Descartar cambios
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* AlertDialog para borrado definitivo (segundo rechazo) */}
+      <AlertDialog open={confirmHardDelete !== null} onOpenChange={(open) => { if (!open) setConfirmHardDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar definitivamente</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta factura ya fue rechazada en un escaneo anterior. Al confirmar se
+              eliminará por completo del sistema — el PDF y todos sus datos. No queda
+              rastro y no volverá a aparecer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setConfirmHardDelete(null)}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={async () => {
+                if (!confirmHardDelete) return;
+                const { id, filename, bookId } = confirmHardDelete;
+                try {
+                  await deleteBookFile(bookId, filename);
+                  onReject(id);  // saca del estado de UI (export, etc.)
+                  // Quita de la lista local para que avance de inmediato sin esperar al poll.
+                  setInvoiceSummaries((prev) => prev.filter((s) => s.id !== id));
+                  toast.success("Factura eliminada definitivamente");
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  toast.error(`Error eliminando: ${msg}`);
+                } finally {
+                  setConfirmHardDelete(null);
+                }
+              }}
+            >
+              Eliminar definitivamente
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1308,7 +1377,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
               : "border border-slate-200 hover:bg-slate-50 hover:text-slate-900"
           )}
         >
-          {isRejected ? "Rechazada" : "Rechazar"}
+          {isRejected ? "Rechazada" : isSecondReject ? "Eliminar definitivamente" : "Rechazar"}
         </Button>
         <Button
           size="lg"
