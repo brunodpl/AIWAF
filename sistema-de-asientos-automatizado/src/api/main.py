@@ -35,6 +35,7 @@ from urllib.parse import quote
 
 from src.config import LIBRO_SHORT, settings
 from src import state_writer, final_writer
+from src.phase1_splitter import split_single_file, SplitOutcome
 from src.phase4_customer.maestro import (
     cargar_maestro,
     guardar_maestro,
@@ -354,7 +355,12 @@ def find_invoice_file(doc_id: str) -> Optional[Tuple[Path, str]]:
 # ──────────────────────────────────────────────────────────
 
 @app.get("/api/invoices")
-def list_invoices(include_done: bool = True, include_confirmed: bool = False):
+def list_invoices(
+    include_done: bool = True,
+    include_confirmed: bool = False,
+    include_cancelled: bool = False,
+    include_split: bool = False,
+):
     """
     Listar todas las facturas procesadas con su estado.
 
@@ -367,7 +373,7 @@ def list_invoices(include_done: bool = True, include_confirmed: bool = False):
     - ``folder_name``: nombre actual de la carpeta (renombrada o provisional)
     - ``libro``     : compras / ventas / bienes (prefijo de la carpeta)
     - ``status``    : último evento del `.state.json` (uploaded/processing/
-      review/done/confirmed/blocked/cancelled/error/retrying)
+      review/done/confirmed/blocked/error/retrying)
     - ``duplicate_of`` (opcional): si en algún evento se anotó duplicado fiscal,
       el ``folder_name`` del asiento original al que se atribuye.
     - ``decision_global`` + campos resumen desde `resultado_validacion.json`.
@@ -378,10 +384,16 @@ def list_invoices(include_done: bool = True, include_confirmed: bool = False):
       remostrar facturas que ya pasaron a ``confirmed``.
     - ``include_confirmed`` (bool, default False): incluye status=``confirmed``
       (asiento contable cerrado). El historial lo activa.
+    - ``include_cancelled`` (bool, default False): incluye status=``cancelled``
+      (soft-deleted por el usuario). Oculto por defecto: una factura cancelada
+      no debe aparecer en la cola de revisión. El historial puede activarlo.
+    - ``include_split`` (bool, default False): incluye status=``split`` (PDF
+      padre dividido por Fase 1 en N facturas individuales). Oculto por defecto:
+      la trazabilidad continúa en los doc_ids de ``split_into``, no en el padre.
     """
     now = time.time()
-    cache_key = f"data_{int(include_done)}_{int(include_confirmed)}"
-    ts_key = f"ts_{int(include_done)}_{int(include_confirmed)}"
+    cache_key = f"data_{int(include_done)}_{int(include_confirmed)}_{int(include_cancelled)}_{int(include_split)}"
+    ts_key = f"ts_{int(include_done)}_{int(include_confirmed)}_{int(include_cancelled)}_{int(include_split)}"
     if (
         cache_key in _invoices_cache
         and (now - _invoices_cache.get(ts_key, 0)) < _CACHE_TTL
@@ -402,6 +414,10 @@ def list_invoices(include_done: bool = True, include_confirmed: bool = False):
         if not include_done and status == "done":
             continue
         if not include_confirmed and status == "confirmed":
+            continue
+        if not include_cancelled and status == "cancelled":
+            continue
+        if not include_split and status == "split":
             continue
 
         # Extraer duplicate_of si existe en cualquier evento (anotado por
@@ -828,6 +844,249 @@ def _inbox_for_book(book_id: str) -> Path:
     return Path(settings().inbox_path(libro_short))
 
 
+# ── Pre-scan síncrono en /upload ───────────────────────────────────────
+#
+# split_single_file() es síncrono (CPU + I/O Gemini), así que se ejecuta en
+# threads vía asyncio.to_thread(). Un semáforo limita la concurrencia para
+# no saturar quota Gemini Vision.
+#
+# El cliente Gemini se inicializa una sola vez por proceso y se cachea en
+# `app.state` para no pagar el coste en cada upload de imagen pura.
+
+def _build_prescan_skipped(file_entry: dict) -> dict:
+    """Pre-scan para archivos no-PDF (imagen): siempre 1 factura."""
+    return {
+        "status": "skipped_non_pdf",
+        "n_pages": 1,
+        "detected_invoices": 1,
+        "children": [],
+        "error": None,
+    }
+
+
+def _prescan_outcome_to_dict(
+    outcome: SplitOutcome,
+    *,
+    asiento_folder: Optional[Path],
+) -> dict:
+    """Convierte un ``SplitOutcome`` en el sub-objeto ``pre_scan`` de la
+    respuesta del upload.
+
+    Para ``status="split"``, los hijos se leen del propio sidecar
+    (``get_split_children_status``) — el splitter ya los creó.
+    """
+    n_pages = outcome.n_pages or (1 if outcome.status == "single_page" else 0)
+
+    if outcome.status == "split":
+        children_raw: list[dict] = []
+        if asiento_folder is not None:
+            try:
+                children_raw = state_writer.get_split_children_status(asiento_folder)
+            except Exception:
+                children_raw = []
+        return {
+            "status": "split",
+            "n_pages": n_pages,
+            "detected_invoices": outcome.n_facturas or len(children_raw),
+            "children": children_raw,
+            "error": None,
+        }
+
+    if outcome.status in ("single_page", "single_factura"):
+        return {
+            "status": "single",
+            "n_pages": n_pages,
+            "detected_invoices": 1,
+            "children": [],
+            "error": None,
+        }
+
+    # status == "error" → tras agotar reintentos
+    return {
+        "status": "failed",
+        "n_pages": n_pages,
+        "detected_invoices": 0,
+        "children": [],
+        "error": {
+            "kind": "gemini_pre_scan_failed",
+            "message": outcome.error or "unknown",
+            "attempts": int(settings().prescan_max_attempts),
+        },
+    }
+
+
+def _record_prescan_failure(
+    asiento_folder: Path, outcome: SplitOutcome, *, model_used: Optional[str],
+) -> None:
+    """Append `pre_scan_failed` al sidecar tras agotar reintentos.
+
+    Best-effort: cualquier fallo del state writer se loggea pero no
+    interrumpe el upload (el archivo ya está en disco con sidecar
+    ``uploaded``; el siguiente run del operario lo detectará como
+    pendiente sin pre-scan registrado).
+    """
+    try:
+        state_writer.append(asiento_folder, {
+            "status": "pre_scan_failed",
+            "error_kind": "gemini_pre_scan_failed",
+            "last_error": outcome.error or "unknown",
+            "attempts": int(settings().prescan_max_attempts),
+            "model_used": model_used or settings().gemini_ocr_model,
+        })
+    except Exception:
+        logger.warning(
+            "[prescan] no se pudo registrar pre_scan_failed en sidecar %s",
+            asiento_folder.name, exc_info=True,
+        )
+
+
+async def _run_prescan_for_uploads(
+    verified_files: list[dict],
+    *,
+    book_id: str,
+    upload_dir: Path,
+    asientos_root: Path,
+) -> dict:
+    """Ejecuta el splitter Fase 1 sobre cada archivo recién subido.
+
+    Mutates ``verified_files`` añadiendo ``pre_scan`` a cada entrada.
+
+    Devuelve el agregado ``detected_summary`` con totales para la UI.
+    """
+    cfg = settings()
+    summary = {"total_invoices": 0, "files_ok": 0, "files_blocked": 0, "files_skipped": 0}
+
+    if not cfg.prescan_enabled:
+        # Feature flag off: comportamiento legacy (splitter solo en pipeline.run).
+        # Marcamos cada PDF como "skipped" para que la UI no se confunda — el
+        # frontend tratará esto como "todavía no conocemos nº facturas".
+        for fe in verified_files:
+            if fe.get("status") == "uploaded":
+                fe["pre_scan"] = {
+                    "status": "skipped_disabled",
+                    "n_pages": 0,
+                    "detected_invoices": 1,  # supuesto optimista, igual que hoy
+                    "children": [],
+                    "error": None,
+                }
+                summary["total_invoices"] += 1
+                summary["files_skipped"] += 1
+        return summary
+
+    # Cliente Gemini cacheado por proceso: lazy init en el primer PDF que
+    # llegue. Imágenes no lo necesitan. Si ya hay uno en app.state, lo
+    # reusamos sin tocar.
+    gemini_client = getattr(app.state, "gemini_client", None)
+
+    # Lock para que el lazy init sea seguro frente a uploads concurrentes.
+    init_lock: asyncio.Lock = getattr(app.state, "_gemini_init_lock", None)
+    if init_lock is None:
+        init_lock = asyncio.Lock()
+        app.state._gemini_init_lock = init_lock
+
+    semaphore = asyncio.Semaphore(max(1, int(cfg.prescan_max_concurrency)))
+
+    async def _do_one(file_entry: dict) -> None:
+        """Procesa un único archivo. Mutates ``file_entry["pre_scan"]``."""
+        nonlocal gemini_client
+        name = file_entry["name"]
+        sidecar_status = file_entry.get("status")
+        folder_name = file_entry.get("folder_name")
+
+        # Saltar archivos que ni siquiera tienen sidecar (init falló antes).
+        if sidecar_status != "uploaded" or folder_name is None:
+            return
+
+        ext = os.path.splitext(name)[1].lower()
+        if ext != ".pdf":
+            # Imagen → siempre 1 factura. Sin coste Gemini.
+            file_entry["pre_scan"] = _build_prescan_skipped(file_entry)
+            summary["files_skipped"] += 1
+            summary["total_invoices"] += 1
+            return
+
+        # Lazy init del cliente Gemini (una vez por proceso).
+        if gemini_client is None:
+            async with init_lock:
+                if getattr(app.state, "gemini_client", None) is None:
+                    try:
+                        from src.phase2_ocr.mapper_document_ai_to_json import _init_gemini_model
+                        app.state.gemini_client = await asyncio.to_thread(_init_gemini_model)
+                    except Exception as exc:
+                        # Si el init falla, marcamos el archivo como pre_scan_failed
+                        # con error explícito. El operario verá el bloqueo.
+                        logger.error("[prescan] no se pudo inicializar Gemini: %s", exc, exc_info=True)
+                        asiento_folder = asientos_root / folder_name
+                        _record_prescan_failure(
+                            asiento_folder,
+                            SplitOutcome(source=name, status="error", error=f"gemini_init: {exc}"),
+                            model_used=None,
+                        )
+                        file_entry["pre_scan"] = {
+                            "status": "failed",
+                            "n_pages": 0,
+                            "detected_invoices": 0,
+                            "children": [],
+                            "error": {
+                                "kind": "gemini_init_failed",
+                                "message": str(exc),
+                                "attempts": 1,
+                            },
+                        }
+                        summary["files_blocked"] += 1
+                        return
+                gemini_client = app.state.gemini_client
+
+        pdf_path = upload_dir / name
+        asiento_folder = asientos_root / folder_name
+
+        # Timeout duro por archivo: si Gemini cuelga, no bloqueamos el upload
+        # entero indefinidamente. El split_single_file ya hace sus reintentos
+        # internos con sleep; el timeout aquí es la guarda externa.
+        timeout_s = max(5, int(cfg.prescan_timeout_seconds))
+
+        async with semaphore:
+            try:
+                outcome: SplitOutcome = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        split_single_file,
+                        pdf_path,
+                        client=gemini_client,
+                        model=None,  # usa default de cfg.gemini_ocr_model
+                    ),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                outcome = SplitOutcome(
+                    source=str(pdf_path), status="error",
+                    error=f"timeout after {timeout_s}s",
+                )
+            except Exception as exc:
+                outcome = SplitOutcome(
+                    source=str(pdf_path), status="error",
+                    error=f"unhandled: {exc}",
+                )
+
+        if outcome.status == "error":
+            _record_prescan_failure(asiento_folder, outcome, model_used=cfg.gemini_ocr_model)
+            file_entry["pre_scan"] = _prescan_outcome_to_dict(outcome, asiento_folder=asiento_folder)
+            summary["files_blocked"] += 1
+        elif outcome.status == "split":
+            file_entry["pre_scan"] = _prescan_outcome_to_dict(outcome, asiento_folder=asiento_folder)
+            n = file_entry["pre_scan"]["detected_invoices"]
+            summary["files_ok"] += 1
+            summary["total_invoices"] += n
+        else:  # single_page / single_factura
+            file_entry["pre_scan"] = _prescan_outcome_to_dict(outcome, asiento_folder=asiento_folder)
+            summary["files_ok"] += 1
+            summary["total_invoices"] += 1
+
+    # Lanzamos todos los pre-scans en paralelo. El semáforo bornará la
+    # concurrencia efectiva. Excepciones se reportan archivo a archivo.
+    await asyncio.gather(*(_do_one(fe) for fe in verified_files), return_exceptions=False)
+    return summary
+
+
 @app.get("/api/books")
 def list_books():
     """Lista los libros y sus facturas en el inbox permanente.
@@ -905,6 +1164,10 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
 
     uploaded = []
     errors = []
+    # Info de PDFs ya conocidos cuyos hijos (o ellos mismos) siguen requiriendo
+    # atención del usuario. Distinto de ``errors``: no es un rechazo técnico,
+    # es información útil para que el frontend redirija al reviewer.
+    already_processed: list[dict] = []
     # Track de carpetas de asiento creadas durante este upload para no
     # re-disparar init_uploaded por colisión con sidecars recién creados.
     new_sidecars: list[tuple[Path, str, str, int]] = []
@@ -945,20 +1208,59 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
                 prev_status = state_writer.current_status(existing)
             except Exception:
                 prev_status = None
-            if prev_status != "error":
-                errors.append({
-                    "file": file.filename,
-                    "error": (
-                        f"duplicate: el PDF ya está registrado como "
-                        f"'{existing.name}' (estado: {prev_status or 'desconocido'})"
-                    ),
-                    "duplicate_of": existing.name,
-                    "duplicate_status": prev_status,
-                })
-                logger.info(
-                    "[upload] dup físico rechazado file=%s sha256=%s existing=%s status=%s",
-                    file.filename, sha256_file[:12], existing.name, prev_status,
-                )
+            # ``error``, ``cancelled`` y ``pre_scan_failed`` permiten retry
+            # legítimo: el usuario vuelve a subir el mismo PDF tras un fallo o
+            # tras haberlo soft-deletado, y queremos comportamiento "como si
+            # no existiera". ``pre_scan_failed`` además ofrece el endpoint
+            # dedicado /retry-prescan, pero el re-upload también debe funcionar.
+            if prev_status not in ("error", "cancelled", "pre_scan_failed"):
+                # Estados "cerrados" — no requieren acción del usuario.
+                # ``done`` = lista para confirmar (terminal para revisión).
+                CLOSED_STATUSES = {"done", "confirmed", "cancelled"}
+                pending_children: list[dict] = []
+                if prev_status == "split":
+                    try:
+                        children = state_writer.get_split_children_status(existing)
+                    except Exception:
+                        children = []
+                    pending_children = [
+                        c for c in children if c["status"] not in CLOSED_STATUSES
+                    ]
+                elif prev_status in {"review", "blocked", "processing", "retrying", "uploaded"}:
+                    # PDF de factura única todavía en cola — el propio padre
+                    # es el "hijo" pendiente.
+                    doc_id_only = existing.name.split("_", 1)[-1]
+                    pending_children = [{
+                        "doc_id": doc_id_only,
+                        "folder_name": existing.name,
+                        "status": prev_status,
+                    }]
+
+                if pending_children:
+                    already_processed.append({
+                        "file": file.filename,
+                        "original": existing.name,
+                        "original_status": prev_status,
+                        "pending": pending_children,
+                    })
+                    logger.info(
+                        "[upload] dup con pendientes file=%s sha256=%s existing=%s status=%s pending=%d",
+                        file.filename, sha256_file[:12], existing.name, prev_status, len(pending_children),
+                    )
+                else:
+                    errors.append({
+                        "file": file.filename,
+                        "error": (
+                            f"duplicate: el PDF ya está completamente procesado "
+                            f"como '{existing.name}'"
+                        ),
+                        "duplicate_of": existing.name,
+                        "duplicate_status": prev_status,
+                    })
+                    logger.info(
+                        "[upload] dup físico rechazado file=%s sha256=%s existing=%s status=%s",
+                        file.filename, sha256_file[:12], existing.name, prev_status,
+                    )
                 continue
 
         dest = upload_dir / safe_name
@@ -1099,27 +1401,223 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
             logger.warning("upload_stale file=%s book=%s — not visible after %.1fs", name, book_id, VERIFY_TIMEOUT)
             errors.append({"file": name, "error": f"File saved but not visible after {VERIFY_TIMEOUT:.0f}s — retry or refresh"})
 
-    return {"uploaded": uploaded, "errors": errors, "files": verified_files}
+    # Pre-scan síncrono Fase 1: para cada PDF recién subido, llamar al
+    # splitter Gemini para detectar si contiene varias facturas. La UI usará
+    # `detected_summary.total_invoices` para mostrar el nº real de facturas
+    # antes de pulsar "Escanear", y `pre_scan.status="failed"` para bloquear
+    # archivos que requieren acción humana (retry / override-as-single).
+    detected_summary = {"total_invoices": 0, "files_ok": 0, "files_blocked": 0, "files_skipped": 0}
+    try:
+        detected_summary = await _run_prescan_for_uploads(
+            verified_files,
+            book_id=book_id,
+            upload_dir=upload_dir,
+            asientos_root=asientos_root,
+        )
+    except Exception as exc:
+        # Defensivo: si el pre-scan entero revienta (no debería — cada archivo
+        # ya tiene su try/except), el upload no se pierde. La UI lo verá como
+        # "sin pre_scan" y se comportará como antes del cambio.
+        logger.error("[upload] pre-scan global falló: %s", exc, exc_info=True)
+
+    return {
+        "uploaded": uploaded,
+        "errors": errors,
+        "already_processed": already_processed,
+        "files": verified_files,
+        "detected_summary": detected_summary,
+    }
 
 
-@app.delete("/api/books/{book_id}/files/{filename}")
-def delete_book_file(book_id: str, filename: str):
-    """Elimina un PDF del inbox permanente del libro y su carpeta de asiento.
+class _OverridePrescanBody(BaseModel):
+    as_single: bool = True
 
-    Comportamiento:
-    - Borra el PDF de ``libros/facturas/{libro}/{filename}``.
-    - Si existe ``libros/asientos/{libro_short}_{doc_id}/`` Y su sidecar NO
-      está en ``confirmed`` (asiento contable cerrado), borra la carpeta
-      entera. Esto es necesario para que el ``sha256_file`` del sidecar no
-      siga "reservando" el documento — sin esto, al subir el mismo PDF a
-      otro libro la detección de duplicado físico lo rechaza.
-    - Si la carpeta está ``confirmed`` (ya generó asiento contable),
-      responde 409 — borrar requeriría flujo administrativo separado.
+
+@app.post("/api/books/{book_id}/files/{doc_id}/retry-prescan")
+async def retry_prescan(book_id: str, doc_id: str):
+    """Reintenta el pre-scan Fase 1 sobre un archivo bloqueado.
+
+    Sólo aplica a archivos cuyo sidecar está en ``pre_scan_failed``. Si Gemini
+    Vision vuelve a fallar, se registra otro evento ``pre_scan_failed`` con
+    los nuevos detalles. Si tiene éxito, el sidecar termina en ``split`` (si
+    detecta N facturas, con N sidecars hijo nuevos) o en ``uploaded`` (si
+    descubre que es factura única — el caller debe transitionar manualmente).
     """
     if book_id not in BOOK_CONFIGS:
         raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}")
 
-    # Bloquear borrado durante un run activo del pipeline.
+    if is_pipeline_locked():
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "pipeline_running", "message": "Pipeline en curso."},
+        )
+
+    safe_doc_id = pathlib.PurePosixPath(doc_id).name
+    if not safe_doc_id or safe_doc_id.startswith(".") or ".." in safe_doc_id:
+        raise HTTPException(status_code=400, detail="Invalid doc_id")
+
+    libro_short = BOOK_CONFIGS[book_id]["libro_short"]
+    asientos_root = get_asientos_dir()
+    asiento_folder = asientos_root / f"{libro_short}_{safe_doc_id}"
+    if not asiento_folder.exists():
+        raise HTTPException(status_code=404, detail=f"Asiento no encontrado: {safe_doc_id}")
+
+    try:
+        current = state_writer.current_status(asiento_folder)
+    except Exception:
+        current = None
+    if current != "pre_scan_failed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"El archivo no está en pre_scan_failed (estado actual: {current})",
+        )
+
+    # El PDF original sigue en el inbox: el splitter no archivó nada porque
+    # falló antes de la decisión "split vs single".
+    inbox = _inbox_for_book(book_id)
+    pdf_path = inbox / f"{safe_doc_id}.pdf"
+    if not pdf_path.is_file():
+        raise HTTPException(status_code=404, detail=f"PDF no encontrado en inbox: {safe_doc_id}.pdf")
+
+    # Antes de re-llamar al splitter, dejamos el sidecar en `retrying` para
+    # cumplir la transición permitida pre_scan_failed→retrying y dar trazabilidad
+    # del intento. Si split_single_file tiene éxito como split, el propio
+    # _apply_split sobreescribirá el sidecar con `split`; si vuelve a fallar,
+    # nuestro append posterior pondrá `pre_scan_failed` (transición retrying→
+    # pre_scan_failed no está explícita en VALID_TRANSITIONS — caerá en WARN
+    # sin romper el sidecar).
+    try:
+        state_writer.append(asiento_folder, {"status": "retrying", "reason": "retry_prescan"})
+    except Exception:
+        logger.warning("[retry-prescan] no se pudo marcar retrying", exc_info=True)
+
+    gemini_client = getattr(app.state, "gemini_client", None)
+    if gemini_client is None:
+        try:
+            from src.phase2_ocr.mapper_document_ai_to_json import _init_gemini_model
+            gemini_client = await asyncio.to_thread(_init_gemini_model)
+            app.state.gemini_client = gemini_client
+        except Exception as exc:
+            outcome = SplitOutcome(source=str(pdf_path), status="error", error=f"gemini_init: {exc}")
+            _record_prescan_failure(asiento_folder, outcome, model_used=None)
+            return {"doc_id": safe_doc_id, "pre_scan": _prescan_outcome_to_dict(outcome, asiento_folder=asiento_folder)}
+
+    cfg = settings()
+    timeout_s = max(5, int(cfg.prescan_timeout_seconds))
+    try:
+        outcome = await asyncio.wait_for(
+            asyncio.to_thread(
+                split_single_file, pdf_path, client=gemini_client, model=None,
+            ),
+            timeout=timeout_s,
+        )
+    except asyncio.TimeoutError:
+        outcome = SplitOutcome(source=str(pdf_path), status="error", error=f"timeout after {timeout_s}s")
+    except Exception as exc:
+        outcome = SplitOutcome(source=str(pdf_path), status="error", error=f"unhandled: {exc}")
+
+    if outcome.status == "error":
+        _record_prescan_failure(asiento_folder, outcome, model_used=cfg.gemini_ocr_model)
+    elif outcome.status in ("single_page", "single_factura"):
+        # Éxito como factura única: dejamos el sidecar en `uploaded` para que
+        # el pipeline lo procese normalmente.
+        try:
+            state_writer.append(asiento_folder, {
+                "status": "uploaded",
+                "reason": "prescan_retry_single",
+                "file_origin": str(pdf_path.resolve()),
+            })
+        except Exception:
+            logger.warning("[retry-prescan] no se pudo transitionar a uploaded", exc_info=True)
+    # outcome.status == "split" → split_single_file ya creó los hijos y marcó
+    # el sidecar original como `split`. Nada más que hacer.
+
+    return {
+        "doc_id": safe_doc_id,
+        "pre_scan": _prescan_outcome_to_dict(outcome, asiento_folder=asiento_folder),
+    }
+
+
+@app.post("/api/books/{book_id}/files/{doc_id}/override-prescan")
+def override_prescan(book_id: str, doc_id: str, body: _OverridePrescanBody):
+    """Fuerza al pipeline a tratar un archivo bloqueado como factura única.
+
+    Útil cuando Gemini Vision está caído pero el operario sabe (mirando el
+    PDF) que es 1 sola factura. Tras este override, el archivo sigue su
+    flujo normal por el pipeline OCR — no hay re-scan.
+
+    Sólo permite el override desde ``pre_scan_failed`` y solo con
+    ``as_single=true``. Cualquier otra cosa devuelve 400.
+    """
+    if book_id not in BOOK_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}")
+    if not body.as_single:
+        raise HTTPException(status_code=400, detail="Sólo se soporta as_single=true por ahora")
+
+    if is_pipeline_locked():
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "pipeline_running", "message": "Pipeline en curso."},
+        )
+
+    safe_doc_id = pathlib.PurePosixPath(doc_id).name
+    if not safe_doc_id or safe_doc_id.startswith(".") or ".." in safe_doc_id:
+        raise HTTPException(status_code=400, detail="Invalid doc_id")
+
+    libro_short = BOOK_CONFIGS[book_id]["libro_short"]
+    asiento_folder = get_asientos_dir() / f"{libro_short}_{safe_doc_id}"
+    if not asiento_folder.exists():
+        raise HTTPException(status_code=404, detail=f"Asiento no encontrado: {safe_doc_id}")
+
+    try:
+        current = state_writer.current_status(asiento_folder)
+    except Exception:
+        current = None
+    if current != "pre_scan_failed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"El archivo no está en pre_scan_failed (estado actual: {current})",
+        )
+
+    inbox = _inbox_for_book(book_id)
+    pdf_path = inbox / f"{safe_doc_id}.pdf"
+    file_origin = str(pdf_path.resolve()) if pdf_path.exists() else f"{safe_doc_id}.pdf"
+
+    try:
+        state_writer.append(asiento_folder, {
+            "status": "uploaded",
+            "reason": "prescan_override_as_single",
+            "actor": "user",
+            "file_origin": file_origin,
+        })
+    except Exception as exc:
+        logger.error("[override-prescan] append falló: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"No se pudo overridear: {exc}")
+
+    logger.info(
+        "[override-prescan] doc_id=%s libro=%s forced as_single",
+        safe_doc_id, book_id,
+    )
+    return {"doc_id": safe_doc_id, "status": "uploaded", "forced_as_single": True}
+
+
+@app.delete("/api/books/{book_id}/files/{filename}")
+def delete_book_file(book_id: str, filename: str):
+    """Elimina un PDF del inbox de forma definitiva (hard delete).
+
+    Política: el operario espera que pulsar la 'X' borre el archivo por
+    completo, sin dejar rastro. Única excepción: el asiento ya está en
+    ``confirmed`` (exportado a Intermega) — devolvemos 409 para evitar
+    desincronizar el libro contable cerrado.
+
+    Hard delete = ``shutil.rmtree(asiento_folder)`` + ``file_path.unlink()``.
+    No conservamos sidecar — la trazabilidad se mantiene en
+    ``resultado_final.json`` (para asientos ya confirmados) y en los
+    logs estructurados del orquestador.
+    """
+    if book_id not in BOOK_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Invalid book_id: {book_id}")
+
     if is_pipeline_locked():
         raise HTTPException(status_code=409, detail="Pipeline is running — cannot delete files")
 
@@ -1131,12 +1629,11 @@ def delete_book_file(book_id: str, filename: str):
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Localizar carpeta de asiento (si la hay) — el ``doc_id`` es el basename
-    # del PDF sin extensión.
     doc_id = os.path.splitext(safe_name)[0]
     libro_short = BOOK_CONFIGS[book_id]["libro_short"]
     asiento_folder = get_asientos_dir() / f"{libro_short}_{doc_id}"
     asiento_deleted = False
+
     if asiento_folder.exists():
         try:
             current = state_writer.current_status(asiento_folder)
@@ -1147,26 +1644,19 @@ def delete_book_file(book_id: str, filename: str):
                 status_code=409,
                 detail=(
                     f"'{safe_name}' ya está exportada a Intermega (asiento "
-                    "contable cerrado). Si necesitas eliminarla, contacta con "
-                    "el administrador."
+                    "contable cerrado). No se puede eliminar."
                 ),
             )
         try:
             shutil.rmtree(asiento_folder)
             asiento_deleted = True
-            logger.info(
-                "[delete] Asiento eliminado folder=%s status_previo=%s",
-                asiento_folder.name, current,
-            )
+            logger.info("[delete] Hard delete folder=%s status_previo=%s",
+                        asiento_folder.name, current)
         except OSError as e:
-            logger.error(
-                "[delete] No se pudo borrar carpeta asiento %s: %s",
-                asiento_folder, e, exc_info=True,
-            )
+            logger.error("[delete] No se pudo borrar carpeta %s: %s",
+                         asiento_folder, e, exc_info=True)
 
     file_path.unlink()
-    # Invalidar caches para que /api/invoices, /api/stats y /api/clients
-    # reflejen el borrado en el siguiente fetch (sin esperar al TTL).
     _invoices_cache.clear()
     _stats_cache.clear()
     _clients_cache.clear()
