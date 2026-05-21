@@ -18,6 +18,17 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
@@ -155,6 +166,7 @@ function PreScanFileRow({
   const pre = file.pre_scan;
   const docId = file.name.replace(/\.[^.]+$/, "");
   const fileKey = `${bookId}/${file.name}`;
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const handleRetry = async () => {
     onAction(fileKey, "retry");
@@ -214,8 +226,7 @@ function PreScanFileRow({
     }
   };
 
-  const handleDelete = async () => {
-    if (!window.confirm(`¿Eliminar "${file.name}" del lote?`)) return;
+  const performDelete = async () => {
     onAction(fileKey, "delete");
     try {
       await deleteBookFile(bookId, file.name);
@@ -226,6 +237,7 @@ function PreScanFileRow({
       toast.error(`Error eliminando: ${msg}`);
     } finally {
       onAction(fileKey, null);
+      setDeleteOpen(false);
     }
   };
 
@@ -326,20 +338,43 @@ function PreScanFileRow({
             )}
             Tratar como 1 factura
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={busy}
-            onClick={handleDelete}
-            className="h-7 text-[10px] uppercase tracking-wider text-red-600 hover:text-red-800 hover:bg-red-50 rounded-none"
-          >
-            {action === "delete" ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Trash2 className="h-3 w-3 mr-1" />
-            )}
-            Eliminar
-          </Button>
+          <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+            <AlertDialogTrigger asChild>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                className="h-7 text-[10px] uppercase tracking-wider text-red-600 hover:text-red-800 hover:bg-red-50 rounded-none"
+              >
+                {action === "delete" ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3 w-3 mr-1" />
+                )}
+                Eliminar
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Eliminar definitivamente</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Se eliminará <strong>{file.name}</strong> por completo — el PDF
+                  y todos sus datos. No queda rastro y no se podrá recuperar.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="rounded-none text-xs uppercase tracking-[0.15em]">
+                  Cancelar
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={performDelete}
+                  className="rounded-none text-xs uppercase tracking-[0.15em] bg-red-600 hover:bg-red-700"
+                >
+                  Eliminar definitivamente
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       )}
     </div>
