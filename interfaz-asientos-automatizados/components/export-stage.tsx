@@ -281,7 +281,6 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
           `${baseMsg} · ${errCount} con error parcial — revisa la consola para detalle`,
         );
         if (res.errors) {
-          console.warn("[confirm] errores parciales:", res.errors);
           res.errors.forEach((e) =>
             toast.error(`${e.doc_id}: ${e.error} (fase: ${e.stage})`, { duration: 8000 }),
           );
@@ -292,7 +291,6 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
         clientes_nuevos: res.clientes_nuevos,
       });
     } catch (err) {
-      console.error("[confirm] error en POST /api/pipeline/confirm:", err);
       toast.error("Error confirmando el lote. Revisa la conexión y reintenta.");
     } finally {
       setIsConfirming(false);
@@ -397,7 +395,6 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
       await downloadZip(csvFiles);
       toast.success(`ZIP descargado (${csvFiles.length} archivo${csvFiles.length !== 1 ? "s" : ""})`);
     } catch (err) {
-      console.error("Error generando ZIP:", err);
       toast.error("Error generando el ZIP");
     } finally {
       setIsZipping(false);

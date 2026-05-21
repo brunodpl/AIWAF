@@ -216,7 +216,6 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       // El clamp de currentIdx vive ahora en un useEffect separado (más abajo)
       // que reacciona a invoiceSummaries.length post-merge.
     } catch (err) {
-      console.error("Error loading invoices:", err);
       if (!isRefresh) {
         setError("Error cargando facturas. Verifica que el pipeline está funcionando.");
       }
@@ -481,7 +480,6 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         applyInvoiceData(invoice);
       } catch (err) {
         if (cancelled) return;
-        console.error(`Error loading detail for ${summary.id}:`, err);
         toast.error(`Error cargando factura ${summary.id}`);
         setFormData({});
         setFiscalLines([]);
@@ -727,7 +725,6 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         }, 500);
       }
     } catch (err) {
-      console.error(`Error en acción ${action}:`, err);
       toast.error(`Error al ${action === "approve" ? "aprobar" : "rechazar"} la factura`);
     } finally {
       submittingRef.current = false;

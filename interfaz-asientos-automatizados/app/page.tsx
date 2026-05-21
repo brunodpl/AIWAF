@@ -103,9 +103,10 @@ export default function Home() {
   const [reviewFocusIds, setReviewFocusIds] = useState<string[] | undefined>(undefined);
   // "Nuevo escaneo" = empezar un lote limpio. Llama a /api/pipeline/reset
   // para descartar asientos pendientes (status != done) que se quedarían
-  // fantasma en /review tras un escaneo abortado. Los PDFs originales en
-  // libros/facturas/ sobreviven; solo se purga libros/asientos/ y runtime.
-  // Si el backend falla, seguimos limpiando estado UI (defensa en profundidad).
+  // fantasma en /review tras un escaneo abortado. ATENCIÓN: el reset
+  // también borra los splits del inbox (libros/facturas/*__NofN.pdf) — los
+  // PDFs originales no-split sobreviven, los hijos del splitter NO. Si el
+  // backend falla, seguimos limpiando estado UI (defensa en profundidad).
   const handleReset = useCallback(async () => {
     setResetting(true);
     try {
