@@ -184,6 +184,17 @@ cuentas:
     descripcion: "Ingresos por servicios prestados a terceros"
     human_review: false
 
+  - code: "705.01"
+    label: "Ingresos de maquinas recreativas"
+    group: "7"
+    book: "ingresos_ventas"
+    class: "ingreso_interior"
+    descripcion: >-
+      Ingresos por explotacion de maquinas recreativas tipo B (tragaperras)
+      o tipo C (azar) en el local. Incluye liquidaciones y comisiones de
+      operadoras como COMAR, LUCKIA, RECREATIVOS, etc.
+    human_review: false
+
   # ── GRUPO 2: BIENES DE INVERSION ────────────────────────
 
   - code: "212"
@@ -248,6 +259,7 @@ conceptos:
   seguridad_social:        { cuenta: "642", class: "gasto_no_deducible_iva",    human_review: true  }
   venta_mercaderias:       { cuenta: "700", class: "ingreso_interior",          human_review: false }
   prestacion_servicios:    { cuenta: "705", class: "ingreso_interior",          human_review: false }
+  ingresos_maquinas_recreativas: { cuenta: "705.01", class: "ingreso_interior",  human_review: false }
   instalacion_tecnica:     { cuenta: "212", class: "bien_inversion",            human_review: true  }
   maquinaria:              { cuenta: "213", class: "bien_inversion",            human_review: true  }
   mobiliario:              { cuenta: "216", class: "bien_inversion",            human_review: true  }

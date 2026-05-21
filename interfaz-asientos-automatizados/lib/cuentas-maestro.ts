@@ -45,6 +45,7 @@ export const CUENTAS: readonly CuentaMaestro[] = [
   // ── Grupo 7: ventas e ingresos ──
   { code: "700", label: "Ventas de mercaderías",                    concepto: "venta_mercaderias",       group: "7", descripcion: "Ingresos por venta de productos sin transformación" },
   { code: "705", label: "Prestación de servicios",                  concepto: "prestacion_servicios",    group: "7", descripcion: "Ingresos por servicios prestados a terceros" },
+  { code: "705.01", label: "Ingresos de máquinas recreativas",      concepto: "ingresos_maquinas_recreativas", group: "7", descripcion: "Liquidaciones y comisiones de operadoras de máquinas tragaperras (COMAR, LUCKIA, RECREATIVOS)" },
 ];
 
 export const CUENTA_BY_CODE: Readonly<Record<string, CuentaMaestro>> =

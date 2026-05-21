@@ -23,7 +23,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Check, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Loader2, Plus, RefreshCw, X } from "lucide-react";
 import { ApprovedInvoiceData, DocStatus, FiscalLine, InvoiceDocument, Libro, LibroShort } from "@/lib/types";
 import {
   fetchInvoices,
@@ -136,6 +136,10 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [fiscalLines, setFiscalLines] = useState<FiscalLine[]>([]);
+  // Modo "cuenta + concepto personalizados" — activado al pulsar el botón "+",
+  // o restaurado automáticamente al recargar una factura con un code que no
+  // existe en el maestro (override guardado previamente).
+  const [customCuentaMode, setCustomCuentaMode] = useState(false);
   const [fileType, setFileType] = useState<"pdf" | "image">("image");
   const [loadingDetail, setLoadingDetailState] = useState(false);
   const loadingDetailRef = useRef(false);
@@ -285,6 +289,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     // Limpiar datos stale inmediatamente al cambiar de factura
     setFormData({});
     setFiscalLines([]);
+    setCustomCuentaMode(false);
     dirtyRef.current = false;
 
     // Función auxiliar: aplica datos al formulario, priorizando datos aprobados por el usuario
@@ -292,19 +297,25 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     // aprobó es la fuente de verdad, no lo que escaneó la IA).
     const applyInvoiceData = (source: InvoiceDocument) => {
       const approvedData = approvedInvoicesRef.current.get(summary.id);
+      let loadedFormData: Record<string, string>;
       if (approvedData) {
         // Factura ya aprobada: restaurar exactamente lo que el usuario aprobó
+        loadedFormData = approvedData.formData;
         setFormData(approvedData.formData);
         setFiscalLines(approvedData.fiscalLines);
       } else {
         // Factura sin aprobar: cargar datos originales de la API
         const nextData: Record<string, string> = {};
         source.fields.forEach(f => { nextData[f.id] = f.value; });
+        loadedFormData = nextData;
         setFormData(nextData);
         setFiscalLines(source.fiscalLines);
       }
       setFileUrl(source.imageUrl);
       setFileType(source.fileType);
+      // Restaurar modo custom si el code persistido no está en el maestro.
+      const code = loadedFormData.cuenta_contable;
+      setCustomCuentaMode(Boolean(code) && !(code in CUENTA_BY_CODE));
     };
 
     const cached = cacheRef.current.get(summary.id);
@@ -828,48 +839,100 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                           </span>
                         </div>
                         {field.id === "cuenta_contable" ? (
-                          <>
-                            <Select
-                              value={formData.cuenta_contable || ""}
-                              onValueChange={(code) => {
-                                const cuenta = CUENTA_BY_CODE[code];
-                                dirtyRef.current = true;
-                                setFormData((prev) => ({
-                                  ...prev,
-                                  cuenta_contable: code,
-                                  concepto: cuenta ? cuenta.concepto : prev.concepto,
-                                }));
-                              }}
-                            >
-                              <SelectTrigger
-                                id={field.id}
-                                className={cn(
-                                  "border-slate-100 focus:ring-0 focus:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all",
-                                  field.status === "block" && "border-red-200 bg-red-50/30",
-                                  field.status === "warn" && "border-amber-200",
-                                )}
-                              >
-                                <SelectValue placeholder="Selecciona cuenta…" />
-                              </SelectTrigger>
-                              <SelectContent className="max-h-80">
-                                {CUENTAS.map((c) => (
-                                  <SelectItem
-                                    key={c.code}
-                                    value={c.code}
-                                    className="font-mono text-xs"
-                                  >
-                                    <span className="font-bold mr-2">{c.code}</span>
-                                    <span className="text-slate-600">{c.label}</span>
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            {formData.concepto && (
-                              <div className="text-[10px] font-mono text-slate-500 pl-1">
-                                concepto: <span className="text-slate-700">{formData.concepto}</span>
+                          customCuentaMode ? (
+                            <>
+                              <div className="flex items-center gap-1">
+                                <Input
+                                  id={field.id}
+                                  value={formData.cuenta_contable || ""}
+                                  onChange={(e) => handleInputChange("cuenta_contable", e.target.value)}
+                                  placeholder="Cuenta contable (libre)"
+                                  className={cn(
+                                    "border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm",
+                                    field.status === "block" && "border-red-200 bg-red-50/30",
+                                    field.status === "warn" && "border-amber-200",
+                                  )}
+                                />
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-slate-400 hover:text-slate-700 shrink-0"
+                                  title="Volver al desplegable del maestro"
+                                  onClick={() => setCustomCuentaMode(false)}
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </Button>
                               </div>
-                            )}
-                          </>
+                              <Input
+                                value={formData.concepto || ""}
+                                onChange={(e) => handleInputChange("concepto", e.target.value)}
+                                placeholder="Concepto (snake_case sugerido)"
+                                className="border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm"
+                              />
+                              <div className="text-[10px] font-mono text-slate-400 pl-1">
+                                modo personalizado — fuera del maestro
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-1">
+                                <Select
+                                  value={formData.cuenta_contable || ""}
+                                  onValueChange={(code) => {
+                                    const cuenta = CUENTA_BY_CODE[code];
+                                    dirtyRef.current = true;
+                                    setFormData((prev) => ({
+                                      ...prev,
+                                      cuenta_contable: code,
+                                      concepto: cuenta ? cuenta.concepto : prev.concepto,
+                                    }));
+                                  }}
+                                >
+                                  <SelectTrigger
+                                    id={field.id}
+                                    className={cn(
+                                      "border-slate-100 focus:ring-0 focus:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all flex-1",
+                                      field.status === "block" && "border-red-200 bg-red-50/30",
+                                      field.status === "warn" && "border-amber-200",
+                                    )}
+                                  >
+                                    <SelectValue placeholder="Selecciona cuenta…" />
+                                  </SelectTrigger>
+                                  <SelectContent className="max-h-80">
+                                    {CUENTAS.map((c) => (
+                                      <SelectItem
+                                        key={c.code}
+                                        value={c.code}
+                                        className="font-mono text-xs"
+                                      >
+                                        <span className="font-bold mr-2">{c.code}</span>
+                                        <span className="text-slate-600">{c.label}</span>
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-slate-400 hover:text-slate-700 shrink-0"
+                                  title="Cuenta + concepto personalizados"
+                                  onClick={() => {
+                                    dirtyRef.current = true;
+                                    setCustomCuentaMode(true);
+                                  }}
+                                >
+                                  <Plus className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                              {formData.concepto && (
+                                <div className="text-[10px] font-mono text-slate-500 pl-1">
+                                  concepto: <span className="text-slate-700">{formData.concepto}</span>
+                                </div>
+                              )}
+                            </>
+                          )
                         ) : (
                           <Input
                             id={field.id}
