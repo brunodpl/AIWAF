@@ -35,6 +35,7 @@ import {
 } from "@/lib/api";
 import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
 import { CUENTAS, CUENTA_BY_CODE } from "@/lib/cuentas-maestro";
+import { inferLibroFromCuenta, libroLabel } from "@/lib/libro-inference";
 import {
   Select,
   SelectContent,
@@ -140,6 +141,19 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   // o restaurado automáticamente al recargar una factura con un code que no
   // existe en el maestro (override guardado previamente).
   const [customCuentaMode, setCustomCuentaMode] = useState(false);
+  // Libro efectivo de la factura actual. Inicialmente = invoice.libro del
+  // splitter; puede cambiar si el operario edita la cuenta contable y el
+  // prefijo PGC sugiere otro libro. El override viaja al backend en
+  // AsientoConfirm.libro y se persiste en approvedInvoices al aprobar.
+  const [effectiveLibro, setEffectiveLibro] = useState<Libro | undefined>(undefined);
+  // Pulso visual en banner sticky tras un cambio automático (~1.5s).
+  const [libroJustChanged, setLibroJustChanged] = useState(false);
+  // Warning sutil bajo el campo cuenta cuando el prefijo no permite inferir
+  // libro (ej. 4xx, 5xx, letra). Mensaje incluye el libro actual.
+  const [cuentaWarning, setCuentaWarning] = useState<string | null>(null);
+  // Timers cancelables: pulso del banner + debounce del toast en custom typing.
+  const libroPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const customToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fileType, setFileType] = useState<"pdf" | "image">("image");
   const [loadingDetail, setLoadingDetailState] = useState(false);
   const loadingDetailRef = useRef(false);
@@ -290,6 +304,17 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     setFormData({});
     setFiscalLines([]);
     setCustomCuentaMode(false);
+    setEffectiveLibro(undefined);
+    setCuentaWarning(null);
+    setLibroJustChanged(false);
+    if (libroPulseTimerRef.current) {
+      clearTimeout(libroPulseTimerRef.current);
+      libroPulseTimerRef.current = null;
+    }
+    if (customToastTimerRef.current) {
+      clearTimeout(customToastTimerRef.current);
+      customToastTimerRef.current = null;
+    }
     dirtyRef.current = false;
 
     // Función auxiliar: aplica datos al formulario, priorizando datos aprobados por el usuario
@@ -313,6 +338,9 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       }
       setFileUrl(source.imageUrl);
       setFileType(source.fileType);
+      // Libro efectivo: si la factura ya fue aprobada con un override previo,
+      // restauramos ese; sino usamos el del splitter (source.libro).
+      setEffectiveLibro(approvedData?.libro ?? source.libro);
       // Restaurar modo custom si el code persistido no está en el maestro.
       const code = loadedFormData.cuenta_contable;
       setCustomCuentaMode(Boolean(code) && !(code in CUENTA_BY_CODE));
@@ -420,6 +448,96 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     return () => cancelAutoAdvance();
   }, [cancelAutoAdvance]);
 
+  // Cleanup de timers de libro (pulso del banner + debounce del toast) en unmount
+  useEffect(() => {
+    return () => {
+      if (libroPulseTimerRef.current) clearTimeout(libroPulseTimerRef.current);
+      if (customToastTimerRef.current) clearTimeout(customToastTimerRef.current);
+    };
+  }, []);
+
+  /**
+   * Aplica la inferencia de libro a partir del código de cuenta contable.
+   *
+   *   - `select`:        cambio confirmado del Select del maestro → cambio inmediato + toast.
+   *   - `custom-typing`: tecleo en el Input libre → cambio inmediato del libro
+   *                      en banner; toast debounced 600 ms para no flashear
+   *                      mientras se escribe "7" → "70" → "700".
+   *   - `custom-blur`:   pérdida de foco del Input libre → consolida cualquier
+   *                      cambio pendiente y muestra toast si lo hubo.
+   *
+   * Si el código es ambiguo (prefijo distinto de 2/6/7), no cambia el libro
+   * pero muestra un warning sutil con el libro actualmente asignado.
+   */
+  const maybeSwitchLibro = useCallback(
+    (code: string, source: "select" | "custom-typing" | "custom-blur") => {
+      const trimmed = (code ?? "").trim();
+      if (trimmed === "") {
+        setCuentaWarning(null);
+        if (customToastTimerRef.current) {
+          clearTimeout(customToastTimerRef.current);
+          customToastTimerRef.current = null;
+        }
+        return;
+      }
+
+      const inferred = inferLibroFromCuenta(trimmed);
+      const current = effectiveLibro;
+
+      if (inferred === null) {
+        // Cuenta ambigua — no tocar libro, mostrar warning con el libro actual.
+        setCuentaWarning(
+          `Cuenta no reconocida. Libro actual: ${libroLabel(current)} (sin cambios).`,
+        );
+        return;
+      }
+
+      setCuentaWarning(null);
+
+      if (inferred === current) return; // idempotente
+
+      const previous = current;
+      setEffectiveLibro(inferred);
+      setLibroJustChanged(true);
+      if (libroPulseTimerRef.current) clearTimeout(libroPulseTimerRef.current);
+      libroPulseTimerRef.current = setTimeout(() => {
+        setLibroJustChanged(false);
+        libroPulseTimerRef.current = null;
+      }, 1500);
+
+      const showToast = () => {
+        toast.info(
+          `Libro cambiado: ${libroLabel(previous)} → ${libroLabel(inferred)}`,
+          {
+            description: `Cuenta ${trimmed} reasignó cliente y contraparte automáticamente.`,
+            action: {
+              label: "Deshacer",
+              onClick: () => setEffectiveLibro(previous),
+            },
+            duration: 6000,
+          },
+        );
+      };
+
+      if (source === "custom-typing") {
+        // Debounce: tipear "6"→"60"→"600" no debe flashear toasts.
+        if (customToastTimerRef.current) clearTimeout(customToastTimerRef.current);
+        customToastTimerRef.current = setTimeout(() => {
+          showToast();
+          customToastTimerRef.current = null;
+        }, 600);
+      } else {
+        // select / custom-blur → toast inmediato.
+        if (customToastTimerRef.current) {
+          clearTimeout(customToastTimerRef.current);
+          customToastTimerRef.current = null;
+        }
+        showToast();
+      }
+    },
+    [effectiveLibro],
+  );
+
   // Ejecutar la acción (aprobar/rechazar) con guard de doble-click
   const executeConfirmedAction = async (action: "approve" | "reject") => {
     // Guard síncrono: si dos clicks llegan en el mismo tick antes de que
@@ -448,7 +566,13 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       dirtyRef.current = false;
 
       if (action === "approve") {
-        onApprove(currentInvoice.id, { formData, fiscalLines, libro: currentInvoice.libro });
+        // Persistimos el libro EFECTIVO (puede diferir del splitter si el
+        // operario lo corrigió cambiando la cuenta contable).
+        onApprove(currentInvoice.id, {
+          formData,
+          fiscalLines,
+          libro: effectiveLibro ?? currentInvoice.libro,
+        });
         toast.success("Factura aprobada correctamente");
       } else {
         onReject(currentInvoice.id);
@@ -801,16 +925,27 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                 {invoice ? (
                 <div className="p-10 space-y-10 max-w-2xl mx-auto">
                   {(() => {
-                    const cliente = resolveClienteGestoria(invoice.libro, formData);
-                    const libroLabel =
-                      invoice.libro === "ingresos" ? "Emitida (ventas/ingresos)" :
-                      invoice.libro === "gastos"   ? "Recibida (compras/gastos)" :
-                      invoice.libro === "bienes"   ? "Bienes de inversión" : "—";
+                    const cliente = resolveClienteGestoria(effectiveLibro, formData);
+                    const labelActual = libroLabel(effectiveLibro);
+                    const isOverride =
+                      invoice.libro !== undefined &&
+                      effectiveLibro !== undefined &&
+                      effectiveLibro !== invoice.libro;
                     return (
-                      <div className="sticky top-0 z-10 -mx-10 -mt-10 mb-4 px-10 py-4 bg-slate-50 border-b border-slate-200">
+                      <div
+                        className={cn(
+                          "sticky top-0 z-10 -mx-10 -mt-10 mb-4 px-10 py-4 bg-slate-50 border-b border-slate-200 transition-all",
+                          libroJustChanged && "ring-2 ring-teal-400",
+                        )}
+                      >
                         <div className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">
-                          Procesando factura para — {libroLabel}
+                          Procesando factura para — {labelActual}
                         </div>
+                        {isOverride && (
+                          <div className="text-[10px] text-slate-400 mt-0.5 font-mono">
+                            original: {libroLabel(invoice.libro)}
+                          </div>
+                        )}
                         <div className="text-base font-bold text-slate-800 mt-1">
                           {cliente.nombre || (
                             <span className="text-amber-600">⚠ Cliente no resuelto</span>
@@ -839,13 +974,20 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                           </span>
                         </div>
                         {field.id === "cuenta_contable" ? (
-                          customCuentaMode ? (
+                          <>
+                          {customCuentaMode ? (
                             <>
                               <div className="flex items-center gap-1">
                                 <Input
                                   id={field.id}
                                   value={formData.cuenta_contable || ""}
-                                  onChange={(e) => handleInputChange("cuenta_contable", e.target.value)}
+                                  onChange={(e) => {
+                                    handleInputChange("cuenta_contable", e.target.value);
+                                    maybeSwitchLibro(e.target.value, "custom-typing");
+                                  }}
+                                  onBlur={(e) =>
+                                    maybeSwitchLibro(e.target.value, "custom-blur")
+                                  }
                                   placeholder="Cuenta contable (libre)"
                                   className={cn(
                                     "border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm",
@@ -887,6 +1029,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                       cuenta_contable: code,
                                       concepto: cuenta ? cuenta.concepto : prev.concepto,
                                     }));
+                                    maybeSwitchLibro(code, "select");
                                   }}
                                 >
                                   <SelectTrigger
@@ -932,7 +1075,13 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                 </div>
                               )}
                             </>
-                          )
+                          )}
+                          {cuentaWarning && (
+                            <p className="text-[10px] text-amber-600 mt-1 pl-1 font-mono">
+                              {cuentaWarning}
+                            </p>
+                          )}
+                          </>
                         ) : (
                           <Input
                             id={field.id}

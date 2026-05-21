@@ -1192,6 +1192,11 @@ class AsientoConfirm(BaseModel):
     campos_finales: Dict[str, CampoFinal]
     lineas_asiento: list[dict[str, Any]] = []
     csv_b64: str = ""
+    # Override del libro decidido por el operario en fase 3 de revisión.
+    # Si presente y válido ("compras"/"ventas"/"bienes"), prevalece sobre
+    # el libro derivado del nombre de carpeta del splitter (`_libro_from_folder`).
+    # Si ausente o vacío, se mantiene el comportamiento original.
+    libro: Optional[str] = None
 
 
 class ConfirmBatchPayload(BaseModel):
@@ -1272,7 +1277,26 @@ def confirm_batch(payload: ConfirmBatchPayload):
             per_doc_errors.append({"doc_id": doc_id, "error": f"csv_b64 inválido: {e}", "stage": "csv"})
             continue
 
-        libro_short = _libro_from_folder(folder.name) or ""
+        libro_folder = _libro_from_folder(folder.name) or ""
+        # Override del operario (fase 3 de revisión): si la cuenta contable
+        # corregida implicaba otro libro, el frontend envía `asiento.libro`
+        # como forma corta ("compras"/"ventas"/"bienes"). Validamos contra el
+        # set conocido para evitar payloads malformados.
+        libro_override_raw = (asiento.libro or "").strip().lower() or None
+        if libro_override_raw and libro_override_raw not in {"compras", "ventas", "bienes"}:
+            per_doc_errors.append({
+                "doc_id": doc_id,
+                "error": f"libro override inválido: {libro_override_raw!r}",
+                "stage": "validate",
+            })
+            continue
+        libro_short = libro_override_raw or libro_folder
+        libro_was_overridden = bool(libro_override_raw) and libro_override_raw != libro_folder
+        if libro_was_overridden:
+            logger.info(
+                "[confirm] override de libro doc_id=%s folder=%s confirmado=%s",
+                doc_id, libro_folder or "?", libro_short,
+            )
         # Normalizamos NIFs a mayúsculas antes de persistir. Sin esto el
         # frontend podía guardar "49915950q" minúscula y romper las
         # comparaciones case-sensitive del historial.
@@ -1310,18 +1334,22 @@ def confirm_batch(payload: ConfirmBatchPayload):
             }
             lineas_event = [dict(l) for l in asiento.lineas_asiento]
             try:
-                state_writer.append(
-                    folder,
-                    {
-                        "status": "confirmed",
-                        "actor": "operario",
-                        # ``action="confirmed"`` se mantiene para parsers legacy.
-                        "action": "confirmed",
-                        "libro": libro_short,
-                        "campos_finales": campos_finales_event,
-                        "lineas_asiento": lineas_event,
-                    },
-                )
+                event_payload: dict[str, Any] = {
+                    "status": "confirmed",
+                    "actor": "operario",
+                    # ``action="confirmed"`` se mantiene para parsers legacy.
+                    "action": "confirmed",
+                    "libro": libro_short,
+                    "campos_finales": campos_finales_event,
+                    "lineas_asiento": lineas_event,
+                }
+                if libro_was_overridden:
+                    # Trazabilidad: la carpeta sigue siendo `{libro_folder}_{doc_id}`
+                    # pero el libro semántico final difiere. Esto permite que
+                    # /historial y auditoría distingan correcciones humanas.
+                    event_payload["libro_override"] = True
+                    event_payload["libro_original"] = libro_folder
+                state_writer.append(folder, event_payload)
             except (FileNotFoundError, ValueError, OSError) as e:
                 logger.error(
                     "[confirm] sidecar.append confirmed falló doc_id=%s: %s — el "

@@ -203,6 +203,12 @@ export interface AsientoConfirm {
   campos_finales: Record<string, CampoFinal>;
   lineas_asiento: LineaAsiento[];
   csv_b64: string;
+  /**
+   * Override del libro decidido por el operario en fase 3. Si presente,
+   * el backend lo prefiere sobre el derivado del nombre de carpeta del splitter.
+   * Forma corta: "compras" | "ventas" | "bienes".
+   */
+  libro?: LibroShort;
 }
 
 export interface ConfirmBatchPayload {

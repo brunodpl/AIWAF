@@ -28,6 +28,7 @@ import {
 } from "@/lib/csv";
 import { resolveClienteGestoria, resolveContraparteFactura } from "@/lib/cliente-gestoria";
 import { buildCsvBase64, confirmBatch } from "@/lib/api-clients";
+import { LIBRO_FRONT_TO_SHORT } from "@/lib/api";
 import type {
   AsientoConfirm,
   ConfirmBatchPayload,
@@ -206,6 +207,10 @@ async function persistBatchToBackend(
       campos_finales: camposFinales,
       lineas_asiento: lineas,
       csv_b64: buildCsvBase64(lineas),
+      // Override de libro: si el operario cambió la cuenta contable durante
+      // la revisión, `invoice.libro` puede diferir del libro inicial del
+      // splitter. El backend prefiere este valor sobre `_libro_from_folder`.
+      libro: invoice.libro ? LIBRO_FRONT_TO_SHORT[invoice.libro] : undefined,
     };
     doc_ids.push(docId);
   }

@@ -38,6 +38,18 @@ const LIBRO_SHORT_MAP: Record<LibroShort, Libro> = {
 };
 
 /**
+ * Inverso de `LIBRO_SHORT_MAP`: forma frontend (`gastos`/`ingresos`/`bienes`)
+ * → forma corta del filesystem backend (`compras`/`ventas`/`bienes`).
+ * Necesario para enviar el override de libro en `AsientoConfirm.libro` al
+ * confirm batch, dado que el backend espera la forma corta.
+ */
+export const LIBRO_FRONT_TO_SHORT: Record<Libro, LibroShort> = {
+  gastos: "compras",
+  ingresos: "ventas",
+  bienes: "bienes",
+};
+
+/**
  * Base URL vacío — todas las rutas /api/* son relativas al origen del navegador.
  * Next.js hace proxy interno a pipeline-api:8000 via rewrites en next.config.mjs.
  * Esto elimina la dependencia de NEXT_PUBLIC_API_URL y permite cambiar la IP
