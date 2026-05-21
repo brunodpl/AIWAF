@@ -147,6 +147,13 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   const batchDocIdsRef = useRef<Set<string> | null>(null);
   useEffect(() => { batchDocIdsRef.current = batchDocIds; }, [batchDocIds]);
 
+  // True tras el primer poll a /api/pipeline/batch (éxito o error). Evita
+  // pintar "No hay facturas en proceso" en la ventana inicial — entre que
+  // loadInvoices resuelve (invoiceSummaries ya tiene datos) y el primer poll
+  // del batch puebla batchDocIds — que dejaría visibleSummaries vacío de forma
+  // espuria. Mientras !batchPolled mostramos el loading.
+  const [batchPolled, setBatchPolled] = useState(false);
+
   useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
   // Resincronizar el texto del input del pager compacto cuando currentIdx
   // cambia por causas externas (navegación con flechas, auto-advance tras
@@ -362,6 +369,10 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       } catch {
         // Silencioso: el endpoint puede no estar listo o el server estar
         // reiniciando. El siguiente tick reintenta.
+      } finally {
+        // Marcamos que ya hicimos al menos un poll: a partir de aquí el
+        // estado vacío del reviewer es real, no la ventana de carga inicial.
+        if (!cancelled) setBatchPolled(true);
       }
     };
 
@@ -748,8 +759,15 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   const handleRefresh = () => loadInvoices(true);
 
-  // Loading / Error states
-  if (loading) {
+  // Loading / Error states.
+  // Además del `loading` de la carga inicial, seguimos mostrando el spinner
+  // mientras haya facturas crudas pero el filtro de lote aún no se haya
+  // resuelto (primer poll del batch pendiente). Sin esto, se pinta un falso
+  // "No hay facturas en proceso" en la ventana entre que /api/invoices
+  // responde y /api/pipeline/batch puebla `batchDocIds`.
+  const awaitingBatchFilter =
+    !error && !batchPolled && invoiceSummaries.length > 0 && visibleSummaries.length === 0;
+  if (loading || awaitingBatchFilter) {
     return (
       // FIX #3: h-full en lugar de h-screen (ya estamos dentro de un h-screen en page.tsx)
       <div className="flex h-full items-center justify-center bg-slate-50">

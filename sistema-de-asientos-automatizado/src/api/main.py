@@ -2062,7 +2062,14 @@ def pipeline_batch():
     current_file = status_data.get("current_file")
 
     in_flight = bool(doc_ids) and global_status not in {"completed", "idle", None}
-    if not in_flight:
+    # Devolvemos la composición del lote SIEMPRE que haya un lote pendiente
+    # (``.pending_confirm.json`` con doc_ids), aunque el escaneo ya haya
+    # terminado (``in_flight=False``). El reviewer necesita estos doc_ids para
+    # filtrar su lista visible; si devolviéramos ``books=[]`` al completar, el
+    # reviewer se quedaría vacío al entrar tras el escaneo o al volver desde
+    # Exportar (el componente se remonta y pierde su ``batchDocIds``).
+    # ``in_flight`` queda como flag puramente informativo (escaneo en curso o no).
+    if not doc_ids:
         return {
             "in_flight": False,
             "current_file": current_file,
@@ -2162,7 +2169,7 @@ def pipeline_batch():
         })
 
     return {
-        "in_flight": True,
+        "in_flight": in_flight,
         "current_file": current_file,
         "current_libro": current_libro,
         "books": books_out,

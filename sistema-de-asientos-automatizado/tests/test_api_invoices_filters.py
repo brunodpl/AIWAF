@@ -273,3 +273,68 @@ def test_pipeline_batch_no_incluye_facturas_de_runs_anteriores(client):
         f["doc_id"] for b in body["books"] for f in b.get("files", [])
     }
     assert doc_ids_devueltos == {"new"}
+
+
+def _seed_lote_completado(libros_root: Path, doc_ids: list[str]) -> None:
+    """Como ``_seed_lote_activo`` pero con status=completed: el escaneo terminó
+    pero el lote sigue pendiente de confirmar."""
+    runtime = libros_root / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    (runtime / ".pending_confirm.json").write_text(
+        json.dumps({"doc_ids_lote": doc_ids}),
+        encoding="utf-8",
+    )
+    (runtime / "pipeline_status.json").write_text(
+        json.dumps({"status": "completed", "current_file": None}),
+        encoding="utf-8",
+    )
+
+
+def test_pipeline_batch_devuelve_lote_aunque_escaneo_completado(client):
+    """REGRESIÓN (bugs reviewer 'No hay facturas en proceso'): cuando el escaneo
+    terminó (status=completed) pero el lote sigue pendiente de confirmar, el
+    endpoint DEBE seguir devolviendo los doc_ids del lote, con in_flight=false.
+
+    Antes devolvía ``books=[]`` en cuanto el status pasaba a completed, así que
+    el reviewer se quedaba vacío al entrar tras el escaneo, al saltar a revisar
+    mid-scan que completaba, o al volver desde Exportar (remonta y pierde
+    ``batchDocIds``). ``in_flight`` es ahora un flag informativo, no la condición
+    para devolver el lote."""
+    c, root = client
+    _seed_asiento(root, "compras_f1", "f1", ["processing", "review"])
+    _seed_asiento(root, "compras_f2", "f2", ["processing", "done"])
+    _seed_lote_completado(root, ["f1", "f2"])
+
+    r = c.get("/api/pipeline/batch")
+    assert r.status_code == 200
+    body = r.json()
+    # Escaneo terminado → in_flight false, PERO el lote sigue visible.
+    assert body["in_flight"] is False
+    doc_ids_devueltos = {
+        f["doc_id"] for b in body["books"] for f in b.get("files", [])
+    }
+    assert doc_ids_devueltos == {"f1", "f2"}
+
+
+def test_pipeline_batch_idle_con_lote_pendiente_sigue_visible(client):
+    """Variante: status=idle (p.ej. tras reinicio del contenedor) con un lote
+    pendiente en .pending_confirm.json. El lote debe seguir visible para que el
+    operario pueda terminar de revisar/confirmar tras un reinicio."""
+    c, root = client
+    _seed_asiento(root, "compras_f1", "f1", ["processing", "review"])
+    runtime = root / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    (runtime / ".pending_confirm.json").write_text(
+        json.dumps({"doc_ids_lote": ["f1"]}), encoding="utf-8",
+    )
+    (runtime / "pipeline_status.json").write_text(
+        json.dumps({"status": "idle", "current_file": None}), encoding="utf-8",
+    )
+
+    r = c.get("/api/pipeline/batch")
+    body = r.json()
+    assert body["in_flight"] is False
+    doc_ids_devueltos = {
+        f["doc_id"] for b in body["books"] for f in b.get("files", [])
+    }
+    assert doc_ids_devueltos == {"f1"}
