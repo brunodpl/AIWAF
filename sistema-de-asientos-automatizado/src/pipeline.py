@@ -437,6 +437,11 @@ def run_pipeline(
     # lo elimina al cerrar. Si el contenedor se reinicia, el endpoint
     # /api/pipeline/status lo reporta para que la UI avise al operario.
     pending_doc_ids = [os.path.basename(f).rsplit(".", 1)[0] for f in files]
+    # Carry-over de facturas en status=review de runs anteriores: el
+    # operario las rechazó previamente y merecen una segunda oportunidad en
+    # el nuevo lote (Task 3 del refactor). Si tras este segundo pase vuelve
+    # a rechazarlas, el frontend disparará un hard delete.
+    pending_doc_ids = _append_review_carryover(cfg.asientos_path(), pending_doc_ids)
     _write_pending_confirm(cfg, pending_doc_ids)
 
     vision_client = VisionOcrClient()
@@ -639,6 +644,63 @@ def _print_summary(folder: str, summary: dict) -> None:
     print(f"Revisión: {summary['warn']}")
     print(f"Error:    {summary['error']}")
     print("=" * 60)
+
+
+def _append_review_carryover(asientos_root: str | Path, doc_ids: list[str]) -> list[str]:
+    """Añade al lote los doc_ids de carpetas con sidecar status=``review``.
+
+    Estas son facturas que el operario rechazó en revisiones previas (la
+    transición a ``review`` la dispara el endpoint /api/pipeline/action con
+    ``action=reject``). El refactor Tasks 2/3/6 las quiere reaparecer una
+    sola vez en el siguiente escaneo: si el operario las vuelve a rechazar,
+    el frontend dispara un hard-delete; si las confirma, salen del bucle.
+
+    - Preserva el orden de ``doc_ids`` existente (los nuevos van primero).
+    - Carry-overs se añaden ordenados por nombre de carpeta — orden estable
+      sin depender del orden de iteración del filesystem.
+    - Dedupe por ``doc_id``: si un nuevo upload coincide con un review
+      pendiente, sólo aparece una vez (caso re-subida del operario).
+    - Tolera sidecars corruptos / ilegibles — los salta con un warning.
+
+    Devuelve una nueva lista (no muta la entrada).
+    """
+    out = list(doc_ids)
+    existing: set[str] = set(out)
+    root = Path(asientos_root)
+    if not root.exists():
+        return out
+
+    candidates: list[tuple[str, str]] = []  # (folder_name, doc_id)
+    try:
+        children = sorted(root.iterdir(), key=lambda p: p.name)
+    except OSError as e:
+        logger.warning("[pipeline] no se pudo escanear asientos para carry-over: %s", e)
+        return out
+
+    for child in children:
+        if not child.is_dir():
+            continue
+        try:
+            if state_writer.current_status(child) != "review":
+                continue
+            sidecar = state_writer.read(child)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("[pipeline] sidecar ilegible en %s: %s", child.name, e)
+            continue
+        doc_id = sidecar.get("doc_id")
+        if not doc_id or doc_id in existing:
+            continue
+        candidates.append((child.name, doc_id))
+
+    for folder_name, doc_id in candidates:
+        out.append(doc_id)
+        existing.add(doc_id)
+        logger.info(
+            "[pipeline] carry-over review doc_id=%s folder=%s",
+            doc_id, folder_name,
+        )
+
+    return out
 
 
 def _write_pending_confirm(cfg, doc_ids: list[str]) -> None:
