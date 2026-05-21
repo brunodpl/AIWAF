@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Credenciales Docker / GHCR — contienen PAT en base64
+.docker/
+
 # Dependencias
 node_modules/
 
