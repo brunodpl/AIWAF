@@ -323,3 +323,16 @@ def test_rejection_count_counts_user_reject_events(tmp_path):
 def test_rejection_count_zero_when_no_sidecar(tmp_path):
     folder = tmp_path / "nonexistent"
     assert state_writer.rejection_count(folder) == 0
+
+
+def test_rejection_count_from_state_matches_folder_variant(tmp_path):
+    folder = tmp_path / "compras_doc_xyz"
+    state_writer.init_uploaded(folder, "doc_xyz", "in/xyz.pdf", "sha", 100)
+    state_writer.append(folder, {"status": "processing"})
+    state_writer.append(folder, {"status": "review", "actor": "user", "action": "reject"})
+    state_writer.append(folder, {"status": "processing"})
+    state_writer.append(folder, {"status": "review", "actor": "user", "action": "reject"})
+
+    state = state_writer.read(folder)
+    assert state_writer.rejection_count_from_state(state) == state_writer.rejection_count(folder)
+    assert state_writer.rejection_count_from_state(state) == 2

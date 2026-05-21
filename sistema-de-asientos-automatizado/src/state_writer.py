@@ -357,6 +357,19 @@ def is_confirmed(folder: Path) -> bool:
     return False
 
 
+def rejection_count_from_state(state: dict) -> int:
+    """Variante de ``rejection_count`` para callers que ya tienen el
+    sidecar leído. Evita re-abrir ``.state.json`` cuando se itera sobre
+    muchas carpetas (ver ``api.list_invoices``)."""
+    return sum(
+        1
+        for ev in (state.get("events") or [])
+        if ev.get("status") == "review"
+        and ev.get("actor") == "user"
+        and ev.get("action") == "reject"
+    )
+
+
 def rejection_count(folder: Path) -> int:
     """Cuenta cuántas veces el operario ha rechazado esta factura en revisión.
 
@@ -368,20 +381,15 @@ def rejection_count(folder: Path) -> int:
     Útil para el frontend: con count=1 el botón 'X' del reviewer pide
     confirmación de hard delete; con count=0 el botón 'Rechazar' solo
     transiciona a review.
+
+    Para callers que ya tienen el sidecar cargado en memoria (e.g.
+    ``api.list_invoices`` iterando sobre N carpetas), usar
+    ``rejection_count_from_state`` para evitar una segunda lectura de disco.
     """
     folder = Path(folder)
     if not _sidecar_path(folder).exists():
         return 0
-    data = read(folder)
-    count = 0
-    for ev in data.get("events") or []:
-        if (
-            ev.get("status") == "review"
-            and ev.get("actor") == "user"
-            and ev.get("action") == "reject"
-        ):
-            count += 1
-    return count
+    return rejection_count_from_state(read(folder))
 
 
 def rename(folder: Path, new_name: str) -> Path:
