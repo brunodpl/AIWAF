@@ -70,6 +70,8 @@ interface InvoiceSummary {
   nombre_entidad: string;
   numero_factura: string;
   total_euros: number;
+  /** Veces rechazada por el operario (del listado backend). */
+  rejection_count?: number;
 }
 
 interface InvoiceReviewerProps {

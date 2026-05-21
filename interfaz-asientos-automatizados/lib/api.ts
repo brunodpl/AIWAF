@@ -141,6 +141,8 @@ export interface InvoiceListItem {
   duplicate_of?: string;
   /** Hash determinista del triplete (NIF emisor, nº factura, fecha). */
   fiscal_hash?: string;
+  /** Veces que el operario ha rechazado esta factura (status review + actor user + action reject). */
+  rejection_count?: number;
 }
 
 export interface InvoiceListResponse {
@@ -169,6 +171,9 @@ export interface InvoiceDetailResponse {
   invoice_filename?: string;
   /** Línea de vida del documento (orden cronológico, append-only). */
   events?: DocEvent[];
+  /** Veces rechazada — espejo del campo del listado. Puede venir ausente del
+   *  endpoint de detalle (lo expone el listado); el reviewer usa el del summary. */
+  rejection_count?: number;
 }
 
 /**
@@ -329,6 +334,7 @@ export function transformToInvoice(detail: InvoiceDetailResponse, imageUrl?: str
     fields,
     fiscalLines,
     libro,
+    rejection_count: detail.rejection_count ?? 0,
   };
 }
 

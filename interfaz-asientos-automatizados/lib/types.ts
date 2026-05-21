@@ -60,6 +60,8 @@ export interface InvoiceDocument {
   fields: InvoiceField[];
   fiscalLines: FiscalLine[];
   libro?: Libro;
+  /** Veces que el operario ha pulsado 'Rechazar' en este sidecar. */
+  rejection_count?: number;
 }
 
 /** A file pending or already processed in a libro inbox.
