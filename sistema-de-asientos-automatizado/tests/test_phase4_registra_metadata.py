@@ -1,8 +1,16 @@
-"""Integration test: run_cliente pasa fecha_expedicion y libro al maestro."""
+"""
+Integration test: run_cliente NO modifica el maestro durante el escaneo.
+
+Contrato nuevo (TDD):
+  - run_cliente escribe resultado_cliente.json con los campos resueltos.
+  - run_cliente NO crea ni modifica maestro_clientes.yaml; el maestro es
+    responsabilidad exclusiva del endpoint de confirmación.
+"""
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -43,9 +51,14 @@ def _identidad(nif_emisor: str, nombre_emisor: str, fecha: str) -> dict:
     }
 
 
-def test_run_cliente_persiste_fecha_y_libro_en_maestro(tmp_path):
-    """En libro de compras el receptor es el cliente de la gestoría;
-    el emisor (nif_entidad) es el proveedor que se registra como nuevo."""
+def test_run_cliente_no_escribe_maestro_durante_scan(tmp_path):
+    """run_cliente resuelve el cliente pero NO toca el maestro.
+
+    La escritura del maestro es responsabilidad exclusiva del confirm.
+    Después del scan:
+      - resultado_cliente.json debe existir con campos del cliente resuelto.
+      - maestro_clientes.yaml NO debe haber sido creado.
+    """
     doc_dir = tmp_path / "asientos" / "compras_factura_001"
     doc_dir.mkdir(parents=True)
     (doc_dir / "resultado_identidad_cabecera.json").write_text(
@@ -60,21 +73,19 @@ def test_run_cliente_persiste_fecha_y_libro_en_maestro(tmp_path):
         from src.phase4_customer.main import run_cliente
         ok = run_cliente("factura_001", str(doc_dir), "20_COMPRAS_GASTOS")
 
+    # (a) La función debe terminar sin error
     assert ok is True
-    assert maestro_path.exists()
 
-    with open(maestro_path, encoding="utf-8") as f:
-        maestro = yaml.safe_load(f)
+    # (b) resultado_cliente.json debe existir con campos resueltos
+    output_path = doc_dir / "resultado_cliente.json"
+    assert output_path.exists(), "resultado_cliente.json debe escribirse durante el scan"
+    with open(output_path, encoding="utf-8") as f:
+        resultado = json.load(f)
+    assert "cliente_info" in resultado, "resultado_cliente.json debe incluir cliente_info"
+    assert "decision_global" in resultado, "resultado_cliente.json debe incluir decision_global"
 
-    # En compras el "cliente_destino" de la gestoría es el receptor.
-    # El proveedor B15234567 NO se registra automáticamente (en compras,
-    # el cliente es el receptor; el emisor es el proveedor, que es
-    # quien acaba apareciendo como "cliente nuevo" en este flujo legacy).
-    # Lo importante para este test: si se registra, debe llevar
-    # fecha_expedicion y libros_activos=["compras"].
-    clientes = maestro.get("clientes", {})
-    if clientes:
-        nif_registrado = next(iter(clientes))
-        entry = clientes[nif_registrado]
-        assert entry["ultima_factura_fecha"] == "2026-04-21"
-        assert entry["libros_activos"] == ["compras"]
+    # (c) maestro_clientes.yaml NO debe haber sido creado por el scan
+    assert not maestro_path.exists(), (
+        "El scan NO debe crear ni modificar maestro_clientes.yaml — "
+        "eso es responsabilidad exclusiva del endpoint de confirmación"
+    )

@@ -442,7 +442,7 @@ def run_pipeline(
     # el nuevo lote (Task 3 del refactor). Si tras este segundo pase vuelve
     # a rechazarlas, el frontend disparará un hard delete.
     pending_doc_ids = _append_review_carryover(cfg.asientos_path(), pending_doc_ids)
-    _write_pending_confirm(cfg, pending_doc_ids)
+    _write_pending_confirm(cfg, pending_doc_ids, merge=is_multi_book)
 
     vision_client = VisionOcrClient()
     gemini_model = _init_gemini_model()
@@ -703,12 +703,24 @@ def _append_review_carryover(asientos_root: str | Path, doc_ids: list[str]) -> l
     return out
 
 
-def _write_pending_confirm(cfg, doc_ids: list[str]) -> None:
-    """Marca el lote como pendiente de confirmación humana."""
+def _write_pending_confirm(cfg, doc_ids: list[str], merge: bool = False) -> None:
+    """Marca el lote como pendiente de confirmación humana.
+
+    merge=True (multi-libro): une con los doc_ids ya presentes preservando
+    orden y sin duplicar, para que el reviewer vea TODOS los libros del run.
+    """
     try:
         runtime_dir = Path(cfg.runtime_path())
         runtime_dir.mkdir(parents=True, exist_ok=True)
         path = runtime_dir / ".pending_confirm.json"
+        if merge and path.exists():
+            try:
+                with open(path, encoding="utf-8") as f:
+                    existing = (json.load(f) or {}).get("doc_ids_lote") or []
+            except (OSError, json.JSONDecodeError):
+                existing = []
+            seen = set(existing)
+            doc_ids = existing + [d for d in doc_ids if d not in seen]
         payload = {
             "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),

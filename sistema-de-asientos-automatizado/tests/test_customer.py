@@ -80,7 +80,10 @@ class TestResolverClienteCompras:
         assert result["campos"]["nif_cliente"]["valor_final"] == "B12345678"
 
     def test_cliente_nuevo_genera_warn(self):
-        campos = _campos_identidad(nif_receptor="X99999999")
+        # NIF desconocido y nombre distinto al del maestro → cliente genuinamente nuevo.
+        # El nombre del maestro es "PROVEEDOR SL"; usamos otro para evitar coincidencia
+        # por nombre que haría es_nuevo=False (bug stale: nombre_receptor coincidía).
+        campos = _campos_identidad(nif_receptor="X99999999", nombre_receptor="OTRO PROVEEDOR SA")
         maestro = _maestro_con_cliente("B12345678")
         result = resolver_cliente(campos, "20_COMPRAS_GASTOS", maestro, "test_002")
         assert result["cliente_info"]["es_nuevo"] is True

@@ -364,7 +364,11 @@ export default function Home() {
         )}
       </div>
 
-      <FeedbackButton />
+      <FeedbackButton
+        className={
+          stage === "review" || stage === "export" ? "bottom-28" : undefined
+        }
+      />
       <Toaster position="bottom-right" closeButton richColors />
 
       <HistorialOverlay

@@ -390,6 +390,12 @@ def _validar_cuenta_en_libro(
 
     if cuenta in whitelist:
         return True, f"Cuenta {cuenta} valida para libro {libro}"
+    # Sub-cuentas analíticas (p.ej. 705.01) son válidas si su cuenta madre
+    # está whitelisted. El catálogo (maestro_contable_fiscal.yaml) define
+    # sub-cuentas; la whitelist (maestro_cuentas.yaml) solo lista la madre.
+    parent = cuenta.split(".", 1)[0]
+    if parent != cuenta and parent in whitelist:
+        return True, f"Cuenta {cuenta} válida (cuenta madre {parent} en whitelist de {libro})"
     return False, f"Cuenta {cuenta} no esta en whitelist de {libro}"
 
 

@@ -269,6 +269,30 @@ class TestValidacionCuentas:
 
 
 # ──────────────────────────────────────────────────────────
+# Tests: sub-cuentas analiticas (705.01)
+# ──────────────────────────────────────────────────────────
+
+_WL = {"cuentas_validas_ventas": {"700", "701", "705", "706", "708", "709", "750"}}
+
+
+def test_subcuenta_valida_si_madre_en_whitelist():
+    ok, motivo = _validar_cuenta_en_libro("705.01", "21_VENTAS_INGRESOS", _WL)
+    assert ok is True
+    assert "705" in motivo
+
+
+def test_cuenta_madre_exacta_sigue_valida():
+    ok, _ = _validar_cuenta_en_libro("705", "21_VENTAS_INGRESOS", _WL)
+    assert ok is True
+
+
+def test_subcuenta_de_madre_no_whitelisted_es_invalida():
+    ok, motivo = _validar_cuenta_en_libro("712.01", "21_VENTAS_INGRESOS", _WL)
+    assert ok is False
+    assert "no esta en whitelist" in motivo
+
+
+# ──────────────────────────────────────────────────────────
 # Tests: coherencia libro/grupo PGC
 # ──────────────────────────────────────────────────────────
 

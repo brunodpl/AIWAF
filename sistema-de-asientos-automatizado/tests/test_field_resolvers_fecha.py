@@ -50,14 +50,15 @@ def test_resolver_fecha_expedicion_multiples_tipos():
     # Debe tener al menos 1 candidato (delivery_date)
     assert len(resolution.candidatos) >= 1, "Debe recolectar delivery_date como candidato"
 
-    # Verificar que el candidato tiene el entity_type correcto en el motivo
+    # El resolver usa descripciones legibles en español, no el entity_type literal.
+    # delivery_date → "Fecha de entrega (fallback, confianza reducida)"
     candidato_delivery = None
     for c in resolution.candidatos:
-        if "delivery_date" in c.get("motivo", ""):
+        if "Fecha de entrega" in c.get("motivo", ""):
             candidato_delivery = c
             break
 
-    assert candidato_delivery is not None, "Debe existir candidato de delivery_date"
+    assert candidato_delivery is not None, "Debe existir candidato de delivery_date (Fecha de entrega)"
     assert candidato_delivery["valor_normalizado"] == "2026-03-15"
     assert candidato_delivery["validacion_ok"] is True
 
@@ -109,8 +110,8 @@ def test_resolver_fecha_expedicion_sin_duplicados():
         "No debe crear candidatos duplicados para el mismo valor normalizado"
     )
 
-    # El candidato elegido debe ser el de mayor confianza (invoice_date en este caso)
-    assert "invoice_date" in candidatos_con_valor[0].get("motivo", "")
+    # El candidato elegido debe ser el de mayor confianza (invoice_date → "Fecha de factura")
+    assert "Fecha de factura" in candidatos_con_valor[0].get("motivo", "")
 
 
 def test_resolver_fecha_expedicion_multiples_fechas_distintas():
@@ -169,11 +170,13 @@ def test_resolver_fecha_expedicion_multiples_fechas_distintas():
         f"Encontrados: {valores_unicos}"
     )
 
-    # Verificar que cada tipo de entidad está presente en los motivos
+    # El resolver usa descripciones legibles en español en el campo motivo.
+    # invoice_date → "Fecha de factura", delivery_date → "Fecha de entrega",
+    # due_date → "Fecha de vencimiento"
     motivos = " ".join(c.get("motivo", "") for c in resolution.candidatos)
-    assert "invoice_date" in motivos
-    assert "delivery_date" in motivos
-    assert "due_date" in motivos
+    assert "Fecha de factura" in motivos
+    assert "Fecha de entrega" in motivos
+    assert "Fecha de vencimiento" in motivos
 
 
 def test_resolver_fecha_expedicion_solo_invoice_date():
@@ -209,7 +212,8 @@ def test_resolver_fecha_expedicion_solo_invoice_date():
     assert resolution.decision == DecisionCampo.AUTO
     assert resolution.valor_final == "2026-03-25"
     assert len(resolution.candidatos) >= 1
-    assert "invoice_date" in resolution.candidatos[0].get("motivo", "")
+    # El resolver usa descripciones en español: invoice_date → "Fecha de factura"
+    assert "Fecha de factura" in resolution.candidatos[0].get("motivo", "")
 
 
 def test_resolver_fecha_expedicion_sin_ninguna_fecha():

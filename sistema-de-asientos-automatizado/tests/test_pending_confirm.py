@@ -8,6 +8,31 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from src.pipeline import _write_pending_confirm
+
+
+class _CfgRT:
+    def __init__(self, runtime): self._r = runtime
+    def runtime_path(self): return self._r
+
+
+def test_merge_acumula_doc_ids_de_varios_libros(tmp_path):
+    cfg = _CfgRT(str(tmp_path))
+    _write_pending_confirm(cfg, ["compras_a"], merge=True)
+    _write_pending_confirm(cfg, ["ventas_b"], merge=True)
+    _write_pending_confirm(cfg, ["bienes_c", "compras_a"], merge=True)  # dup ignored
+    data = json.loads((tmp_path / ".pending_confirm.json").read_text(encoding="utf-8"))
+    assert data["doc_ids_lote"] == ["compras_a", "ventas_b", "bienes_c"]
+
+
+def test_sin_merge_sobrescribe(tmp_path):
+    cfg = _CfgRT(str(tmp_path))
+    _write_pending_confirm(cfg, ["a"])
+    _write_pending_confirm(cfg, ["b"])
+    data = json.loads((tmp_path / ".pending_confirm.json").read_text(encoding="utf-8"))
+    assert data["doc_ids_lote"] == ["b"]
+
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,6 +42,10 @@ def _fake_cfg(tmp_path: Path):
         asientos_path=lambda: str(tmp_path / "asientos"),
         runtime_path=lambda: str(tmp_path / ".runtime"),
         maestro_clientes_path=str(tmp_path / "maestros" / "maestro_clientes.yaml"),
+        # inbox_path(libro_short) → <tmp_path>/facturas/<libro_short>
+        # Necesario para el fallback de limpieza de PDF en el confirm endpoint.
+        inbox_path=lambda libro: str(tmp_path / "facturas" / libro),
+        libros_base=str(tmp_path),
         output_path=str(tmp_path / "output"),
         logs_path=str(tmp_path / "logs"),
     )

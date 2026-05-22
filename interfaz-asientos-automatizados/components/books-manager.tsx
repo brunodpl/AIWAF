@@ -366,9 +366,9 @@ export function BooksManager({
             "Hay un procesado en curso. Espera a que termine para subir nuevas facturas."
           );
         } else if (message.includes("timed out") || message.includes("AbortError")) {
-          toast.error("Timeout al subir archivos. El servidor puede estar sobrecargado.");
+          toast.warning("La subida tardó más de lo normal; recargando estado…");
         } else {
-          toast.error(`Error de red al subir archivos: ${message}`);
+          toast.warning(`No se pudo confirmar la subida: ${message}. Recargando estado…`);
         }
         setUploadProgress(null);
         setPendingFiles((prev) => {
@@ -383,9 +383,14 @@ export function BooksManager({
           next.delete(bookId);
           return next;
         });
+        // Reconciliar la lista desde el servidor independientemente del resultado
+        // (éxito o error). Esto garantiza que los archivos pre-escaneados en el
+        // backend siempre aparezcan en la UI, incluso si la respuesta HTTP llegó
+        // tarde (500/timeout del proxy) pero el backend completó la subida.
+        await loadBooks();
       }
     },
-    [pollBooksUntilSynced, reconcileAfterUpload]
+    [pollBooksUntilSynced, reconcileAfterUpload, loadBooks]
   );
 
   const handleDragOver = useCallback((e: React.DragEvent, bookId: string) => {
