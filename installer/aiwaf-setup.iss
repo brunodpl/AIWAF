@@ -56,12 +56,14 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 ; Trazabilidad 2.0 (v0.3.0+): `libros\**` se excluye para PRESERVAR los datos
 ; del operario en upgrades — el árbol libros/ contiene PDFs, sidecars,
 ; auditoría fiscal (retención 4 años) y NO debe sobrescribirse jamás.
-; `horeca_sandbox\**` se mantiene en excludes por compat: si el cliente
-; viene de v0.2.x, sus PDFs viejos siguen ahí intactos hasta que decida
-; moverlos manualmente a libros/facturas/{compras,ventas,bienes}/.
+; Igual con `data\maestros\maestro_clientes.yaml` (+ su .lock): es el maestro de
+; clientes que el operario genera en cada confirm; reinstalar NUNCA debe pisarlo
+; (sin esto, un .exe con seed vacío borraría toda su trazabilidad). Los demás
+; maestros de data\maestros (cuentas, proveedores, contable_fiscal) son catálogos
+; de referencia de solo-lectura y SÍ se actualizan con cada instalación.
 Source: "..\sistema-de-asientos-automatizado\*"; DestDir: "{app}\sistema-de-asientos-automatizado"; \
   Flags: ignoreversion recursesubdirs createallsubdirs; \
-  Excludes: "credentials\*,horeca_sandbox\*\*,libros\*\*,data\output\*,logs\*,__pycache__,*.pyc,.pytest_cache,.git*,tests\*"
+  Excludes: "credentials\*,libros\*\*,data\maestros\maestro_clientes.yaml,data\maestros\maestro_clientes.yaml.lock,data\output\*,logs\*,__pycache__,*.pyc,.pytest_cache,.git*,tests\*"
 Source: "..\interfaz-asientos-automatizados\*"; DestDir: "{app}\interfaz-asientos-automatizados"; \
   Flags: ignoreversion recursesubdirs createallsubdirs; \
   Excludes: "node_modules\*,.next\*,.next-smoke\*,.git*,*.log"
