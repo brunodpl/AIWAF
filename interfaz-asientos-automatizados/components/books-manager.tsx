@@ -368,7 +368,7 @@ export function BooksManager({
         } else if (message.includes("timed out") || message.includes("AbortError")) {
           toast.warning("La subida tardó más de lo normal; recargando estado…");
         } else {
-          toast.warning(`La subida tardó más de lo normal; recargando estado…`);
+          toast.warning(`No se pudo confirmar la subida: ${message}. Recargando estado…`);
         }
         setUploadProgress(null);
         setPendingFiles((prev) => {
