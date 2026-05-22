@@ -902,6 +902,12 @@ export function BooksManager({
                       </div>
                     ))}
 
+                    {visibleFiles.length > 8 && (
+                      <p className="text-[10px] font-mono text-slate-400 px-1">
+                        {visibleFiles.length} archivos — desplázate para ver todos
+                      </p>
+                    )}
+                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                     {visibleFiles.map((file: BookFile) => {
                       const fileKey = `${book.id}/${file.name}`;
                       const isDeleting = deletingFile === fileKey;
@@ -994,6 +1000,7 @@ export function BooksManager({
                         </div>
                       );
                     })}
+                    </div>
 
                     {!isUploading && (
                       <button

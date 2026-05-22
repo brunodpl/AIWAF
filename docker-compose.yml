@@ -84,7 +84,10 @@ services:
       - asientos-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      # 127.0.0.1, no "localhost": dentro del contenedor localhost resuelve a
+      # ::1 (IPv6) y Next escucha solo en IPv4 → "connection refused" y el
+      # contenedor quedaba unhealthy pese a servir 200 (F14).
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000"]
       interval: 30s
       timeout: 10s
       retries: 3
