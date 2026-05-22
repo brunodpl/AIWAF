@@ -138,29 +138,35 @@ export default function Home() {
           // 409 "no hay pipeline" u otro error: puede que ya haya parado.
         }
         const deadline = Date.now() + CANCEL_MAX_WAIT_MS;
-        while (Date.now() < deadline) {
+        let stopped = false;
+        while (!stopped && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, CANCEL_POLL_INTERVAL_MS));
           try {
-            if ((await fetchPipelineStatus()).status !== "running") break;
+            if ((await fetchPipelineStatus()).status !== "running") stopped = true;
           } catch {
-            break; // status caído: dejamos de esperar e intentamos reset.
+            stopped = true; // status caído: dejamos de esperar e intentamos reset.
           }
+        }
+        if (!stopped) {
+          toast.warning("El pipeline no se detuvo a tiempo — intentando reset de todos modos.");
         }
       }
 
       // 2. Reset. Hay una ventana mínima entre que el status pasa a
-      //    "cancelled" y release_pipeline_lock(): reintentamos el 409.
+      //    "cancelled" y release_pipeline_lock(): reintentamos el 409
+      //    (sentinel PIPELINE_LOCKED, estable frente a cambios de copy).
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           await resetPipeline();
           break;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes("ejecución") && attempt < 2) {
+          if (msg === "PIPELINE_LOCKED" && attempt < 2) {
             await new Promise((r) => setTimeout(r, 1000));
             continue;
           }
-          toast.warning(`Reset backend falló: ${msg}. UI se limpia igualmente.`);
+          const human = msg === "PIPELINE_LOCKED" ? "el pipeline sigue en ejecución" : msg;
+          toast.warning(`Reset backend falló: ${human}. UI se limpia igualmente.`);
           break;
         }
       }

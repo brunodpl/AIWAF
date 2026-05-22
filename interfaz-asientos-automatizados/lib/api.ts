@@ -702,7 +702,9 @@ export async function resetPipeline(): Promise<ResetPipelineResponse> {
     if (!response.ok) {
       const errorText = await response.text();
       if (response.status === 409) {
-        throw new Error("Pipeline en ejecución. Espera a que termine antes de resetear.");
+        // Sentinel estable (como PIPELINE_RUNNING/PIPELINE_ALREADY_RUNNING):
+        // handleReset reintenta el reset basándose en este código, no en el texto.
+        throw new Error("PIPELINE_LOCKED");
       }
       throw new Error(`Error reseteando pipeline: ${errorText}`);
     }
