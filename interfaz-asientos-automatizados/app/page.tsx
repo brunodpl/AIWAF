@@ -21,12 +21,23 @@ import {
   FiscalLine,
   Libro,
 } from "@/lib/types";
-import { fetchInvoices, resetPipeline } from "@/lib/api";
+import {
+  cancelPipeline,
+  fetchInvoices,
+  fetchPipelineStatus,
+  resetPipeline,
+} from "@/lib/api";
 
 type Stage = "books" | "pre-review" | "processing" | "review" | "export";
 
 const STORAGE_KEY_INVOICES = "horeca_approved_invoices";
 const STORAGE_KEY_STAGE = "horeca_current_stage";
+
+// "Nuevo escaneo" cancela cualquier run en curso (cooperativo) y espera a que
+// pare antes de resetear. Timing puramente de UI — los timeouts del pipeline
+// viven en el backend (.env).
+const CANCEL_POLL_INTERVAL_MS = 1500;
+const CANCEL_MAX_WAIT_MS = 120_000;
 
 export default function Home() {
   const [hydrated, setHydrated] = useState(false);
@@ -101,29 +112,70 @@ export default function Home() {
   // doc_ids a enfocar en el reviewer (set por BooksManager cuando el usuario
   // resube un PDF ya conocido con hijos pendientes — ver toast "Abrir reviewer").
   const [reviewFocusIds, setReviewFocusIds] = useState<string[] | undefined>(undefined);
-  // "Nuevo escaneo" = empezar un lote limpio. Llama a /api/pipeline/reset
-  // para descartar asientos pendientes (status != done) que se quedarían
-  // fantasma en /review tras un escaneo abortado. ATENCIÓN: el reset
-  // también borra los splits del inbox (libros/facturas/*__NofN.pdf) — los
-  // PDFs originales no-split sobreviven, los hijos del splitter NO. Si el
-  // backend falla, seguimos limpiando estado UI (defensa en profundidad).
+  // "Nuevo escaneo" = empezar un lote limpio. Primero CANCELA cualquier
+  // pipeline en curso (cooperativo: el backend termina la factura actual y
+  // sale del loop); sin esto el reset devolvería 409 y el pipeline seguiría
+  // procesando en background, bloqueando uploads con "Hay un procesado en
+  // curso". Luego /api/pipeline/reset descarta los asientos pendientes
+  // (status != done) y borra los splits del inbox (los PDFs no-split
+  // sobreviven, los hijos del splitter NO). Si el backend falla, seguimos
+  // limpiando estado UI (defensa en profundidad).
   const handleReset = useCallback(async () => {
     setResetting(true);
     try {
-      await resetPipeline();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast.warning(`Reset backend falló: ${msg}. UI se limpia igualmente.`);
+      // 1. Cancelar el run en curso y esperar a que pare antes de resetear.
+      let running = false;
+      try {
+        running = (await fetchPipelineStatus()).status === "running";
+      } catch {
+        // Status no disponible — seguimos e intentamos reset igualmente.
+      }
+      if (running) {
+        toast.info("Cancelando escaneo en curso… (termina la factura actual)");
+        try {
+          await cancelPipeline();
+        } catch {
+          // 409 "no hay pipeline" u otro error: puede que ya haya parado.
+        }
+        const deadline = Date.now() + CANCEL_MAX_WAIT_MS;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, CANCEL_POLL_INTERVAL_MS));
+          try {
+            if ((await fetchPipelineStatus()).status !== "running") break;
+          } catch {
+            break; // status caído: dejamos de esperar e intentamos reset.
+          }
+        }
+      }
+
+      // 2. Reset. Hay una ventana mínima entre que el status pasa a
+      //    "cancelled" y release_pipeline_lock(): reintentamos el 409.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await resetPipeline();
+          break;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes("ejecución") && attempt < 2) {
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
+          toast.warning(`Reset backend falló: ${msg}. UI se limpia igualmente.`);
+          break;
+        }
+      }
+    } finally {
+      // 3. Limpiar estado UI siempre.
+      setApprovedInvoices(new Map());
+      setRejectedInvoices(new Set());
+      setTotalQueued(0);
+      setPreReviewEntries([]);
+      setStage("books");
+      localStorage.removeItem(STORAGE_KEY_INVOICES);
+      localStorage.removeItem(STORAGE_KEY_STAGE);
+      setBooksNonce((n) => n + 1);
+      setResetting(false);
     }
-    setApprovedInvoices(new Map());
-    setRejectedInvoices(new Set());
-    setTotalQueued(0);
-    setPreReviewEntries([]);
-    setStage("books");
-    localStorage.removeItem(STORAGE_KEY_INVOICES);
-    localStorage.removeItem(STORAGE_KEY_STAGE);
-    setBooksNonce((n) => n + 1);
-    setResetting(false);
   }, []);
 
   /** Llamado por BooksManager tras un upload exitoso con detected_summary>0.
