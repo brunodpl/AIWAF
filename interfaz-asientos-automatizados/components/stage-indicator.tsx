@@ -45,9 +45,11 @@ export function StageIndicator({ stage, className, onStageClick, onReset, resett
           const isCompleted = idx < currentIndex;
           const isActive = idx === currentIndex;
           const isFuture = idx > currentIndex;
-          // "Gestión" nunca es navegable hacia atrás: volver allí a mitad de flujo
-          // descartaría el lote en curso. El único camino de vuelta es "Nuevo escaneo".
-          const isClickable = isCompleted && !!onStageClick && s.key !== "books";
+          // "Gestión" y "Pre-revisión" nunca son navegables hacia atrás: volver allí
+          // a mitad de flujo descartaría el lote en curso. El único camino de vuelta
+          // es "Nuevo escaneo".
+          const isClickable =
+            isCompleted && !!onStageClick && s.key !== "books" && s.key !== "pre-review";
 
           return (
             <div key={s.key} className="flex items-center gap-2">
