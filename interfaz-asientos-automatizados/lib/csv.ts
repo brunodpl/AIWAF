@@ -69,7 +69,7 @@ export function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
   const contraparte = resolveContraparteFactura(invoice.libro, f);
   const nombreCliPro = contraparte.nombre;
   const nifCliPro = sanitizeNIF(contraparte.nif);
-  const concepto = f.concepto || "";
+  const concepto = (f.concepto || "").toUpperCase();
 
   return invoice.fiscalLines.map((line) => {
     // vatRate 0 → exenta → Intermega usa tipo 9

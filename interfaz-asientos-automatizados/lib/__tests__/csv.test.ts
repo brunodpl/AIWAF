@@ -75,6 +75,16 @@ describe("intermegaRowsFor — CLI-PRO is the counterpart, never our client", ()
     expect(cells[4]).toBe("B55555555");
   });
 
+  it("uppercases concepto in the DESCRIPCION column", () => {
+    const rows = intermegaRowsFor(makeInvoice({
+      libro: "ingresos",
+      formData: { concepto: "alquiler_local" },
+    }));
+    const cells = rows[0].split(";");
+    // Header order: ...;NIF CLI-PRO;DESCRIPCION;... → DESCRIPCION is index 5
+    expect(cells[5]).toBe("ALQUILER_LOCAL");
+  });
+
   it("nif_cliente / nombre_cliente are NOT used as CLI-PRO", () => {
     const rows = intermegaRowsFor(makeInvoice({
       libro: "gastos",

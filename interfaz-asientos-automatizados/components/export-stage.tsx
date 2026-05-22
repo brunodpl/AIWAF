@@ -188,14 +188,15 @@ async function persistBatchToBackend(
     // Asegurar campos clave para la tarjeta de cliente del grid.
     camposFinales["nif_cliente"] = { valor: cliente.nif || null };
     camposFinales["nombre_cliente"] = { valor: cliente.nombre || null };
-    camposFinales["cuenta_contable"] = { valor: fd.cuenta_contable || null };
+    camposFinales["cuenta_contable"] = { valor: (fd.cuenta_contable || "").toUpperCase() || null };
+    camposFinales["concepto"] = { valor: (fd.concepto || "").toUpperCase() || null };
 
     const lineas: LineaAsiento[] = invoice.fiscalLines.map((l) => {
       const base = normalizeNumber(l.base);
       const cuota = normalizeNumber(l.vatAmount);
       return {
-        cuenta: fd.cuenta_contable || "",
-        concepto: fd.concepto || "",
+        cuenta: (fd.cuenta_contable || "").toUpperCase(),
+        concepto: (fd.concepto || "").toUpperCase(),
         debe: base + cuota,
         haber: 0,
         tipo_iva: l.vatRate ?? 0,
@@ -618,14 +619,14 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
                       <td className="p-2.5">{row.fecha_operacion || "—"}</td>
                       <td className="p-2.5">{row.fecha_expedicion || "—"}</td>
                       <td className="p-2.5">{row.numero_factura || "—"}</td>
-                      <td className={cn("p-2.5", !row.cuenta_contable && "text-amber-500 italic")}>
+                      <td className={cn("p-2.5", row.cuenta_contable ? "uppercase" : "text-amber-500 italic")}>
                         {row.cuenta_contable || "sin asignar"}
                       </td>
                       <td className="p-2.5 max-w-[150px] truncate" title={row.nombre_contraparte}>
                         {row.nombre_contraparte || "—"}
                       </td>
                       <td className="p-2.5">{row.nif_contraparte || "—"}</td>
-                      <td className="p-2.5 max-w-[120px] truncate" title={row.concepto}>
+                      <td className="p-2.5 max-w-[120px] truncate uppercase" title={row.concepto}>
                         {row.concepto || "—"}
                       </td>
                       <td className="p-2.5 text-right">{row.base_euros}€</td>

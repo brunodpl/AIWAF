@@ -65,11 +65,13 @@ function MetadataField({
   label,
   value,
   mono,
+  upper,
 }: {
   label: string;
   value: string | number | null | undefined;
   edited?: boolean;
   mono?: boolean;
+  upper?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-0.5">
@@ -80,6 +82,7 @@ function MetadataField({
         className={cn(
           "text-sm text-slate-700",
           mono && "font-mono",
+          upper && value && "uppercase",
           !value && "text-slate-300 italic",
         )}
       >
@@ -304,12 +307,14 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
                               label="Concepto"
                               value={inv.concepto}
                               edited={isEdited(inv, "concepto")}
+                              upper
                             />
                             <MetadataField
                               label="Cuenta contable"
                               value={inv.cuenta_contable}
                               edited={isEdited(inv, "cuenta_contable")}
                               mono
+                              upper
                             />
                             <MetadataField
                               label="Total"
@@ -371,8 +376,8 @@ export function ClientDetailPanel({ nif, clientCard, onClose }: ClientDetailPane
                                     key={idx}
                                     className="border-b border-slate-50 text-slate-700"
                                   >
-                                    <td className="py-1.5 pr-2 font-mono">{l.cuenta}</td>
-                                    <td className="py-1.5 pr-2">{l.concepto}</td>
+                                    <td className="py-1.5 pr-2 font-mono uppercase">{l.cuenta}</td>
+                                    <td className="py-1.5 pr-2 uppercase">{l.concepto}</td>
                                     <td className="py-1.5 pr-2 text-right">
                                       {l.debe > 0 ? formatEuros(l.debe) : "—"}
                                     </td>

@@ -1211,7 +1211,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                   }
                                   placeholder="Cuenta contable (libre)"
                                   className={cn(
-                                    "border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm",
+                                    "border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm uppercase",
                                     field.status === "block" && "border-red-200 bg-red-50/30",
                                     field.status === "warn" && "border-amber-200",
                                   )}
@@ -1231,7 +1231,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                 value={formData.concepto || ""}
                                 onChange={(e) => handleInputChange("concepto", e.target.value)}
                                 placeholder="Concepto (snake_case sugerido)"
-                                className="border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm"
+                                className="border-slate-100 focus-visible:ring-0 focus-visible:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all focus-visible:shadow-sm uppercase"
                               />
                               <div className="text-[10px] font-mono text-slate-400 pl-1">
                                 modo personalizado — fuera del maestro
@@ -1256,7 +1256,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                   <SelectTrigger
                                     id={field.id}
                                     className={cn(
-                                      "border-slate-100 focus:ring-0 focus:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all flex-1",
+                                      "border-slate-100 focus:ring-0 focus:border-slate-400 rounded-none h-10 font-mono text-xs shadow-none bg-white transition-all flex-1 uppercase",
                                       field.status === "block" && "border-red-200 bg-red-50/30",
                                       field.status === "warn" && "border-amber-200",
                                     )}
@@ -1268,7 +1268,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                                       <SelectItem
                                         key={c.code}
                                         value={c.code}
-                                        className="font-mono text-xs"
+                                        className="font-mono text-xs uppercase"
                                       >
                                         <span className="font-bold mr-2">{c.code}</span>
                                         <span className="text-slate-600">{c.label}</span>
@@ -1292,7 +1292,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                               </div>
                               {formData.concepto && (
                                 <div className="text-[10px] font-mono text-slate-500 pl-1">
-                                  concepto: <span className="text-slate-700">{formData.concepto}</span>
+                                  concepto: <span className="text-slate-700 uppercase">{formData.concepto}</span>
                                 </div>
                               )}
                             </>
