@@ -13,7 +13,6 @@ import logging
 import re
 import time
 import uuid
-from datetime import date, timezone, datetime
 from typing import Any, Dict, List, Optional
 
 from google import genai
@@ -251,7 +250,8 @@ def construir_documento_extraido(
             "total_linea":     {"valor": total_linea, "confianza": conf_linea if total_linea is not None else CONFIANZA_CAMPO_KO},
         })
 
-    fecha_operacion = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # F3: la fecha de operación se deriva de la expedición (no se fabrica con hoy@1.0).
+    fecha_exp_valor = gemini_data.get("fecha_expedicion")
 
     return {
         "documento_id": str(uuid.uuid4()),
@@ -266,8 +266,8 @@ def construir_documento_extraido(
             "nombre_receptor": {"valor": gemini_data.get("nombre_receptor"), "confianza": _confianza_campo(gemini_data.get("nombre_receptor"))},
         },
         "identificacion": {
-            "fecha_operacion":  {"valor": fecha_operacion, "confianza": 1.0},
-            "fecha_expedicion": {"valor": gemini_data.get("fecha_expedicion"), "confianza": _confianza_campo(gemini_data.get("fecha_expedicion"))},
+            "fecha_operacion":  {"valor": fecha_exp_valor, "confianza": _confianza_campo(fecha_exp_valor)},
+            "fecha_expedicion": {"valor": fecha_exp_valor, "confianza": _confianza_campo(fecha_exp_valor)},
             "numero_factura":   {"valor": gemini_data.get("numero_factura"),   "confianza": _confianza_campo(gemini_data.get("numero_factura"))},
             "nombre_entidad":   {"valor": gemini_data.get("nombre_entidad"),   "confianza": _confianza_campo(gemini_data.get("nombre_entidad"))},
             "nif_entidad":      {"valor": gemini_data.get("nif_entidad"),      "confianza": _confianza_campo(gemini_data.get("nif_entidad"))},
@@ -302,8 +302,6 @@ def json_minimos(archivo: str, carpeta_entrada: str, texto_plano: str = "") -> D
         if match:
             numero_regex = match.group(0)
 
-    fecha_operacion = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
     return {
         "documento_id": str(uuid.uuid4()),
         "origen": {
@@ -318,7 +316,7 @@ def json_minimos(archivo: str, carpeta_entrada: str, texto_plano: str = "") -> D
             "nombre_receptor": {"valor": None, "confianza": 0.0},
         },
         "identificacion": {
-            "fecha_operacion":  {"valor": fecha_operacion, "confianza": 1.0},
+            "fecha_operacion":  {"valor": None, "confianza": 0.0},
             "fecha_expedicion": {"valor": None, "confianza": 0.0},
             "numero_factura":   {"valor": numero_regex, "confianza": 0.5 if numero_regex else 0.0},
             "nombre_entidad":   {"valor": None, "confianza": 0.0},

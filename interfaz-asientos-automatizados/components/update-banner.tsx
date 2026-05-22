@@ -15,6 +15,12 @@ const DISMISS_KEY = "aiwaf_update_dismissed_for_version";
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
+// Versión de las builds de desarrollo. En dev el banner ("0.9.0 / instalada
+// 0.0.0-dev") es ruido permanente; lo ocultamos. No afecta a producción, donde
+// `current` es una versión real. También se puede forzar con la env flag.
+const DEV_VERSION = "0.0.0-dev";
+const HIDE_BANNER_FLAG = process.env.NEXT_PUBLIC_HIDE_UPDATE_BANNER === "1";
+
 const ERROR_MESSAGES: Record<UpdateErrorCode, string> = {
   watchtower_unreachable:
     "El servicio de actualizaciones no responde. Reinicia Docker Desktop y reintenta.",
@@ -106,6 +112,8 @@ export function UpdateBanner() {
   }, [state, info?.version]);
 
   if (!info || !info.update_available || dismissed) return null;
+  // Build de desarrollo o flag explícita → no mostrar (ruido en dev).
+  if (HIDE_BANNER_FLAG || info.current === DEV_VERSION) return null;
 
   const handleDismiss = () => {
     if (info.version) {

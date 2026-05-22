@@ -35,13 +35,3 @@ export function inferLibroFromCuenta(code: string | undefined | null): Libro | n
   const first = trimmed[0];
   return PREFIX_TO_LIBRO[first] ?? null;
 }
-
-/**
- * Etiqueta humana para un libro — usada en banner sticky y toasts del reviewer.
- */
-export function libroLabel(libro: Libro | undefined): string {
-  if (libro === "ingresos") return "Emitida (ventas/ingresos)";
-  if (libro === "gastos") return "Recibida (compras/gastos)";
-  if (libro === "bienes") return "Bienes de inversión";
-  return "—";
-}

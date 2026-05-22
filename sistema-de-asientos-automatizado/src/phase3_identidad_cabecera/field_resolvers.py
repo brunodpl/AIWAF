@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 import logging
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Optional
 
 from .docai_extractor import DocumentAIEntityExtractor, RawEntity
@@ -878,33 +878,49 @@ def resolver_fecha_expedicion(
     return res
 
 
-def resolver_fecha_operacion() -> FieldResolution:
+def resolver_fecha_operacion(
+    res_fecha_exp: Optional[FieldResolution] = None,
+) -> FieldResolution:
     """
-    Fecha de operación: siempre la fecha de registro del sistema (hoy).
-    Confianza 1.0, fuente siempre SISTEMA con el valor actual.
-    No depende del OCR.
+    Fecha de operación: se deriva de la fecha de expedición resuelta.
 
-    Usa timezone-aware datetime para evitar el bug de medianoche UTC:
-    en servidores con TZ=UTC, datetime.now() entre las 23:00-00:00 UTC
-    devolvería la fecha del día anterior en horario CET/CEST.
+    La mayoría de facturas no traen fecha de operación explícita. Fabricarla con
+    la fecha de proceso del sistema (hoy) y confianza 1.0 viola el principio "no
+    inventar datos" (hallazgo F3). En su lugar:
+      - Si hay fecha_expedicion resuelta → copiar su valor, confianza y decisión
+        (fuente DERIVADO), nunca AUTO 1.0 sobre una fecha del sistema.
+      - Si no hay expedición → valor None y decisión PENDIENTE (campo no obligatorio).
+
+    fecha_operacion no es un campo obligatorio: no afecta la decisión global.
     """
-    hoy = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
-    c = FieldCandidate(
-        valor_raw=hoy,
-        valor_normalizado=hoy,
-        fuente=FuenteCandidato.SISTEMA,
-        confianza=1.0,
-        motivo="Fecha de registro del sistema (fecha actual, timezone-aware)",
-        validacion_ok=True,
-    )
+    if res_fecha_exp is not None and res_fecha_exp.valor_final:
+        valor = res_fecha_exp.valor_final
+        c = FieldCandidate(
+            valor_raw=valor,
+            valor_normalizado=valor,
+            fuente=FuenteCandidato.DERIVADO,
+            confianza=res_fecha_exp.confianza_final,
+            motivo="Derivado de fecha_expedicion (la factura no aporta fecha de operación)",
+            validacion_ok=True,
+        )
+        return FieldResolution(
+            campo="fecha_operacion",
+            valor_final=valor,
+            fuente_final=FuenteCandidato.DERIVADO,
+            confianza_final=res_fecha_exp.confianza_final,
+            decision=res_fecha_exp.decision,
+            motivo="Fecha de operación derivada de fecha_expedicion",
+            candidatos=[_c_to_dict(c)],
+        )
+
     return FieldResolution(
         campo="fecha_operacion",
-        valor_final=hoy,
-        fuente_final=FuenteCandidato.SISTEMA,
-        confianza_final=1.0,
-        decision=DecisionCampo.AUTO,
-        motivo="Fecha de operación generada automáticamente (fecha de registro)",
-        candidatos=[_c_to_dict(c)],
+        valor_final=None,
+        fuente_final=None,
+        confianza_final=0.0,
+        decision=DecisionCampo.PENDIENTE,
+        motivo="Sin fecha de expedición — fecha de operación pendiente (no se fabrica)",
+        candidatos=[],
     )
 
 

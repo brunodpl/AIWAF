@@ -50,6 +50,7 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     async function restore() {
+      let stageRestored = false;
       try {
         const savedInvoices = localStorage.getItem(STORAGE_KEY_INVOICES);
         if (savedInvoices) {
@@ -72,10 +73,27 @@ export default function Home() {
               } else {
                 setStage("review");
               }
+              stageRestored = true;
             }
           }
         }
       } catch { /* ignore corrupt data */ }
+
+      // F5: si no se restauró stage desde localStorage pero el backend tiene un
+      // lote escaneado pendiente de confirmar (`pending_confirm`), entrar a
+      // Revisión en vez de quedarse en Gestión. El reviewer carga /api/invoices
+      // y filtra por el lote pendiente — evita re-pulsar "Escanear" (re-OCR).
+      if (!stageRestored && !cancelled) {
+        try {
+          const status = await fetchPipelineStatus();
+          if (status.pending_confirm && !cancelled) {
+            setStage(status.status === "running" ? "processing" : "review");
+          }
+        } catch {
+          // Status no disponible — quedarse en Gestión (comportamiento actual).
+        }
+      }
+
       if (!cancelled) setHydrated(true);
     }
     restore();
@@ -327,7 +345,6 @@ export default function Home() {
         {stage === "processing" && (
           <PipelineProgress
             onComplete={() => setStage("review")}
-            onBack={() => setStage("books")}
             onJumpToReview={(total) => { setTotalQueued(total); setStage("review"); }}
           />
         )}

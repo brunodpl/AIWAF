@@ -36,7 +36,7 @@ class ClasificacionLinea(str, Enum):
 _PLACEHOLDERS_VACIOS = {"-", "+", "%", "--", "N/A", "n/a", "na", "NA", ""}
 
 
-def _safe_decimal(valor: Any) -> Optional[Decimal]:
+def safe_decimal(valor: Any) -> Optional[Decimal]:
     """
     Convierte float/int/str a Decimal NO NEGATIVO. None si no parseable.
 
@@ -76,7 +76,7 @@ def _format_importe(valor: Optional[Decimal]) -> Optional[str]:
     return str(valor.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)).replace(".", ",")
 
 
-def _peor_decision(*decisiones: str) -> str:
+def peor_decision(*decisiones: str) -> str:
     """Retorna la peor decisión según prioridad: auto < warn < pendiente < block."""
     peor = "auto"
     for d in decisiones:
@@ -85,7 +85,7 @@ def _peor_decision(*decisiones: str) -> str:
     return peor
 
 
-def _extraer_valor(campo_dict: Any) -> Any:
+def extraer_valor(campo_dict: Any) -> Any:
     """Extrae el valor bruto de un campo con estructura {valor, confianza}."""
     if isinstance(campo_dict, dict):
         return campo_dict.get("valor")
@@ -95,7 +95,7 @@ def _extraer_valor(campo_dict: Any) -> Any:
 def _extraer_confianza(campo_dict: Any) -> Optional[Decimal]:
     """Extrae la confianza de un campo con estructura {valor, confianza}."""
     if isinstance(campo_dict, dict):
-        return _safe_decimal(campo_dict.get("confianza"))
+        return safe_decimal(campo_dict.get("confianza"))
     return None
 
 
@@ -111,7 +111,7 @@ def _clasificar_linea(tipo_raw: Any) -> tuple[ClasificacionLinea, Optional[Decim
     if tipo_raw is None:
         return ClasificacionLinea.EXENTA, None
 
-    tipo_dec = _safe_decimal(tipo_raw)
+    tipo_dec = safe_decimal(tipo_raw)
     if tipo_dec is None:
         return ClasificacionLinea.INVALIDA, None
 
@@ -142,15 +142,15 @@ def _verificar_linea(
     warnings = []
 
     # Extraer valores brutos
-    base_raw = _extraer_valor(linea.get("base_euros"))
-    tipo_raw = _extraer_valor(linea.get("tipo_porcentaje"))
-    cuota_raw = _extraer_valor(linea.get("cuota"))
-    total_linea_raw = _extraer_valor(linea.get("total_linea"))
+    base_raw = extraer_valor(linea.get("base_euros"))
+    tipo_raw = extraer_valor(linea.get("tipo_porcentaje"))
+    cuota_raw = extraer_valor(linea.get("cuota"))
+    total_linea_raw = extraer_valor(linea.get("total_linea"))
 
     # Convertir a Decimal
-    base = _safe_decimal(base_raw)
-    cuota = _safe_decimal(cuota_raw)
-    total_linea = _safe_decimal(total_linea_raw)
+    base = safe_decimal(base_raw)
+    cuota = safe_decimal(cuota_raw)
+    total_linea = safe_decimal(total_linea_raw)
 
     # Confianzas
     confianzas = []
@@ -342,8 +342,8 @@ def verificar_fiscal(
 
     # ── Extraer total_euros ──────────────────────────────────────────────
     total_euros_campo = fiscal_data.get("total_euros", {})
-    total_euros_raw = _extraer_valor(total_euros_campo)
-    total_euros = _safe_decimal(total_euros_raw)
+    total_euros_raw = extraer_valor(total_euros_campo)
+    total_euros = safe_decimal(total_euros_raw)
     total_euros_confianza = _extraer_confianza(total_euros_campo)
 
     # ── Propagar requiere_revision del OCR ───────────────────────────────
@@ -464,7 +464,7 @@ def verificar_fiscal(
         confianza_lineas = None
     else:
         decisiones_lineas = [lv["decision_linea"] for lv in lineas_verificadas]
-        decision_lineas = _peor_decision(*decisiones_lineas)
+        decision_lineas = peor_decision(*decisiones_lineas)
         # FISCAL_008 no cambia decisión (informativo)
         motivo_partes = []
         for lv in lineas_verificadas:
@@ -499,7 +499,7 @@ def verificar_fiscal(
         confianza_total = total_euros_confianza
 
     # decision_global
-    decision_global = _peor_decision(decision_total, decision_lineas)
+    decision_global = peor_decision(decision_total, decision_lineas)
 
     requiere_revision_humana = decision_global != "auto"
     motivos_revision = []

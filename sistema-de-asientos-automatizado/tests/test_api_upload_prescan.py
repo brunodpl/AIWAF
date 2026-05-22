@@ -470,3 +470,80 @@ def test_retry_prescan_timeout_promotes_to_uploaded(monkeypatch, client):
     body = r.json()
     assert body["pre_scan"]["status"] == "deferred"
     assert state_writer.current_status(folder) == "uploaded"
+
+
+def test_reupload_fully_processed_single_is_informational(monkeypatch, client):
+    """Re-subir un PDF de factura única ya completada (done) NO es error
+    técnico: aparece en already_processed con total/done, no en errors.
+    """
+    c, root = client
+    content = _pdf_bytes(7)
+
+    monkeypatch.setattr(api_main, "split_single_file", lambda pdf_path, **kw: SplitOutcome(
+        source=str(pdf_path), status="single_page", n_pages=1, n_facturas=1,
+    ))
+    r1 = _upload(c, "hecha.pdf", content)
+    assert r1.status_code == 200
+    assert r1.json()["uploaded"] == ["hecha.pdf"]
+
+    # Simulamos procesado completo: sidecar → done.
+    asiento = root / "asientos" / "compras_hecha"
+    state_writer.append(asiento, {"status": "done", "decision": "auto"})
+
+    # Re-subida del mismo sha256.
+    r2 = _upload(c, "hecha.pdf", content)
+    assert r2.status_code == 200
+    body2 = r2.json()
+
+    assert body2["uploaded"] == []
+    assert not any("duplicate" in (e.get("error") or "") for e in body2["errors"])
+    assert len(body2["already_processed"]) == 1
+    ap = body2["already_processed"][0]
+    assert ap["original"] == "compras_hecha"
+    assert ap["original_status"] == "done"
+    assert ap["total"] == 1
+    assert ap["done"] == 1
+    assert ap["pending"] == []
+
+
+def test_reupload_fully_closed_split_is_informational(monkeypatch, client):
+    """Re-subir un PDF-lote cuyos hijos están todos cerrados → already_processed
+    con total=N, done=N y pending=[]; nunca errors.
+    """
+    c, root = client
+    asientos = root / "asientos"
+    content = _pdf_bytes(8)
+
+    def fake_split(pdf_path, *, client=None, model=None, max_attempts=None):
+        pdf = Path(pdf_path)
+        parent = asientos / f"compras_{pdf.stem}"
+        children = [f"{pdf.stem}__1of2", f"{pdf.stem}__2of2"]
+        state_writer.append(parent, {
+            "status": "split",
+            "split_into": children,
+            "archived_pdf": f"_originales/{pdf.name}",
+        })
+        for i, ch in enumerate(children, start=1):
+            cf = asientos / f"compras_{ch}"
+            state_writer.init_uploaded(cf, ch, f"{ch}.pdf", f"sha-{i}" + "0" * 60, 100)
+            state_writer.append(cf, {"status": "done", "decision": "auto"})
+        return SplitOutcome(
+            source=str(pdf), status="split", n_pages=2, n_facturas=2,
+            outputs=[f"{ch}.pdf" for ch in children],
+        )
+    monkeypatch.setattr(api_main, "split_single_file", fake_split)
+
+    r1 = _upload(c, "lote2.pdf", content)
+    assert r1.status_code == 200
+    assert r1.json()["files"][0]["pre_scan"]["status"] == "split"
+
+    r2 = _upload(c, "lote2.pdf", content)
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert not any("duplicate" in (e.get("error") or "") for e in body2["errors"])
+    assert len(body2["already_processed"]) == 1
+    ap = body2["already_processed"][0]
+    assert ap["original_status"] == "split"
+    assert ap["total"] == 2
+    assert ap["done"] == 2
+    assert ap["pending"] == []

@@ -29,13 +29,15 @@ class FuenteCandidato(str, Enum):
     BBOX_PROXIMIDAD       = "bbox_proximidad"         # texto próximo a un bbox conocido
     LLM_ARBITRO           = "llm_arbitro"             # Gemini como árbitro entre candidatos
     SISTEMA               = "sistema"                 # Generado por el sistema (fecha operación)
+    DERIVADO              = "derivado"                # Derivado de otro campo resuelto (p.ej. fecha_operacion ← fecha_expedicion)
     FALLBACK              = "fallback"                # último recurso sin contexto
 
 
 class DecisionCampo(str, Enum):
-    AUTO   = "auto"    # único candidato válido con confianza suficiente
-    WARN   = "warn"    # candidato elegido pero con incertidumbre
-    BLOCK  = "block"   # sin candidato válido o conflicto no resuelto
+    AUTO      = "auto"      # único candidato válido con confianza suficiente
+    WARN      = "warn"      # candidato elegido pero con incertidumbre
+    PENDIENTE = "pendiente"  # dato ausente: no se fabrica (campo no obligatorio)
+    BLOCK     = "block"     # sin candidato válido o conflicto no resuelto
 
 
 # ──────────────────────────────────────────────────────────
@@ -178,6 +180,11 @@ class CabeceraResult:
         ]
         if DecisionCampo.BLOCK.value in decisiones:
             return DecisionCampo.BLOCK
+        # PENDIENTE en un campo obligatorio = dato ausente que NO se fabrica:
+        # debe escalar a revisión humana, nunca autocargarse. Prioridad entre
+        # BLOCK y WARN (DECISION_PRIORIDAD: block > pendiente > warn).
+        if DecisionCampo.PENDIENTE.value in decisiones:
+            return DecisionCampo.PENDIENTE
         if DecisionCampo.WARN.value in decisiones:
             return DecisionCampo.WARN
         return DecisionCampo.AUTO

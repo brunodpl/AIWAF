@@ -52,7 +52,8 @@ def run_fiscal(
         True si la fase completó (aunque con decisión warn/block)
         False si hubo error técnico que impide generar el artefacto
     """
-    from .verificador import verificar_fiscal
+    from .verificador import verificar_fiscal, peor_decision
+    from .tipo_corrector import corregir_tipo_iva_invalido
 
     doc_dir = Path(doc_output_dir)
     input_path = doc_dir / "documento_extraido.json"
@@ -76,11 +77,36 @@ def run_fiscal(
         logger.error("[fiscal] Sección 'fiscal' no encontrada en documento_extraido.json", exc_info=True)
         return False
 
+    # ── Corrección determinista de tipo IVA (F2) ANTES de validar ────────
+    # El verificador no corrige; aquí derivamos el tipo de cuota/base cuando el
+    # extraído no es legal. Las correcciones fuerzan revisión humana (warn).
+    tipos_legales = get_settings().iva_tipos_legales
+    correcciones = []
+    for i, linea in enumerate(fiscal_data.get("lineas_fiscales") or []):
+        r = corregir_tipo_iva_invalido(linea, tipos_legales)
+        if r.corregido:
+            correcciones.append((i, r))
+            logger.info(f"[fiscal] Línea {i}: tipo IVA corregido — {r.motivo}")
+
     try:
         resultado = verificar_fiscal(fiscal_data)
     except Exception as e:
         logger.error(f"[fiscal] Error en verificar_fiscal: {e}", exc_info=True)
         return False
+
+    if correcciones:
+        lineas_campo = resultado["campos"]["lineas_fiscales"]
+        if lineas_campo["decision"] == "auto":
+            lineas_campo["decision"] = "warn"
+        motivos_corr = "; ".join(f"línea {i}: {r.motivo}" for i, r in correcciones)
+        lineas_campo["motivo"] = f"Tipo IVA derivado de cuota/base — verificar. | {lineas_campo['motivo']}"
+        resultado["decision_global"] = peor_decision(
+            resultado["campos"]["total_euros"]["decision"], lineas_campo["decision"]
+        )
+        resultado["requiere_revision_humana"] = resultado["decision_global"] != "auto"
+        resultado.setdefault("warnings", []).append(f"Tipo IVA corregido: {motivos_corr}")
+        if lineas_campo["decision"] != "auto":
+            resultado.setdefault("motivos_revision", []).append(f"lineas_fiscales: {motivos_corr}")
 
     # Añadir metadatos del documento
     resultado["documento_id"] = documento_id

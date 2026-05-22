@@ -173,6 +173,32 @@ class Settings(BaseSettings):
         description="Palabras prohibidas en número de factura (separadas por coma)",
     )
 
+    # ── Autofactura ("facturación por el destinatario") ───────
+    # En autofacturas (p.ej. máquinas recreativas) la operadora aparece impresa
+    # como emisor, pero el emisor legal es el titular del local. Cuando el OCR
+    # contiene uno de estos marcadores y ambos NIF son válidos, la fase 3 invierte
+    # emisor<->receptor y fuerza revisión humana (WARN). Flag para apagarlo.
+    autofactura_swap_enabled: bool = Field(
+        default=True,
+        validation_alias="AUTOFACTURA_SWAP_ENABLED",
+        description="Feature flag para desactivar la inversión emisor/receptor en autofacturas.",
+    )
+    autofactura_marcadores_raw: str = Field(
+        default="FACTURACION POR EL DESTINATARIO",
+        validation_alias="AUTOFACTURA_MARCADORES",
+        description="Marcadores de autofactura en el OCR (separados por '|'); se comparan sin acentos ni mayúsculas.",
+    )
+
+    # ── IVA: tipos legales (Fase 3 fiscal) ────────────────────
+    # Lista blanca de tipos de IVA legales en España. El corrector de fase 3
+    # fiscal deriva el tipo de cuota/base cuando el extraído no está en esta lista
+    # (p.ej. cuando el OCR toma el importe del IVA como porcentaje).
+    iva_tipos_legales_raw: str = Field(
+        default="0,4,10,21",
+        validation_alias="IVA_TIPOS_LEGALES",
+        description="Tipos de IVA legales (separados por coma) para el corrector de tipo.",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -202,6 +228,20 @@ class Settings(BaseSettings):
         if not self.numero_factura_blacklist_raw:
             return set()
         return {w.strip().upper() for w in self.numero_factura_blacklist_raw.split(",")}
+
+    @property
+    def autofactura_marcadores(self) -> List[str]:
+        """Lista de marcadores de autofactura (separados por '|')."""
+        if not self.autofactura_marcadores_raw:
+            return []
+        return [m.strip() for m in self.autofactura_marcadores_raw.split("|") if m.strip()]
+
+    @property
+    def iva_tipos_legales(self) -> List[float]:
+        """Lista de tipos de IVA legales (separados por coma)."""
+        if not self.iva_tipos_legales_raw:
+            return []
+        return [float(t.strip()) for t in self.iva_tipos_legales_raw.split(",") if t.strip()]
 
     def get_folder_path(self, folder_name: str) -> str:
         """

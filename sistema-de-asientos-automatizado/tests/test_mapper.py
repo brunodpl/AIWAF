@@ -146,7 +146,10 @@ def test_construir_documento_identificacion():
     assert ident["numero_factura"]["confianza"] == CONFIANZA_CAMPO_OK
     assert ident["nif_entidad"]["valor"] == "B12345678"
     assert ident["nif_entidad"]["confianza"] == CONFIANZA_CAMPO_OK
-    assert ident["fecha_operacion"]["confianza"] == 1.0
+    # F3: fecha_operacion deriva de fecha_expedicion; ya no se fabrica con conf 1.0.
+    assert ident["fecha_operacion"]["valor"] == ident["fecha_expedicion"]["valor"]
+    assert ident["fecha_operacion"]["confianza"] == ident["fecha_expedicion"]["confianza"]
+    assert ident["fecha_operacion"]["confianza"] != 1.0
 
 
 def test_construir_documento_cliente_destino():

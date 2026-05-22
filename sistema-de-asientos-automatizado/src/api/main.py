@@ -1263,31 +1263,29 @@ async def upload_files(book_id: str, files: List[UploadFile] = File(...)):
                         "status": prev_status,
                     }]
 
-                if pending_children:
-                    already_processed.append({
-                        "file": file.filename,
-                        "original": existing.name,
-                        "original_status": prev_status,
-                        "pending": pending_children,
-                    })
-                    logger.info(
-                        "[upload] dup con pendientes file=%s sha256=%s existing=%s status=%s pending=%d",
-                        file.filename, sha256_file[:12], existing.name, prev_status, len(pending_children),
-                    )
-                else:
-                    errors.append({
-                        "file": file.filename,
-                        "error": (
-                            f"duplicate: el PDF ya está completamente procesado "
-                            f"como '{existing.name}'"
-                        ),
-                        "duplicate_of": existing.name,
-                        "duplicate_status": prev_status,
-                    })
-                    logger.info(
-                        "[upload] dup físico rechazado file=%s sha256=%s existing=%s status=%s",
-                        file.filename, sha256_file[:12], existing.name, prev_status,
-                    )
+                # Conteo total de facturas del PDF ya conocido, para que el
+                # frontend muestre "N facturas (X procesadas · Y pendientes)".
+                # split → total = nº de hijos; factura única → 1.
+                total_invoices = len(children) if prev_status == "split" else 1
+                done_count = total_invoices - len(pending_children)
+
+                # Un duplicado NUNCA es un error técnico: es información para el
+                # operario (el PDF ya se procesó). Tanto si quedan facturas
+                # pendientes de revisión como si está todo cerrado, va en
+                # already_processed → el frontend muestra toast.info, no error.
+                already_processed.append({
+                    "file": file.filename,
+                    "original": existing.name,
+                    "original_status": prev_status,
+                    "pending": pending_children,
+                    "total": total_invoices,
+                    "done": done_count,
+                })
+                logger.info(
+                    "[upload] dup conocido file=%s sha256=%s existing=%s status=%s total=%d pending=%d",
+                    file.filename, sha256_file[:12], existing.name, prev_status,
+                    total_invoices, len(pending_children),
+                )
                 continue
 
         dest = upload_dir / safe_name

@@ -48,12 +48,7 @@ import {
   runPipeline,
 } from "@/lib/api";
 import type { BookFile, Libro, PreScanResult } from "@/lib/types";
-
-const BOOK_LABELS: Record<Libro, string> = {
-  gastos: "Compras y Gastos",
-  ingresos: "Ventas e Ingresos",
-  bienes: "Bienes de Inversión",
-};
+import { LIBRO_LABELS } from "@/lib/libros";
 
 /** Snapshot inmutable de un upload concreto que llegó al pre-review. */
 export interface PreReviewUploadEntry {
@@ -516,7 +511,7 @@ export function PreReviewStage({
           {entries.map((entry) => (
             <section key={entry.bookId} className="space-y-2">
               <h3 className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">
-                {BOOK_LABELS[entry.bookId]}
+                {LIBRO_LABELS[entry.bookId]}
               </h3>
               <div className="space-y-2">
                 {entry.files.map((file) => (

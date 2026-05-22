@@ -98,11 +98,11 @@ def test_run_identidad_raw_minimo_escribe_artefacto():
         assert "decision_global" in resultado
         assert resultado["documento_id"] == "doc_minimo"
 
-        # fecha_operacion debe estar en campos (FIX verificado)
+        # fecha_operacion presente pero NO fabricada (F3): sin expedición → pendiente
         assert "fecha_operacion" in resultado["campos"]
         fecha_oper = resultado["campos"]["fecha_operacion"]
-        assert fecha_oper["valor_final"] is not None
-        assert fecha_oper["decision"] == "auto"
+        assert fecha_oper["valor_final"] is None
+        assert fecha_oper["decision"] == "pendiente"
 
 
 def test_run_identidad_doc_id_propagado():

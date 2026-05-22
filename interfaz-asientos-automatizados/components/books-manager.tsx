@@ -13,8 +13,9 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { Book, BookFile, Libro } from "@/lib/types";
+import { Book, BookFile, Libro, PreScanResult } from "@/lib/types";
 import { fetchBooks, uploadFiles, runPipeline, deleteBookFile } from "@/lib/api";
+import { libroLabel } from "@/lib/libros";
 
 interface BooksManagerProps {
   onPipelineStart: () => void;
@@ -75,6 +76,104 @@ const TERMINAL_STATUSES = new Set([
   "pre_scan_failed",
 ]);
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Recupera el desglose de un upload que el backend SÍ completó (split) pese a un
+ * timeout del proxy (F4). Para cada archivo subido, busca sus hijos
+ * `{stem}__iofN.pdf` ya presentes en /api/books y reconstruye un "padre virtual"
+ * con `pre_scan.status="split"` para llevar al operario a Pre-revisión en vez de
+ * dejar hijos huérfanos en Gestión. Vacío si no hay hijos (no hubo split o el
+ * backend tampoco terminó) → el caller cae al aviso de recarga.
+ */
+export function recoverSplitEntriesFromBooks(
+  book: Book | undefined,
+  uploadedNames: string[],
+): BookFile[] {
+  if (!book) return [];
+  const out: BookFile[] = [];
+  for (const uploaded of uploadedNames) {
+    const stem = uploaded.replace(/\.[^.]+$/, "");
+    const childRe = new RegExp(`^${escapeRegExp(stem)}__\\d+of\\d+\\.pdf$`, "i");
+    const children = book.files.filter((f) => childRe.test(f.name));
+    if (children.length === 0) continue;
+    out.push({
+      name: uploaded,
+      size_kb: 0,
+      added: new Date().toISOString(),
+      status: "split",
+      pre_scan: {
+        status: "split",
+        n_pages: children.length,
+        detected_invoices: children.length,
+        children: children.map((c) => ({
+          doc_id: c.name.replace(/\.pdf$/i, ""),
+          folder_name: c.folder_name ?? "",
+          status: (c.status as string) ?? "uploaded",
+        })),
+        error: null,
+      },
+    });
+  }
+  return out;
+}
+
+/**
+ * Construye las entradas de Pre-revisión para TODO el inbox pendiente — lo que
+ * `runPipeline` realmente escaneará — no solo los uploads recientes (F7). Cada
+ * archivo lleva su `pre_scan` conocido (acumulador > respuesta /upload) o, en su
+ * defecto, "single" (1 factura), de modo que el conteo de Pre-revisión coincide
+ * con el del CTA de Gestión y con lo procesado. Oculta hijos de padres split
+ * conocidos e inyecta los padres virtuales (movidos a `_originales/`).
+ */
+export function buildPendingPreReviewEntries(
+  books: Book[] | null,
+  mergedFilesByBook: Record<string, BookFile[]>,
+): Record<string, BookFile[]> {
+  const out: Record<string, BookFile[]> = {};
+  if (!books) return out;
+
+  const splitStemsByBook: Record<string, Set<string>> = {};
+  for (const [bid, files] of Object.entries(mergedFilesByBook)) {
+    const stems = new Set<string>();
+    for (const f of files) {
+      if (f.pre_scan?.status === "split") stems.add(f.name.replace(/\.[^.]+$/, ""));
+    }
+    splitStemsByBook[bid] = stems;
+  }
+  const isChildOfKnown = (bid: string, name: string) => {
+    const stems = splitStemsByBook[bid];
+    if (!stems || stems.size === 0) return false;
+    const m = name.match(/^(.+?)__\d+of\d+\.pdf$/i);
+    return m ? stems.has(m[1]) : false;
+  };
+  const isPending = (f: BookFile) => !f.status || !TERMINAL_STATUSES.has(f.status);
+  const single = (): PreScanResult => ({
+    status: "single", n_pages: 0, detected_invoices: 1, children: [], error: null,
+  });
+
+  for (const b of books) {
+    const knownNames = new Set(b.files.map((f) => f.name));
+    const entries: BookFile[] = [];
+    for (const f of b.files) {
+      if (!isPending(f) || isChildOfKnown(b.id, f.name)) continue;
+      const acc = mergedFilesByBook[b.id]?.find((a) => a.name === f.name);
+      entries.push({ ...f, pre_scan: acc?.pre_scan ?? f.pre_scan ?? single() });
+    }
+    // Padres virtuales del acumulador que ya no están en el inbox (split a _originales/).
+    for (const f of mergedFilesByBook[b.id] ?? []) {
+      if (knownNames.has(f.name)) continue;
+      if (f.pre_scan?.status === "split" || f.pre_scan?.status === "single") {
+        entries.push({ ...f });
+      }
+    }
+    if (entries.length > 0) out[b.id] = entries;
+  }
+  return out;
+}
+
 export function BooksManager({
   onPipelineStart,
   onNavigateToReview,
@@ -132,32 +231,37 @@ export function BooksManager({
   useEffect(() => { loadBooks(); }, [loadBooks]);
 
   const pollBooksUntilSynced = useCallback(
-    async (bookId: string, expectedNames: string[], maxRetries = 3, intervalMs = 800) => {
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
+    async (bookId: string, expectedNames: string[], maxWaitMs = 20000) => {
+      // Los hijos de un split grande (60+ facturas) tardan varios segundos en
+      // hacerse visibles en /api/books por el lag de virtiofs en Docker/Windows.
+      // Damos un presupuesto generoso con backoff exponencial; los uploads que
+      // ya están sincronizados retornan en la primera vuelta sin esperar, así
+      // que el caso común no paga este coste.
+      const deadline = Date.now() + maxWaitMs;
+      let interval = 800;
+      let lastBooks: Book[] | null = null;
+      let stillMissing = expectedNames;
+      for (;;) {
         if (!mountedRef.current) return { missing: expectedNames, books: null as Book[] | null };
         try {
           const response = await fetchBooks();
           if (!mountedRef.current) return { missing: expectedNames, books: null };
+          lastBooks = response.books;
           const book = response.books.find((b) => b.id === bookId);
           const serverNames = new Set(book?.files.map((f) => f.name) ?? []);
-          const stillMissing = expectedNames.filter((n) => !serverNames.has(n));
+          stillMissing = expectedNames.filter((n) => !serverNames.has(n));
           if (stillMissing.length === 0) {
             return { missing: [], books: response.books };
           }
-          if (attempt < maxRetries - 1) {
-            await new Promise((r) => setTimeout(r, intervalMs));
-          } else {
-            return { missing: stillMissing, books: response.books };
-          }
         } catch {
-          if (attempt < maxRetries - 1) {
-            await new Promise((r) => setTimeout(r, intervalMs));
-          } else {
-            return { missing: expectedNames, books: null };
-          }
+          // Mantener lastBooks y reintentar hasta agotar el presupuesto.
         }
+        if (Date.now() + interval >= deadline) {
+          return { missing: stillMissing, books: lastBooks };
+        }
+        await new Promise((r) => setTimeout(r, interval));
+        interval = Math.min(Math.round(interval * 1.5), 3000);
       }
-      return { missing: expectedNames, books: null };
     },
     []
   );
@@ -271,12 +375,21 @@ export function BooksManager({
         const alreadyProcessed = result.already_processed ?? [];
         if (alreadyProcessed.length > 0) {
           for (const info of alreadyProcessed) {
-            const n = info.pending.length;
-            const facturas = n === 1 ? "factura pendiente" : "facturas pendientes";
-            toast.info(
-              `${info.file}: ya procesado. ${n} ${facturas} de revisión.`,
-              { duration: 8000 },
-            );
+            const pending = info.pending.length;
+            const total = info.total ?? pending;
+            const totalTxt = `${total} factura${total === 1 ? "" : "s"}`;
+            if (pending > 0) {
+              const facturas = pending === 1 ? "factura pendiente" : "facturas pendientes";
+              toast.info(
+                `${info.file}: ya procesado (${totalTxt}). ${pending} ${facturas} de revisión.`,
+                { duration: 8000 },
+              );
+            } else {
+              toast.info(
+                `${info.file}: ya procesado — ${totalTxt}, todas completadas.`,
+                { duration: 8000 },
+              );
+            }
           }
         }
 
@@ -366,7 +479,32 @@ export function BooksManager({
             "Hay un procesado en curso. Espera a que termine para subir nuevas facturas."
           );
         } else if (message.includes("timed out") || message.includes("AbortError")) {
-          toast.warning("La subida tardó más de lo normal; recargando estado…");
+          // F4: el backend puede haber completado el split pese al timeout del
+          // proxy. Recuperamos el desglose desde /api/books y vamos a
+          // Pre-revisión en vez de dejar hijos huérfanos en Gestión.
+          let recovered = false;
+          if (onUploadComplete) {
+            try {
+              const { books: latest } = await fetchBooks();
+              const book = latest.find((b) => b.id === bookId);
+              const entries = recoverSplitEntriesFromBooks(
+                book,
+                droppedFiles.map((f) => f.name),
+              );
+              if (entries.length > 0 && mountedRef.current) {
+                onUploadComplete(bookId as Libro, entries);
+                toast.success(
+                  "El análisis se completó pese a la espera — continúa en Pre-revisión.",
+                );
+                recovered = true;
+              }
+            } catch {
+              // /api/books no disponible — caemos al aviso de recarga.
+            }
+          }
+          if (!recovered) {
+            toast.warning("La subida tardó más de lo normal; recargando estado…");
+          }
         } else {
           toast.warning(`No se pudo confirmar la subida: ${message}. Recargando estado…`);
         }
@@ -528,24 +666,21 @@ export function BooksManager({
   );
 
   const handleRunPipeline = useCallback(async () => {
-    // Si hay resultados de pre-scan disponibles (locales o conservados por el
-    // padre desde una sesión anterior), vamos al stage Pre-revisión para
-    // confirmar el desglose. El pipeline lo lanza el botón "Escanear" de
-    // PreReviewStage.
-    const mergedBookIds = Object.keys(mergedFilesByBook);
-    if (onUploadComplete && mergedBookIds.length > 0) {
-      for (const bid of mergedBookIds) {
-        const files = mergedFilesByBook[bid];
-        if (files && files.length > 0) {
-          onUploadComplete(bid as Libro, files);
-        }
+    // Pre-revisión refleja TODO el inbox pendiente — lo que runPipeline
+    // escaneará — no solo los uploads recientes. Así el conteo coincide con el
+    // CTA de Gestión y con lo que realmente se procesa (F7). El pipeline lo
+    // lanza el botón "Escanear" de PreReviewStage.
+    const entriesByBook = buildPendingPreReviewEntries(books, mergedFilesByBook);
+    const bookIds = Object.keys(entriesByBook);
+    if (onUploadComplete && bookIds.length > 0) {
+      for (const bid of bookIds) {
+        onUploadComplete(bid as Libro, entriesByBook[bid]);
       }
       return;
     }
 
-    // Fallback (sin uploads recientes con pre-scan): pipeline directo,
-    // sin pasar por Pre-revisión. Mantiene el flujo legacy para PDFs ya
-    // presentes en el inbox de sesiones anteriores.
+    // Fallback (sin onUploadComplete): pipeline directo, sin pasar por
+    // Pre-revisión. Mantiene el flujo legacy.
     try {
       const result = await runPipeline();
       toast.success(`Pipeline iniciado: ${result.total} archivo(s) a procesar`);
@@ -560,7 +695,7 @@ export function BooksManager({
         toast.error(`Error iniciando pipeline: ${message}`);
       }
     }
-  }, [mergedFilesByBook, onUploadComplete, onPipelineStart]);
+  }, [books, mergedFilesByBook, onUploadComplete, onPipelineStart]);
 
   const isPendingFile = (f: BookFile) =>
     !f.status || !TERMINAL_STATUSES.has(f.status);
@@ -708,7 +843,7 @@ export function BooksManager({
                 onDrop={(e) => handleDropEvent(e, book.id)}
               >
                 <h3 className="text-xs font-black uppercase tracking-[0.1em] text-slate-700 mb-3">
-                  {book.label}
+                  {libroLabel(book.id)}
                 </h3>
 
                 {isDragOver && dragFileCount > 0 && (
@@ -782,6 +917,12 @@ export function BooksManager({
                       </div>
                     ))}
 
+                    {visibleFiles.length > 8 && (
+                      <p className="text-[10px] font-mono text-slate-400 px-1">
+                        {visibleFiles.length} archivos — desplázate para ver todos
+                      </p>
+                    )}
+                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                     {visibleFiles.map((file: BookFile) => {
                       const fileKey = `${book.id}/${file.name}`;
                       const isDeleting = deletingFile === fileKey;
@@ -874,6 +1015,7 @@ export function BooksManager({
                         </div>
                       );
                     })}
+                    </div>
 
                     {!isUploading && (
                       <button

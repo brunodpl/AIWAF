@@ -36,7 +36,8 @@ import {
 } from "@/lib/api";
 import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
 import { CUENTAS, CUENTA_BY_CODE } from "@/lib/cuentas-maestro";
-import { inferLibroFromCuenta, libroLabel } from "@/lib/libro-inference";
+import { inferLibroFromCuenta } from "@/lib/libro-inference";
+import { libroLabel } from "@/lib/libros";
 import {
   Select,
   SelectContent,
@@ -166,6 +167,10 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [fiscalLines, setFiscalLines] = useState<FiscalLine[]>([]);
+  // Campos modificados por el operario en la factura actual. El badge de estado
+  // del pipeline (WARN 89%…) refleja la decisión del escaneo, no el dato editado;
+  // marcamos "EDITADO" para que el operario distinga lo que ya tocó (F9).
+  const [editedFields, setEditedFields] = useState<Set<string>>(new Set());
   // Modo "cuenta + concepto personalizados" — activado al pulsar el botón "+",
   // o restaurado automáticamente al recargar una factura con un code que no
   // existe en el maestro (override guardado previamente).
@@ -435,6 +440,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
     setEffectiveLibro(undefined);
     setCuentaWarning(null);
     setLibroJustChanged(false);
+    setEditedFields(new Set());
     if (libroPulseTimerRef.current) {
       clearTimeout(libroPulseTimerRef.current);
       libroPulseTimerRef.current = null;
@@ -527,6 +533,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
 
   const handleInputChange = (id: string, value: string) => {
     dirtyRef.current = true;
+    setEditedFields(prev => (prev.has(id) ? prev : new Set(prev).add(id)));
     setFormData(prev => ({ ...prev, [id]: value }));
   };
 
@@ -1185,14 +1192,20 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
                           <Label htmlFor={field.id} className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] pl-1">
                             {field.label}
                           </Label>
-                          <span className={cn(
-                            "text-[9px] font-bold px-1.5 py-0.5 rounded",
-                            field.status === "auto" && "bg-emerald-50 text-emerald-600",
-                            field.status === "warn" && "bg-amber-50 text-amber-600",
-                            field.status === "block" && "bg-red-50 text-red-600",
-                          )}>
-                            {field.status.toUpperCase()} {field.confidence}%
-                          </span>
+                          {editedFields.has(field.id) ? (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">
+                              EDITADO
+                            </span>
+                          ) : (
+                            <span className={cn(
+                              "text-[9px] font-bold px-1.5 py-0.5 rounded",
+                              field.status === "auto" && "bg-emerald-50 text-emerald-600",
+                              field.status === "warn" && "bg-amber-50 text-amber-600",
+                              field.status === "block" && "bg-red-50 text-red-600",
+                            )}>
+                              {field.status.toUpperCase()} {field.confidence}%
+                            </span>
+                          )}
                         </div>
                         {field.id === "cuenta_contable" ? (
                           <>

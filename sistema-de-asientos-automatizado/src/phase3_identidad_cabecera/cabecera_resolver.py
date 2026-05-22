@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 import uuid
 from typing import Optional
 
@@ -64,6 +65,8 @@ class CabeceraResolver:
         umbral_auto: float = 0.90,
         umbral_warn: float = 0.65,
         umbral_llm: float = 0.80,
+        autofactura_marcadores: Optional[list[str]] = None,
+        autofactura_swap_enabled: bool = True,
     ):
         """
         Args:
@@ -76,11 +79,17 @@ class CabeceraResolver:
             umbral_auto: Confianza mínima para decisión AUTO sin revisión.
             umbral_warn: Por debajo → BLOCK.
             umbral_llm: Por debajo de este umbral, se considera llamar al LLM árbitro.
+            autofactura_marcadores: Marcadores de "facturación por el destinatario"
+                que disparan la inversión emisor/receptor. Si vacío/None → desactivado.
+            autofactura_swap_enabled: Si False, nunca se invierte (válvula de emergencia).
         """
         self.usar_llm = usar_llm
         self.umbral_auto = umbral_auto
         self.umbral_warn = umbral_warn
         self.umbral_llm = umbral_llm
+
+        self._autofactura_marcadores = autofactura_marcadores or []
+        self._autofactura_enabled = autofactura_swap_enabled and bool(self._autofactura_marcadores)
 
         self._llm: Optional[LLMDisambiguator] = None
         if usar_llm:
@@ -285,7 +294,7 @@ class CabeceraResolver:
         )
         res_fecha_exp = self._aplicar_llm_si_necesario(res_fecha_exp, extractor, raw_document_ai)
 
-        res_fecha_oper = resolver_fecha_operacion()  # Siempre AUTO, fecha del sistema
+        res_fecha_oper = resolver_fecha_operacion(res_fecha_exp)  # Derivada de la expedición (F3)
 
         # 5. NIF receptor
         res_nif_receptor = resolver_nif_receptor(
@@ -300,6 +309,20 @@ class CabeceraResolver:
             candidatos_fase2=candidatos_f2,
         )
         res_nombre_receptor = self._aplicar_llm_si_necesario(res_nombre_receptor, extractor, raw_document_ai)
+
+        # ── Autofactura: invertir emisor/receptor si procede ─────────────
+        # En "facturación por el destinatario" la operadora se imprime como
+        # emisor, pero el emisor legal es el titular del local. Solo se invierte
+        # si (a) hay marcador y (b) ambos NIF están resueltos (gating de seguridad).
+        if (self._autofactura_enabled
+                and _es_autofactura(extractor.texto_completo(), self._autofactura_marcadores)
+                and res_nif.valor_final and res_nif_receptor.valor_final):
+            _swap_identidad_valores(res_nif, res_nif_receptor)
+            _swap_identidad_valores(res_nombre, res_nombre_receptor)
+            logger.info(
+                "[cabecera] AUTOFACTURA detectada — emisor/receptor invertidos "
+                f"(nif_entidad={res_nif.valor_final}, nif_receptor={res_nif_receptor.valor_final})"
+            )
 
         # ── Recoger motivos de revisión de campos obligatorios ───────────
         motivos_revision = []
@@ -333,6 +356,50 @@ class CabeceraResolver:
 # ──────────────────────────────────────────────────────────
 # Utilidades internas
 # ──────────────────────────────────────────────────────────
+
+_AUTOFACTURA_MOTIVO = (
+    "AUTOFACTURA (facturación por el destinatario): emisor/receptor "
+    "invertidos automáticamente — verificar."
+)
+
+
+def _normalizar_marcador(texto: str) -> str:
+    """Normalizar para comparación robusta: sin acentos, mayúsculas, espacios colapsados."""
+    sin_acentos = "".join(
+        c for c in unicodedata.normalize("NFKD", texto or "")
+        if not unicodedata.combining(c)
+    )
+    return " ".join(sin_acentos.upper().split())
+
+
+def _es_autofactura(texto_ocr: str, marcadores: list[str]) -> bool:
+    """True si el OCR contiene alguno de los marcadores de autofactura (sin acentos)."""
+    if not texto_ocr or not marcadores:
+        return False
+    texto_norm = _normalizar_marcador(texto_ocr)
+    return any(
+        _normalizar_marcador(m) in texto_norm
+        for m in marcadores if m and m.strip()
+    )
+
+
+def _swap_identidad_valores(res_a: FieldResolution, res_b: FieldResolution) -> None:
+    """
+    Intercambiar in-place el "paquete de valor" entre dos resoluciones de identidad,
+    conservando ``campo``. Tras el swap, fuerza decisión >= WARN y antepone el motivo
+    de autofactura para señalar la inversión heurística al revisor humano.
+    """
+    for attr in ("valor_final", "fuente_final", "confianza_final", "decision",
+                 "candidatos", "page_ref", "bbox_normalizado", "validaciones"):
+        a_val = getattr(res_a, attr)
+        setattr(res_a, attr, getattr(res_b, attr))
+        setattr(res_b, attr, a_val)
+
+    for res in (res_a, res_b):
+        if res.decision == DecisionCampo.AUTO:
+            res.decision = DecisionCampo.WARN
+        res.motivo = f"{_AUTOFACTURA_MOTIVO} | {res.motivo}"
+
 
 def _extraer_crop_region(
     raw_document_ai: dict,

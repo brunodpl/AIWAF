@@ -59,8 +59,26 @@ vi.mock("sonner", () => ({
   },
 }));
 
-import { BooksManager } from "@/components/books-manager";
+import { BooksManager, recoverSplitEntriesFromBooks } from "@/components/books-manager";
 import type { Book } from "@/lib/types";
+
+function makeBooksWithSplitChildren(): Book[] {
+  return [
+    {
+      id: "gastos",
+      label: "Libro de Gastos y Compras",
+      folder: "compras",
+      libro_short: "compras",
+      files: [
+        { name: "nueva_factura__1of3.pdf", size_kb: 10, added: "2026-01-01T00:00:00Z", status: "uploaded" },
+        { name: "nueva_factura__2of3.pdf", size_kb: 10, added: "2026-01-01T00:00:00Z", status: "uploaded" },
+        { name: "nueva_factura__3of3.pdf", size_kb: 10, added: "2026-01-01T00:00:00Z", status: "uploaded" },
+      ],
+    },
+    { id: "ingresos", label: "Libro de Ingresos y Ventas", folder: "ventas", files: [] },
+    { id: "bienes", label: "Libro de Bienes de Inversión", folder: "bienes", files: [] },
+  ];
+}
 
 function makeBooks(): Book[] {
   return [
@@ -105,7 +123,7 @@ describe("BooksManager — resiliencia a upload fallido (500/timeout)", () => {
     );
 
     // Esperar la carga inicial de libros
-    await screen.findByText("Libro de Gastos y Compras");
+    await screen.findByText("Recibidas (compras/gastos)");
 
     // Contar cuántas veces fetchBooks fue llamado hasta ahora (carga inicial)
     const callsAfterMount = api.fetchBooks.mock.calls.length;
@@ -149,7 +167,7 @@ describe("BooksManager — resiliencia a upload fallido (500/timeout)", () => {
     );
 
     // Esperar carga inicial
-    await screen.findByText("Libro de Gastos y Compras");
+    await screen.findByText("Recibidas (compras/gastos)");
 
     const fileInputs = document.querySelectorAll('input[type="file"]');
     const gastoInput = fileInputs[0] as HTMLInputElement;
@@ -178,5 +196,55 @@ describe("BooksManager — resiliencia a upload fallido (500/timeout)", () => {
       "message" in toast &&
       (toast.message as ReturnType<typeof vi.fn>).mock.calls.length > 0;
     expect(warningCalled || messageCalled).toBe(true);
+  });
+});
+
+describe("recoverSplitEntriesFromBooks (F4)", () => {
+  it("reconstruye un padre virtual split desde los hijos en /api/books", () => {
+    const book = makeBooksWithSplitChildren()[0];
+    const entries = recoverSplitEntriesFromBooks(book, ["nueva_factura.pdf"]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].name).toBe("nueva_factura.pdf");
+    expect(entries[0].pre_scan?.status).toBe("split");
+    expect(entries[0].pre_scan?.detected_invoices).toBe(3);
+    expect(entries[0].pre_scan?.children).toHaveLength(3);
+  });
+
+  it("devuelve vacío si no hay hijos (no hubo split ni el backend terminó)", () => {
+    const book: Book = {
+      id: "gastos",
+      label: "x",
+      folder: "compras",
+      files: [{ name: "otro.pdf", size_kb: 1, added: "2026-01-01T00:00:00Z", status: "uploaded" }],
+    };
+    expect(recoverSplitEntriesFromBooks(book, ["nueva_factura.pdf"])).toHaveLength(0);
+  });
+});
+
+describe("BooksManager — recuperación de Pre-revisión tras timeout (F4)", () => {
+  it("transiciona a Pre-revisión si el split se completó pese al timeout", async () => {
+    api.fetchBooks.mockResolvedValue({ books: makeBooksWithSplitChildren() });
+    api.uploadFiles.mockRejectedValue(
+      new Error("Request timed out. The server may still be processing."),
+    );
+    const onUploadComplete = vi.fn();
+
+    render(
+      <BooksManager onPipelineStart={() => {}} onUploadComplete={onUploadComplete} />,
+    );
+
+    await screen.findByText("Recibidas (compras/gastos)");
+
+    const gastoInput = document.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
+    const fakeFile = new File(["x"], "nueva_factura.pdf", { type: "application/pdf" });
+    Object.defineProperty(gastoInput, "files", { value: [fakeFile], configurable: true });
+    fireEvent.change(gastoInput);
+
+    await waitFor(() => expect(onUploadComplete).toHaveBeenCalled(), { timeout: 3000 });
+
+    const [bookId, entries] = onUploadComplete.mock.calls[0];
+    expect(bookId).toBe("gastos");
+    expect(entries[0].pre_scan.status).toBe("split");
+    expect(entries[0].pre_scan.detected_invoices).toBe(3);
   });
 });
