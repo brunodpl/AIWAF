@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:smoke": "playwright test -c playwright.smoke.config.ts",
     "test:e2e:diag": "playwright test e2e/_diagnostic --reporter=list",
     "test:e2e:multi": "playwright test --project=multi-invoice"
   },
