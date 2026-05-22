@@ -10,6 +10,7 @@ import {
   Ban,
 } from "lucide-react";
 import { prettifyBatchFile } from "@/lib/splitter-naming";
+import { libroLabel } from "@/lib/libros";
 import type { BatchFileEntry, BatchFileStatus, PipelineBatch } from "@/lib/types";
 
 interface BatchOverviewProps {
@@ -61,7 +62,7 @@ export function BatchOverview({ batch }: BatchOverviewProps) {
         <section key={book.book_id}>
           <header className="flex items-baseline justify-between mb-1.5">
             <h3 className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-600">
-              {book.label}
+              {libroLabel(book.book_id)}
             </h3>
             <span className="text-[10px] font-mono text-slate-400">
               {book.files.length} factura{book.files.length === 1 ? "" : "s"}

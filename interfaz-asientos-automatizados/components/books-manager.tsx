@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Book, BookFile, Libro, PreScanResult } from "@/lib/types";
 import { fetchBooks, uploadFiles, runPipeline, deleteBookFile } from "@/lib/api";
+import { libroLabel } from "@/lib/libros";
 
 interface BooksManagerProps {
   onPipelineStart: () => void;
@@ -828,7 +829,7 @@ export function BooksManager({
                 onDrop={(e) => handleDropEvent(e, book.id)}
               >
                 <h3 className="text-xs font-black uppercase tracking-[0.1em] text-slate-700 mb-3">
-                  {book.label}
+                  {libroLabel(book.id)}
                 </h3>
 
                 {isDragOver && dragFileCount > 0 && (

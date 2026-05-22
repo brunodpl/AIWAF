@@ -36,7 +36,8 @@ import {
 } from "@/lib/api";
 import { resolveClienteGestoria } from "@/lib/cliente-gestoria";
 import { CUENTAS, CUENTA_BY_CODE } from "@/lib/cuentas-maestro";
-import { inferLibroFromCuenta, libroLabel } from "@/lib/libro-inference";
+import { inferLibroFromCuenta } from "@/lib/libro-inference";
+import { libroLabel } from "@/lib/libros";
 import {
   Select,
   SelectContent,

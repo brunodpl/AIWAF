@@ -123,7 +123,7 @@ describe("BooksManager — resiliencia a upload fallido (500/timeout)", () => {
     );
 
     // Esperar la carga inicial de libros
-    await screen.findByText("Libro de Gastos y Compras");
+    await screen.findByText("Recibidas (compras/gastos)");
 
     // Contar cuántas veces fetchBooks fue llamado hasta ahora (carga inicial)
     const callsAfterMount = api.fetchBooks.mock.calls.length;
@@ -167,7 +167,7 @@ describe("BooksManager — resiliencia a upload fallido (500/timeout)", () => {
     );
 
     // Esperar carga inicial
-    await screen.findByText("Libro de Gastos y Compras");
+    await screen.findByText("Recibidas (compras/gastos)");
 
     const fileInputs = document.querySelectorAll('input[type="file"]');
     const gastoInput = fileInputs[0] as HTMLInputElement;
@@ -233,7 +233,7 @@ describe("BooksManager — recuperación de Pre-revisión tras timeout (F4)", ()
       <BooksManager onPipelineStart={() => {}} onUploadComplete={onUploadComplete} />,
     );
 
-    await screen.findByText("Libro de Gastos y Compras");
+    await screen.findByText("Recibidas (compras/gastos)");
 
     const gastoInput = document.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
     const fakeFile = new File(["x"], "nueva_factura.pdf", { type: "application/pdf" });

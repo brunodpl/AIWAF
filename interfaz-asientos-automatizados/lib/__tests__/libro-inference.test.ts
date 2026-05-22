@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { inferLibroFromCuenta, libroLabel } from "../libro-inference";
+import { inferLibroFromCuenta } from "../libro-inference";
+import { libroLabel } from "../libros";
 
 describe("inferLibroFromCuenta", () => {
   describe("cuentas del maestro", () => {
@@ -90,14 +91,17 @@ describe("inferLibroFromCuenta", () => {
 });
 
 describe("libroLabel", () => {
-  it("ingresos → 'Emitida (ventas/ingresos)'", () => {
-    expect(libroLabel("ingresos")).toBe("Emitida (ventas/ingresos)");
+  it("ingresos → 'Emitidas (ventas/ingresos)'", () => {
+    expect(libroLabel("ingresos")).toBe("Emitidas (ventas/ingresos)");
   });
-  it("gastos → 'Recibida (compras/gastos)'", () => {
-    expect(libroLabel("gastos")).toBe("Recibida (compras/gastos)");
+  it("gastos → 'Recibidas (compras/gastos)'", () => {
+    expect(libroLabel("gastos")).toBe("Recibidas (compras/gastos)");
   });
   it("bienes → 'Bienes de inversión'", () => {
     expect(libroLabel("bienes")).toBe("Bienes de inversión");
+  });
+  it("'ventas' (forma corta del backend) → 'Emitidas (ventas/ingresos)'", () => {
+    expect(libroLabel("ventas")).toBe("Emitidas (ventas/ingresos)");
   });
   it("undefined → '—'", () => {
     expect(libroLabel(undefined)).toBe("—");
