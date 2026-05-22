@@ -322,18 +322,13 @@ def _update_state_for_split(
                 # este doc_id, no lo tocamos (caso rerun manual).
                 continue
             try:
-                rel_pdf = split_pdf.resolve().relative_to(libros_base)
-                pdf_rel_str = str(rel_pdf).replace(os.sep, "/")
-            except (ValueError, OSError):
-                pdf_rel_str = split_pdf.name
-            try:
                 size_bytes = split_pdf.stat().st_size
             except OSError:
                 size_bytes = 0
             state_writer.init_uploaded(
                 asiento_folder,
                 doc_id=doc_id,
-                file_origin=pdf_rel_str,
+                file_origin=str(split_pdf.resolve()),
                 # Reusa el sha256 del origen + sufijo del índice para tener un
                 # hash determinista por split sin re-leer el fichero entero.
                 sha256_file=f"{source_sha}#{doc_id}",

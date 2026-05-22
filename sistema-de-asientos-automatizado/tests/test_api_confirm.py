@@ -243,3 +243,88 @@ def test_confirm_no_doble_conteo_nif_igual(api_client):
     assert nif in data.get("clientes", {}), "NIF not registered at all"
     count = data["clientes"][nif]["documentos_procesados"]
     assert count == 1, f"Expected 1 but got {count} — duplicate NIF was counted twice"
+
+
+def test_confirm_relative_file_origin_deletes_inbox_pdf(api_client, libros_root):
+    """
+    Regresión: cuando el sidecar uploaded de un split child tiene un
+    file_origin RELATIVO (p.ej. 'facturas/compras/<doc>.pdf'), el confirm
+    debe resolver la ruta contra libros_base, borrar el PDF y devolver
+    inbox_pdfs_deleted >= 1.
+
+    Reproduce el bug encontrado en E2E: file_origin relativo nunca resuelve
+    con CWD=/app → inbox acumula PDFs confirmados.
+    """
+    from src import state_writer as sw
+
+    doc_id = "split_child_001"
+    # Ruta RELATIVA — así la escribe el splitter antes del fix de Change A.
+    relative_file_origin = f"facturas/compras/{doc_id}.pdf"
+
+    # Crear el PDF en la ubicación real: <libros_root>/facturas/compras/<doc>.pdf
+    inbox_dir = libros_root / "facturas" / "compras"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    pdf_file = inbox_dir / f"{doc_id}.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+    # Crear carpeta de asiento con sidecar en estado review, con file_origin relativo.
+    asientos = libros_root / "asientos"
+    folder = asientos / f"compras_{doc_id}"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    sw.init_uploaded(
+        folder,
+        doc_id=doc_id,
+        file_origin=relative_file_origin,  # ← relativo, reproduce el bug
+        sha256_file="b" * 64,
+        size_bytes=pdf_file.stat().st_size,
+    )
+    sw.append(folder, {"status": "review", "decision": "warn"})
+
+    (folder / "resultado_validacion.json").write_text(json.dumps({
+        "decision_global": "warn",
+        "campos": {
+            "nif_entidad":    {"valor_final": "B11111111"},
+            "nombre_entidad": {"valor_final": "Proveedor Split SL"},
+            "cuenta_contable": {"valor_final": "600000"},
+            "fecha_expedicion": {"valor_final": "2026-05-01"},
+            "nif_cliente":    {"valor_final": "B22222222"},
+            "nombre_cliente": {"valor_final": "GESTORÍA"},
+        },
+    }), encoding="utf-8")
+
+    csv_b64 = base64.b64encode(b"cuenta;debe;haber\n600000;50;0\n").decode()
+    payload = {
+        "doc_ids": [doc_id],
+        "asientos": {
+            doc_id: {
+                "campos_finales": {
+                    "nif_entidad":    {"valor": "B11111111"},
+                    "nombre_entidad": {"valor": "Proveedor Split SL"},
+                    "cuenta_contable": {"valor": "600000"},
+                    "fecha_expedicion": {"valor": "2026-05-01"},
+                    "nif_cliente":    {"valor": "B22222222"},
+                    "nombre_cliente": {"valor": "GESTORÍA"},
+                },
+                "lineas_asiento": [
+                    {"cuenta": "600000", "concepto": "Split test", "debe": 50, "haber": 0}
+                ],
+                "csv_b64": csv_b64,
+            }
+        },
+    }
+
+    client, _, _ = api_client
+    resp = client.post("/api/pipeline/confirm", json=payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # (a) El endpoint reporta al menos 1 PDF de inbox borrado.
+    assert body.get("inbox_pdfs_deleted", 0) >= 1, (
+        f"inbox_pdfs_deleted debería ser >= 1 con file_origin relativo; "
+        f"respuesta: {body}"
+    )
+    # (b) El PDF ya no existe en disco.
+    assert not pdf_file.exists(), (
+        f"El PDF del inbox debería haberse borrado: {pdf_file}"
+    )
