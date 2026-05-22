@@ -664,7 +664,7 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
             2) CONFIRMAR Y SEGUIR ESCANEANDO: persiste resultado_final.json,
                CSV físico y maestro en backend; CTA primario.
         */}
-      <footer className="h-24 flex items-center justify-center gap-3 px-8 bg-white border-t flex-shrink-0">
+      <footer className="sticky bottom-0 z-20 h-24 flex items-center justify-center gap-3 px-8 bg-white border-t border-slate-200 flex-shrink-0 shadow-[0_-2px_8px_-2px_rgba(0,0,0,0.06)]">
         <Button
           size="lg"
           variant="outline"

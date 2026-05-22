@@ -1392,7 +1392,7 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
       </div>
 
       {/* Footer */}
-      <footer className="h-24 flex items-center justify-center gap-6 px-8 bg-white flex-shrink-0">
+      <footer className="sticky bottom-0 z-20 h-24 flex items-center justify-center gap-6 px-8 bg-white border-t border-slate-100 flex-shrink-0 shadow-[0_-2px_8px_-2px_rgba(0,0,0,0.06)]">
         <Button
           variant="outline" size="lg"
           onClick={() => executeConfirmedAction("reject")}

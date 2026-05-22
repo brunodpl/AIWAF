@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { MessageSquareWarning, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { submitFeedback, type FeedbackTipo } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 const TIPOS: { value: FeedbackTipo; label: string }[] = [
   { value: "problema", label: "Problema" },
@@ -23,7 +24,7 @@ const TIPOS: { value: FeedbackTipo; label: string }[] = [
   { value: "pregunta", label: "Pregunta" },
 ];
 
-export function FeedbackButton() {
+export function FeedbackButton({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
   const [tipo, setTipo] = useState<FeedbackTipo>("problema");
   const [descripcion, setDescripcion] = useState("");
@@ -72,10 +73,14 @@ export function FeedbackButton() {
       <Button
         type="button"
         onClick={() => setOpen(true)}
-        className="fixed bottom-4 right-4 z-50 rounded-full shadow-lg bg-slate-900 hover:bg-slate-700 text-white px-4 py-2 text-xs uppercase tracking-[0.1em]"
+        aria-label="Enviar Problema o Recomendación"
+        className={cn(
+          "fixed bottom-4 right-4 z-50 rounded-full shadow-lg bg-slate-900 hover:bg-slate-700 text-white px-4 py-2 text-xs uppercase tracking-[0.1em]",
+          className,
+        )}
       >
-        <MessageSquareWarning className="h-4 w-4 mr-2" />
-        Enviar Problema o Recomendación
+        <MessageSquareWarning className="h-4 w-4 sm:mr-2" />
+        <span className="hidden sm:inline">Enviar Problema o Recomendación</span>
       </Button>
 
       <Dialog
