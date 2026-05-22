@@ -146,6 +146,12 @@ export interface PipelineStatus {
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
+  /** Hay un lote escaneado pendiente de confirmación humana. Permite reentrar a
+   *  Revisión sin re-escanear (F5). Opcional para compatibilidad con backends
+   *  anteriores que no exponían el flag. */
+  pending_confirm?: boolean;
+  /** doc_ids del lote pendiente de confirmar. */
+  pending_doc_ids?: string[];
 }
 
 /** Estado por factura mostrado en la vista en vivo de Fase 2/3. */

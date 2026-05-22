@@ -59,7 +59,7 @@ vi.mock("sonner", () => ({
   },
 }));
 
-import { BooksManager } from "@/components/books-manager";
+import { BooksManager, buildPendingPreReviewEntries } from "@/components/books-manager";
 import type { Book, BookFile } from "@/lib/types";
 
 const PARENT_NAME = "1_2_3_merged.pdf";
@@ -170,5 +170,59 @@ describe("BooksManager — borrado de PDF multi-factura (padre de split)", () =>
     for (const child of CHILD_NAMES) {
       expect(screen.queryByText(child)).toBeNull();
     }
+  });
+});
+
+describe("buildPendingPreReviewEntries (F7) — conteo coherente", () => {
+  it("incluye huérfanos del inbox + el padre del upload; el total == inbox pendiente", () => {
+    const orphanChildren: BookFile[] = Array.from({ length: 60 }, (_, i) => ({
+      name: `old__${i + 1}of60.pdf`,
+      size_kb: 1,
+      added: "2026-01-01T00:00:00Z",
+      status: "uploaded",
+    }));
+    const newChildren: BookFile[] = [1, 2, 3].map((i) => ({
+      name: `new__${i}of3.pdf`,
+      size_kb: 1,
+      added: "2026-01-01T00:00:00Z",
+      status: "uploaded",
+    }));
+    const books: Book[] = [
+      { id: "gastos", label: "x", folder: "compras", files: [...orphanChildren, ...newChildren] },
+      { id: "ingresos", label: "x", folder: "ventas", files: [] },
+      { id: "bienes", label: "x", folder: "bienes", files: [] },
+    ];
+    const merged: Record<string, BookFile[]> = {
+      gastos: [
+        {
+          name: "new.pdf",
+          size_kb: 1,
+          added: "2026-01-01T00:00:00Z",
+          pre_scan: {
+            status: "split",
+            n_pages: 3,
+            detected_invoices: 3,
+            children: [1, 2, 3].map((i) => ({
+              doc_id: `new__${i}of3`,
+              folder_name: "",
+              status: "uploaded",
+            })),
+            error: null,
+          },
+        },
+      ],
+    };
+
+    const out = buildPendingPreReviewEntries(books, merged);
+    // 60 huérfanos (single) + 1 padre virtual split — los 3 hijos del nuevo
+    // split quedan ocultos bajo el padre.
+    expect(out.gastos).toHaveLength(61);
+    expect(out.gastos.some((f) => f.name === "new__1of3.pdf")).toBe(false);
+    const total = out.gastos.reduce((s, f) => s + (f.pre_scan?.detected_invoices ?? 1), 0);
+    expect(total).toBe(63);
+  });
+
+  it("devuelve vacío si no hay nada pendiente", () => {
+    expect(buildPendingPreReviewEntries(null, {})).toEqual({});
   });
 });

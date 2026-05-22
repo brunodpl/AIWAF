@@ -60,10 +60,11 @@ export const LIBRO_FRONT_TO_SHORT: Record<Libro, LibroShort> = {
 export const API_URL = "";
 
 const API_TIMEOUT_MS = 30000;
-/** Timeout extendido para /upload: el pre-scan Fase 1 puede tardar 3-8s por
- *  PDF multi-página, con concurrencia 2 en backend. Un lote de 5 PDFs con
- *  varias facturas → ~15-25s. Damos margen amplio. */
-const UPLOAD_TIMEOUT_MS = 120000;
+/** Timeout extendido para /upload: el pre-scan Fase 1 (splitter Gemini Vision)
+ *  es síncrono y en un PDF grande (~60 páginas) tarda ~50s; un reintento ante
+ *  error transitorio de Gemini puede acercarse al límite. Dimensionado para el
+ *  peor caso para no abortar mientras el backend aún está dividiendo (F4). */
+const UPLOAD_TIMEOUT_MS = 240000;
 
 async function fetchWithTimeout(
   url: string,
