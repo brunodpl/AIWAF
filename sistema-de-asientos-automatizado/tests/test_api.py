@@ -20,6 +20,7 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -272,10 +273,14 @@ def test_list_books_attaches_status_when_processed(client, libros_root):
 
 
 def test_upload_writes_directly_to_inbox(client, libros_root):
-    r = client.post(
-        "/api/books/gastos/upload",
-        files=[("files", ("nueva.pdf", io.BytesIO(b"%PDF data"), "application/pdf"))],
-    )
+    # os.sync() es POSIX-only y no existe en Windows; mockearlo para que el
+    # test corra en ambas plataformas (producción corre en Linux/Docker).
+    import os as _os
+    with patch.object(_os, "sync", lambda: None, create=True):
+        r = client.post(
+            "/api/books/gastos/upload",
+            files=[("files", ("nueva.pdf", io.BytesIO(b"%PDF data"), "application/pdf"))],
+        )
     assert r.status_code == 200
     assert r.json()["uploaded"] == ["nueva.pdf"]
     assert (libros_root / "facturas" / "compras" / "nueva.pdf").exists()
@@ -309,12 +314,14 @@ def test_reset_deletes_asientos_but_not_pdfs(client, libros_root):
     status_path = libros_root / ".runtime" / "pipeline_status.json"
     status_path.write_text(json.dumps({"status": "completed"}))
 
-    r = client.post("/api/pipeline/reset")
+    # wipe_inbox=False: los PDFs del inbox se conservan para reproceso.
+    # El default (wipe_inbox=True) borra los PDFs — comportamiento intencional.
+    r = client.post("/api/pipeline/reset?wipe_inbox=false")
     assert r.status_code == 200
     assert r.json()["asientos_deleted"] == 1
 
     assert not (libros_root / "asientos" / "compras_factura_a").exists()
-    assert pdf.exists(), "El PDF NO debe moverse ni borrarse en reset"
+    assert pdf.exists(), "Con wipe_inbox=False el PDF no debe borrarse en reset"
     assert not status_path.exists()  # runtime limpio
 
 

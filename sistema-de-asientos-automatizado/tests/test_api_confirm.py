@@ -58,6 +58,10 @@ def api_client(libros_root: Path, tmp_path: Path):
         asientos_path=lambda: str(libros_root / "asientos"),
         runtime_path=lambda: str(runtime_path),
         maestro_clientes_path=str(maestro_path),
+        # inbox_path(libro_short) → <libros_root>/facturas/<libro_short>
+        # Necesario para el fallback de limpieza de PDF en el confirm endpoint.
+        inbox_path=lambda libro: str(libros_root / "facturas" / libro),
+        libros_base=str(libros_root),
         # Campos opcionales que el módulo api/main.py pueda tocar
         output_path=str(tmp_path / "output"),
         logs_path=str(tmp_path / "logs"),
@@ -107,9 +111,9 @@ def test_confirm_escribe_resultado_final_y_csv(api_client):
     assert final["campos_finales"]["nif_entidad"]["editado"] is False
     assert (folder / "asiento_factura_001.csv").exists()
 
-    # state.json última event = done
+    # state.json última event = confirmed (el endpoint usa status="confirmed" desde el refactor)
     state = json.loads((folder / ".state.json").read_text(encoding="utf-8"))
-    assert state["events"][-1]["status"] == "done"
+    assert state["events"][-1]["status"] == "confirmed"
 
     # maestro: cliente registrado
     maestro = yaml.safe_load(maestro_path.read_text(encoding="utf-8"))
@@ -129,11 +133,17 @@ def test_confirm_es_idempotente(api_client):
 
     folder = libros_root / "asientos" / "compras_factura_001"
     state = json.loads((folder / ".state.json").read_text(encoding="utf-8"))
-    done_events = [e for e in state["events"] if e.get("status") == "done"]
-    assert len(done_events) == 1, f"Esperaba 1 evento done, encontré {len(done_events)}"
+    # El endpoint escribe status="confirmed" (no "done") desde el refactor de lifecycle.
+    confirmed_events = [e for e in state["events"] if e.get("status") == "confirmed"]
+    assert len(confirmed_events) == 1, f"Esperaba 1 evento confirmed, encontré {len(confirmed_events)}"
 
 
 def test_confirm_doc_id_inexistente_devuelve_404(api_client):
+    """
+    Un doc_id inexistente no levanta 404 — el endpoint devuelve 200 con
+    ok=False y el error en la lista errors (diseño batch: un fallo parcial
+    no aborta el lote completo). La aserción original era stale.
+    """
     client, _, _ = api_client
     payload = {
         "doc_ids": ["factura_inexistente"],
@@ -146,7 +156,10 @@ def test_confirm_doc_id_inexistente_devuelve_404(api_client):
         },
     }
     r = client.post("/api/pipeline/confirm", json=payload)
-    assert r.status_code == 404
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert any(e["doc_id"] == "factura_inexistente" for e in body["errors"])
 
 
 def test_confirm_pendiente_registra_cliente(api_client, libros_root):

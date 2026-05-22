@@ -17,6 +17,10 @@ def _fake_cfg(tmp_path: Path):
         asientos_path=lambda: str(tmp_path / "asientos"),
         runtime_path=lambda: str(tmp_path / ".runtime"),
         maestro_clientes_path=str(tmp_path / "maestros" / "maestro_clientes.yaml"),
+        # inbox_path(libro_short) → <tmp_path>/facturas/<libro_short>
+        # Necesario para el fallback de limpieza de PDF en el confirm endpoint.
+        inbox_path=lambda libro: str(tmp_path / "facturas" / libro),
+        libros_base=str(tmp_path),
         output_path=str(tmp_path / "output"),
         logs_path=str(tmp_path / "logs"),
     )
