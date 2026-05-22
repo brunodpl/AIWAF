@@ -86,6 +86,8 @@ def run_identidad(
             gemini_model=cfg.gemini_arbitro_model,
             gemini_location=cfg.gemini_arbitro_location,
             gemini_max_retries=cfg.gemini_arbitro_max_retries,
+            autofactura_marcadores=cfg.autofactura_marcadores,
+            autofactura_swap_enabled=cfg.autofactura_swap_enabled,
         )
         resultado = resolver.resolver(
             raw_document_ai,
