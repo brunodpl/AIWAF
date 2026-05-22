@@ -345,7 +345,6 @@ export default function Home() {
         {stage === "processing" && (
           <PipelineProgress
             onComplete={() => setStage("review")}
-            onBack={() => setStage("books")}
             onJumpToReview={(total) => { setTotalQueued(total); setStage("review"); }}
           />
         )}

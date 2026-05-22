@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { prettifyBatchFile } from "@/lib/splitter-naming";
 import { libroLabel } from "@/lib/libros";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import type { BatchFileEntry, BatchFileStatus, PipelineBatch } from "@/lib/types";
 
 interface BatchOverviewProps {
@@ -57,24 +58,30 @@ export function BatchOverview({ batch }: BatchOverviewProps) {
     return null;
   }
   return (
-    <div className="mt-6 w-full max-w-md mx-auto text-left space-y-4">
-      {batch.books.map((book) => (
-        <section key={book.book_id}>
-          <header className="flex items-baseline justify-between mb-1.5">
-            <h3 className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-600">
-              {libroLabel(book.book_id)}
-            </h3>
-            <span className="text-[10px] font-mono text-slate-400">
-              {book.files.length} factura{book.files.length === 1 ? "" : "s"}
-            </span>
-          </header>
-          <ul className="border border-slate-200 rounded divide-y divide-slate-100 bg-white">
-            {book.files.map((entry) => (
-              <BatchRow key={entry.doc_id} entry={entry} />
-            ))}
-          </ul>
-        </section>
-      ))}
+    <div className="mt-6 w-full max-w-md mx-auto text-left">
+      {/* Scroll interno: con lotes grandes (60+ facturas) la lista no debe
+          desbordar el viewport — cabe en "una página" y hace scroll dentro. */}
+      <ScrollArea className="max-h-[55vh]">
+        <div className="space-y-4 pr-3">
+          {batch.books.map((book) => (
+            <section key={book.book_id}>
+              <header className="flex items-baseline justify-between mb-1.5">
+                <h3 className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-600">
+                  {libroLabel(book.book_id)}
+                </h3>
+                <span className="text-[10px] font-mono text-slate-400">
+                  {book.files.length} factura{book.files.length === 1 ? "" : "s"}
+                </span>
+              </header>
+              <ul className="border border-slate-200 rounded divide-y divide-slate-100 bg-white">
+                {book.files.map((entry) => (
+                  <BatchRow key={entry.doc_id} entry={entry} />
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </ScrollArea>
     </div>
   );
 }

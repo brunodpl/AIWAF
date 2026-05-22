@@ -231,32 +231,37 @@ export function BooksManager({
   useEffect(() => { loadBooks(); }, [loadBooks]);
 
   const pollBooksUntilSynced = useCallback(
-    async (bookId: string, expectedNames: string[], maxRetries = 3, intervalMs = 800) => {
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
+    async (bookId: string, expectedNames: string[], maxWaitMs = 20000) => {
+      // Los hijos de un split grande (60+ facturas) tardan varios segundos en
+      // hacerse visibles en /api/books por el lag de virtiofs en Docker/Windows.
+      // Damos un presupuesto generoso con backoff exponencial; los uploads que
+      // ya están sincronizados retornan en la primera vuelta sin esperar, así
+      // que el caso común no paga este coste.
+      const deadline = Date.now() + maxWaitMs;
+      let interval = 800;
+      let lastBooks: Book[] | null = null;
+      let stillMissing = expectedNames;
+      for (;;) {
         if (!mountedRef.current) return { missing: expectedNames, books: null as Book[] | null };
         try {
           const response = await fetchBooks();
           if (!mountedRef.current) return { missing: expectedNames, books: null };
+          lastBooks = response.books;
           const book = response.books.find((b) => b.id === bookId);
           const serverNames = new Set(book?.files.map((f) => f.name) ?? []);
-          const stillMissing = expectedNames.filter((n) => !serverNames.has(n));
+          stillMissing = expectedNames.filter((n) => !serverNames.has(n));
           if (stillMissing.length === 0) {
             return { missing: [], books: response.books };
           }
-          if (attempt < maxRetries - 1) {
-            await new Promise((r) => setTimeout(r, intervalMs));
-          } else {
-            return { missing: stillMissing, books: response.books };
-          }
         } catch {
-          if (attempt < maxRetries - 1) {
-            await new Promise((r) => setTimeout(r, intervalMs));
-          } else {
-            return { missing: expectedNames, books: null };
-          }
+          // Mantener lastBooks y reintentar hasta agotar el presupuesto.
         }
+        if (Date.now() + interval >= deadline) {
+          return { missing: stillMissing, books: lastBooks };
+        }
+        await new Promise((r) => setTimeout(r, interval));
+        interval = Math.min(Math.round(interval * 1.5), 3000);
       }
-      return { missing: expectedNames, books: null };
     },
     []
   );
@@ -370,12 +375,21 @@ export function BooksManager({
         const alreadyProcessed = result.already_processed ?? [];
         if (alreadyProcessed.length > 0) {
           for (const info of alreadyProcessed) {
-            const n = info.pending.length;
-            const facturas = n === 1 ? "factura pendiente" : "facturas pendientes";
-            toast.info(
-              `${info.file}: ya procesado. ${n} ${facturas} de revisión.`,
-              { duration: 8000 },
-            );
+            const pending = info.pending.length;
+            const total = info.total ?? pending;
+            const totalTxt = `${total} factura${total === 1 ? "" : "s"}`;
+            if (pending > 0) {
+              const facturas = pending === 1 ? "factura pendiente" : "facturas pendientes";
+              toast.info(
+                `${info.file}: ya procesado (${totalTxt}). ${pending} ${facturas} de revisión.`,
+                { duration: 8000 },
+              );
+            } else {
+              toast.info(
+                `${info.file}: ya procesado — ${totalTxt}, todas completadas.`,
+                { duration: 8000 },
+              );
+            }
           }
         }
 

@@ -442,6 +442,10 @@ export interface AlreadyProcessedInfo {
   original: string;
   original_status: string;
   pending: AlreadyProcessedPendingChild[];
+  /** Total de facturas del PDF ya conocido (hijos del split, o 1 si única). */
+  total?: number;
+  /** Facturas ya cerradas (total - pendientes). */
+  done?: number;
 }
 
 export interface UploadResponse {

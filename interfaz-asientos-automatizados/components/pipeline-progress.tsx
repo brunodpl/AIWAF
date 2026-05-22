@@ -2,18 +2,6 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { cn } from "@/lib/utils";
 import { Loader2, CheckCircle2, XCircle, RotateCcw, ChevronRight } from "lucide-react";
 import { fetchPipelineBatch, fetchPipelineStatus, runPipeline } from "@/lib/api";
 import { toast } from "sonner";
@@ -22,12 +10,11 @@ import { BatchOverview } from "@/components/batch-overview";
 
 interface PipelineProgressProps {
   onComplete: () => void;
-  onBack: () => void;
   /** Saltar a la pantalla de revisión sin esperar a que termine el pipeline */
   onJumpToReview?: (totalQueued: number) => void;
 }
 
-export function PipelineProgress({ onComplete, onBack, onJumpToReview }: PipelineProgressProps) {
+export function PipelineProgress({ onComplete, onJumpToReview }: PipelineProgressProps) {
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [batch, setBatch] = useState<PipelineBatch | null>(null);
   const [loading, setLoading] = useState(true);
@@ -46,11 +33,9 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
     }
   }, [status]);
 
-  // FIX #2: onComplete y onBack via refs para no disparar re-mount del efecto de polling
+  // onComplete via ref para no disparar re-mount del efecto de polling.
   const onCompleteRef = useRef(onComplete);
-  const onBackRef = useRef(onBack);
   useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
-  useEffect(() => { onBackRef.current = onBack; }, [onBack]);
 
   useEffect(() => {
     let cancelled = false;
@@ -161,13 +146,6 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
               <RotateCcw className="h-3 w-3 mr-1" />
               Reintentar
             </Button>
-            <Button
-              onClick={onBack}
-              variant="outline"
-              className="text-xs rounded-none uppercase tracking-[0.15em]"
-            >
-              Volver a Gestión
-            </Button>
           </div>
         </div>
       </div>
@@ -220,44 +198,6 @@ export function PipelineProgress({ onComplete, onBack, onJumpToReview }: Pipelin
             </p>
           </div>
         )}
-
-        {/* FIX #11: AlertDialog de confirmación al volver si el pipeline está running */}
-        <div className="mt-8">
-          {isRunning ? (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button
-                  variant="ghost"
-                  className="text-[10px] uppercase tracking-[0.15em] text-slate-400 hover:text-slate-600"
-                >
-                  Volver a Gestión
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Pipeline en ejecución</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    El pipeline está procesando facturas en segundo plano. Si vuelves ahora,
-                    el procesamiento continuará pero no verás el progreso en tiempo real.
-                    ¿Seguro que quieres volver?
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Seguir esperando</AlertDialogCancel>
-                  <AlertDialogAction onClick={onBack}>Volver igualmente</AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          ) : (
-            <Button
-              onClick={onBack}
-              variant="ghost"
-              className="text-[10px] uppercase tracking-[0.15em] text-slate-400 hover:text-slate-600"
-            >
-              Volver a Gestión
-            </Button>
-          )}
-        </div>
       </div>
     </div>
   );
