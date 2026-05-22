@@ -52,7 +52,7 @@ def run_fiscal(
         True si la fase completó (aunque con decisión warn/block)
         False si hubo error técnico que impide generar el artefacto
     """
-    from .verificador import verificar_fiscal, _peor_decision
+    from .verificador import verificar_fiscal, peor_decision
     from .tipo_corrector import corregir_tipo_iva_invalido
 
     doc_dir = Path(doc_output_dir)
@@ -100,7 +100,7 @@ def run_fiscal(
             lineas_campo["decision"] = "warn"
         motivos_corr = "; ".join(f"línea {i}: {r.motivo}" for i, r in correcciones)
         lineas_campo["motivo"] = f"Tipo IVA derivado de cuota/base — verificar. | {lineas_campo['motivo']}"
-        resultado["decision_global"] = _peor_decision(
+        resultado["decision_global"] = peor_decision(
             resultado["campos"]["total_euros"]["decision"], lineas_campo["decision"]
         )
         resultado["requiere_revision_humana"] = resultado["decision_global"] != "auto"

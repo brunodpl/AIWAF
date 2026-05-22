@@ -180,6 +180,11 @@ class CabeceraResult:
         ]
         if DecisionCampo.BLOCK.value in decisiones:
             return DecisionCampo.BLOCK
+        # PENDIENTE en un campo obligatorio = dato ausente que NO se fabrica:
+        # debe escalar a revisión humana, nunca autocargarse. Prioridad entre
+        # BLOCK y WARN (DECISION_PRIORIDAD: block > pendiente > warn).
+        if DecisionCampo.PENDIENTE.value in decisiones:
+            return DecisionCampo.PENDIENTE
         if DecisionCampo.WARN.value in decisiones:
             return DecisionCampo.WARN
         return DecisionCampo.AUTO

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 import uuid
 from typing import Optional
 
@@ -364,7 +365,6 @@ _AUTOFACTURA_MOTIVO = (
 
 def _normalizar_marcador(texto: str) -> str:
     """Normalizar para comparación robusta: sin acentos, mayúsculas, espacios colapsados."""
-    import unicodedata
     sin_acentos = "".join(
         c for c in unicodedata.normalize("NFKD", texto or "")
         if not unicodedata.combining(c)

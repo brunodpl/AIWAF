@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Sequence
 
-from .verificador import _extraer_valor, _safe_decimal
+from .verificador import extraer_valor, safe_decimal
 
 # Confianza asignada al tipo tras una corrección heurística: por debajo de
 # cualquier umbral de autocarga para que el dato llegue a revisión humana.
@@ -61,21 +61,21 @@ def corregir_tipo_iva_invalido(
     if not isinstance(tipo_campo, dict):
         return ResultadoCorreccion(False)
 
-    tipo_raw = _extraer_valor(tipo_campo)
+    tipo_raw = extraer_valor(tipo_campo)
     if tipo_raw is None:
         return ResultadoCorreccion(False)  # exenta
 
-    tipo = _safe_decimal(tipo_raw)
+    tipo = safe_decimal(tipo_raw)
     if tipo is None or tipo == 0:
         return ResultadoCorreccion(False)  # no parseable o tipo cero → no tocar
 
-    legales = [_safe_decimal(t) for t in tipos_legales]
+    legales = [safe_decimal(t) for t in tipos_legales]
     legales = [t for t in legales if t is not None]
     if tipo in legales:
         return ResultadoCorreccion(False)  # ya es un tipo legal
 
-    base = _safe_decimal(_extraer_valor(linea.get("base_euros")))
-    cuota = _safe_decimal(_extraer_valor(linea.get("cuota")))
+    base = safe_decimal(extraer_valor(linea.get("base_euros")))
+    cuota = safe_decimal(extraer_valor(linea.get("cuota")))
     if base is None or base == 0 or cuota is None:
         return ResultadoCorreccion(False)  # sin datos para derivar
 
