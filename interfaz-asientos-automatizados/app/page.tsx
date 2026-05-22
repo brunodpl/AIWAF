@@ -245,6 +245,7 @@ export default function Home() {
             parentPreReviewFilesByBook={Object.fromEntries(
               preReviewEntries.map((e) => [e.bookId, e.files] as const),
             )}
+            onFileRemoved={handlePreReviewFileRemoved}
             onNavigateToReview={(focusDocIds) => {
               setReviewFocusIds(focusDocIds);
               setStage("review");

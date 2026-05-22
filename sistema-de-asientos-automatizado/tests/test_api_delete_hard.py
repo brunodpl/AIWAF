@@ -16,6 +16,7 @@ Cubre:
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -208,3 +209,124 @@ def test_delete_con_pipeline_bloqueado_devuelve_409(monkeypatch, client):
     # Nada cambió.
     assert pdf.exists()
     assert folder.exists()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Padres de split: el original vive en ``_originales/`` (lo movió el
+# splitter) y los facturables son los hijos ``{stem}__{i}ofN.pdf`` en el
+# inbox. La UI muestra UNA fila (el padre virtual con badge "N facturas")
+# y una sola 'X'. Borrarla debe eliminar el GRUPO completo: original +
+# manifest + todos los hijos + sus carpetas de asiento.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _create_split_group(
+    libros_root: Path, stem: str, child_statuses: list[str]
+) -> tuple[Path, list[tuple[Path, Path]], Path]:
+    """Reproduce el layout en disco de un PDF multi-factura ya dividido.
+
+    Devuelve ``(original_archivado, [(hijo_pdf, hijo_folder), ...],
+    carpeta_del_original)``.
+    """
+    inbox = libros_root / "facturas" / "compras"
+    originales = inbox / "_originales"
+    originales.mkdir(exist_ok=True)
+    n = len(child_statuses)
+
+    original = originales / f"{stem}.pdf"
+    original.write_bytes(b"%PDF-1.6\nORIGINAL\n%EOF\n")
+
+    facturas: list[dict] = []
+    children: list[tuple[Path, Path]] = []
+    for i, status in enumerate(child_statuses, start=1):
+        child_name = f"{stem}__{i}of{n}.pdf"
+        facturas.append({"output_pdf": child_name, "paginas_originales": [i]})
+        pdf, folder = _create_file_with_sidecar(
+            libros_root, child_name, status, b"%PDF-1.4\n" + child_name.encode()
+        )
+        children.append((pdf, folder))
+
+    manifest = {"origen_pdf": f"{stem}.pdf", "n_facturas": n, "facturas": facturas}
+    (originales / f"{stem}.split.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+
+    # Carpeta del original marcada ``split`` (cadena de custodia).
+    parent_folder = libros_root / "asientos" / f"compras_{stem}"
+    parent_folder.mkdir()
+    sha = hashlib.sha256(original.read_bytes()).hexdigest()
+    state_writer.init_uploaded(
+        parent_folder, stem, str(original), sha, original.stat().st_size
+    )
+    state_writer.append(
+        parent_folder,
+        {
+            "status": "split",
+            "split_into": [f"{stem}__{i}of{n}" for i in range(1, n + 1)],
+        },
+    )
+
+    return original, children, parent_folder
+
+
+def test_delete_padre_split_borra_grupo_completo(client):
+    c, root = client
+    original, children, parent_folder = _create_split_group(
+        root, "multi", ["uploaded", "review", "done"]
+    )
+    inbox = root / "facturas" / "compras"
+    originales = inbox / "_originales"
+
+    # Poblamos caches para verificar que se invalidan tras el delete.
+    api_main._invoices_cache["sentinel"] = "x"
+    api_main._stats_cache["sentinel"] = "x"
+    api_main._clients_cache["sentinel"] = "x"
+
+    r = c.delete("/api/books/gastos/files/multi.pdf")
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["deleted"] == "multi.pdf"
+    assert sorted(body["deleted_children"]) == [
+        "multi__1of3.pdf",
+        "multi__2of3.pdf",
+        "multi__3of3.pdf",
+    ]
+
+    # Original + manifest borrados.
+    assert original.exists() is False
+    assert (originales / "multi.split.json").exists() is False
+
+    # Hijos + sus carpetas de asiento borrados.
+    for pdf, folder in children:
+        assert pdf.exists() is False
+        assert folder.exists() is False
+
+    # Carpeta del original (marcada split) borrada.
+    assert parent_folder.exists() is False
+
+    # Caches invalidados.
+    assert api_main._invoices_cache == {}
+    assert api_main._stats_cache == {}
+    assert api_main._clients_cache == {}
+
+
+def test_delete_padre_split_con_hijo_confirmed_devuelve_409_sin_tocar_nada(client):
+    c, root = client
+    original, children, parent_folder = _create_split_group(
+        root, "multi", ["uploaded", "confirmed", "review"]
+    )
+    inbox = root / "facturas" / "compras"
+    originales = inbox / "_originales"
+
+    r = c.delete("/api/books/gastos/files/multi.pdf")
+    assert r.status_code == 409
+    assert "Intermega" in r.json()["detail"]
+
+    # Política atómica: si un hijo está confirmed, NO se borra nada del grupo.
+    assert original.exists()
+    assert (originales / "multi.split.json").exists()
+    for pdf, folder in children:
+        assert pdf.exists()
+        assert folder.exists()
+    assert parent_folder.exists()

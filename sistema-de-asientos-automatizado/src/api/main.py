@@ -36,6 +36,7 @@ from urllib.parse import quote
 from src.config import LIBRO_SHORT, settings
 from src import state_writer, final_writer
 from src.phase1_splitter import split_single_file, SplitOutcome
+from src.phase1_splitter.main import ORIGINALES_DIRNAME
 from src.phase4_customer.maestro import (
     cargar_maestro,
     guardar_maestro,
@@ -1630,6 +1631,101 @@ def override_prescan(book_id: str, doc_id: str, body: _OverridePrescanBody):
     return {"doc_id": safe_doc_id, "status": "uploaded", "forced_as_single": True}
 
 
+def _delete_split_group(book_id: str, parent_name: str, archived: Path) -> dict:
+    """Hard delete de un PDF multi-factura ya dividido (padre de split).
+
+    La UI muestra UNA fila por upload — el padre virtual con badge
+    "N facturas" — y una sola 'X'. Pulsarla borra el GRUPO entero:
+    original archivado en ``_originales/`` + su manifest ``{stem}.split.json``
+    + todos los hijos ``{stem}__iofN.pdf`` del inbox + sus carpetas de asiento.
+
+    Guard atómico ``confirmed``: si CUALQUIER hijo ya está exportado a
+    Intermega, devolvemos 409 sin borrar nada del grupo (mismo criterio que
+    el hard delete de archivo simple).
+    """
+    inbox = _inbox_for_book(book_id)
+    libro_short = BOOK_CONFIGS[book_id]["libro_short"]
+    asientos_root = get_asientos_dir()
+    stem = os.path.splitext(parent_name)[0]
+
+    child_re = re.compile(rf"^{re.escape(stem)}__\d+of\d+\.pdf$", re.IGNORECASE)
+    children = sorted(
+        p for p in inbox.glob(f"{stem}__*of*.pdf") if child_re.match(p.name)
+    )
+
+    # 1) Guard atómico: ningún hijo puede estar confirmed.
+    child_folders: dict[Path, Path] = {}
+    for child in children:
+        folder = asientos_root / f"{libro_short}_{child.stem}"
+        child_folders[child] = folder
+        if folder.exists():
+            try:
+                status = state_writer.current_status(folder)
+            except Exception:
+                status = None
+            if status == "confirmed":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"'{child.name}' ya está exportada a Intermega (asiento "
+                        "contable cerrado). No se puede eliminar el grupo."
+                    ),
+                )
+
+    # 2) Borrado del grupo: hijos + sus carpetas de asiento.
+    deleted_children: list[str] = []
+    asientos_deleted: list[str] = []
+    for child, folder in child_folders.items():
+        if folder.exists():
+            try:
+                shutil.rmtree(folder)
+                asientos_deleted.append(folder.name)
+            except OSError as e:
+                logger.error("[delete] no se pudo borrar carpeta hijo %s: %s",
+                             folder, e, exc_info=True)
+        try:
+            child.unlink()
+            deleted_children.append(child.name)
+        except OSError as e:
+            logger.error("[delete] no se pudo borrar hijo %s: %s",
+                         child, e, exc_info=True)
+
+    # 3) Carpeta del original (marcada split por la cadena de custodia).
+    parent_folder = asientos_root / f"{libro_short}_{stem}"
+    if parent_folder.exists():
+        try:
+            shutil.rmtree(parent_folder)
+            asientos_deleted.append(parent_folder.name)
+        except OSError as e:
+            logger.error("[delete] no se pudo borrar carpeta original %s: %s",
+                         parent_folder, e, exc_info=True)
+
+    # 4) Original archivado + manifest del splitter.
+    try:
+        archived.unlink()
+    except OSError as e:
+        logger.error("[delete] no se pudo borrar original %s: %s",
+                     archived, e, exc_info=True)
+    manifest = archived.parent / f"{stem}.split.json"
+    if manifest.exists():
+        try:
+            manifest.unlink()
+        except OSError as e:
+            logger.warning("[delete] no se pudo borrar manifest %s: %s", manifest, e)
+
+    _invoices_cache.clear()
+    _stats_cache.clear()
+    _clients_cache.clear()
+    logger.info("[delete] split-group %s → %d hijo(s) borrados",
+                parent_name, len(deleted_children))
+    return {
+        "deleted": parent_name,
+        "deleted_children": deleted_children,
+        "asientos_deleted": asientos_deleted,
+        "split_group": True,
+    }
+
+
 @app.delete("/api/books/{book_id}/files/{filename}")
 def delete_book_file(book_id: str, filename: str):
     """Elimina un PDF del inbox de forma definitiva (hard delete).
@@ -1656,6 +1752,12 @@ def delete_book_file(book_id: str, filename: str):
 
     file_path = _inbox_for_book(book_id) / safe_name
     if not file_path.is_file():
+        # ¿Es un padre de split? El splitter movió el original a
+        # ``_originales/`` y dejó los hijos ``{stem}__iofN.pdf`` en el inbox.
+        # La 'X' del padre virtual (badge "N facturas") debe borrar el grupo.
+        archived = _inbox_for_book(book_id) / ORIGINALES_DIRNAME / safe_name
+        if archived.is_file():
+            return _delete_split_group(book_id, safe_name, archived)
         raise HTTPException(status_code=404, detail="File not found")
 
     doc_id = os.path.splitext(safe_name)[0]

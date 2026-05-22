@@ -31,6 +31,11 @@ interface BooksManagerProps {
   // Si está presente y no está vacío, "Escanear" enruta a pre-review
   // incluso si el accumulator local de esta instancia está vacío.
   parentPreReviewFilesByBook?: Record<string, BookFile[]>;
+  // Llamado tras borrar un archivo para que el padre retire la entrada de su
+  // snapshot de pre-revisión. Sin esto, un padre virtual de split conservado
+  // por el padre (`parentPreReviewFilesByBook`) seguiría visible tras el
+  // borrado porque este componente no puede mutar la prop.
+  onFileRemoved?: (bookId: Libro, fileName: string) => void;
 }
 
 interface UploadProgress {
@@ -75,6 +80,7 @@ export function BooksManager({
   onNavigateToReview,
   onUploadComplete,
   parentPreReviewFilesByBook,
+  onFileRemoved,
 }: BooksManagerProps) {
   const [books, setBooks] = useState<Book[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -443,11 +449,26 @@ export function BooksManager({
     try {
       await deleteBookFile(bookId as "gastos" | "ingresos" | "bienes", filename);
       if (!mountedRef.current) return;
+      // Si `filename` es un padre de split, el backend borra el grupo entero
+      // (original + hijos `{stem}__iofN.pdf`). El padre virtual no está en
+      // `b.files` (sólo sus hijos, ocultos), así que además de quitar el
+      // propio archivo retiramos sus hijos para que no re-aparezcan como
+      // filas huérfanas al desaparecer el stem del acumulador.
+      const stem = filename.replace(/\.[^.]+$/, "");
+      const childRe = new RegExp(
+        `^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}__\\d+of\\d+\\.pdf$`,
+        "i",
+      );
       setBooks((prev) =>
         prev
           ? prev.map((b) =>
               b.id === bookId
-                ? { ...b, files: b.files.filter((f: BookFile) => f.name !== filename) }
+                ? {
+                    ...b,
+                    files: b.files.filter(
+                      (f: BookFile) => f.name !== filename && !childRe.test(f.name),
+                    ),
+                  }
                 : b
             )
           : prev
@@ -462,6 +483,9 @@ export function BooksManager({
         else next[bookId] = filtered;
         return next;
       });
+      // El padre virtual de un split puede vivir en el snapshot del padre
+      // (`parentPreReviewFilesByBook`), que esta instancia no puede mutar.
+      onFileRemoved?.(bookId as Libro, filename);
       toast.success(`Archivo eliminado: ${filename}`);
     } catch (err) {
       if (!mountedRef.current) return;
@@ -470,7 +494,7 @@ export function BooksManager({
     } finally {
       if (mountedRef.current) setDeletingFile(null);
     }
-  }, []);
+  }, [onFileRemoved]);
 
   // Total real de facturas detectadas. Mergeamos accumulator local + datos del
   // padre (que sobreviven a un round-trip pre-review → volver a Gestión).
