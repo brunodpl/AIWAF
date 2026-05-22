@@ -9,10 +9,12 @@ Verifica:
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+import src.state_writer as sw
 from src import state_writer
 from src.state_writer import (
     SCHEMA_V,
@@ -249,3 +251,32 @@ def test_concurrent_appends_preserve_all_events(tmp_path: Path) -> None:
     # Cada `i` debe aparecer exactamente una vez (cero pérdidas).
     indices = sorted(e["i"] for e in events if e.get("status") == "review")
     assert indices == list(range(N_THREADS))
+
+
+# --- reintentos ante PermissionError transitorio (bind-mount Windows) ----
+
+
+def test_rename_reintenta_tras_permission_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifica que _replace_with_retry reintenta ante PermissionError transitorio
+    y que rename() termina con éxito cuando el error desaparece en el 3.er intento."""
+    folder = _make_folder(tmp_path, "src_folder")
+    init(folder, doc_id="x", file_origin="x.pdf")
+
+    calls = {"n": 0}
+    real_replace = os.replace
+
+    def flaky(a, b):
+        # Solo interceptar el rename de directorio (no la escritura atómica del sidecar)
+        if Path(a).is_dir():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError(13, "locked")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(sw.os, "replace", flaky)
+    monkeypatch.setattr(sw.time, "sleep", lambda *_: None)  # no real delay
+
+    out = sw.rename(folder, "dst_folder")
+
+    assert out.name == "dst_folder"
+    assert calls["n"] == 3

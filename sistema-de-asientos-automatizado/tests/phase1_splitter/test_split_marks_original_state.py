@@ -129,3 +129,47 @@ def test_split_no_original_sidecar_does_not_create_one(
     # Pero SÍ las de los splits.
     assert (asientos / "compras_solo__1of2").exists()
     assert (asientos / "compras_solo__2of2").exists()
+
+
+def test_split_child_file_origin_is_absolute(tmp_path, make_pdf, patched_env):
+    """
+    Regresión: el file_origin guardado en el sidecar uploaded de cada split
+    child debe ser una ruta ABSOLUTA que apunte al PDF real en el inbox.
+
+    Antes del fix (Change A), se almacenaba una ruta relativa
+    (ej. 'facturas/compras/doc__1of2.pdf') que nunca resolvía con
+    CWD=/app → el confirm no podía borrar los PDFs del inbox.
+    """
+    _cfg, inbox, asientos = patched_env
+    pdf = inbox / "multifact.pdf"
+    make_pdf(pdf, 2)
+
+    client = _fake_client_response([
+        {"paginas": [1], "confidence": 0.9},
+        {"paginas": [2], "confidence": 0.9},
+    ])
+
+    run_split(str(inbox), client=client)
+
+    for idx in (1, 2):
+        doc_id = f"multifact__{idx}of2"
+        folder = asientos / f"compras_{doc_id}"
+        assert folder.exists(), f"Falta carpeta de asiento para {doc_id}"
+
+        data = state_writer.read(folder)
+        uploaded_events = [
+            ev for ev in data.get("events", [])
+            if ev.get("status") == "uploaded"
+        ]
+        assert uploaded_events, f"No hay evento uploaded para {doc_id}"
+        file_origin = uploaded_events[0]["file_origin"]
+
+        # (a) Debe ser una ruta absoluta.
+        assert Path(file_origin).is_absolute(), (
+            f"file_origin del split child {doc_id!r} debe ser absoluto, "
+            f"pero es: {file_origin!r}"
+        )
+        # (b) El PDF referenciado debe existir en disco.
+        assert Path(file_origin).is_file(), (
+            f"El PDF apuntado por file_origin no existe: {file_origin!r}"
+        )

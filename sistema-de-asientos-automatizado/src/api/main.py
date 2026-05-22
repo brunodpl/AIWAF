@@ -2104,6 +2104,8 @@ def confirm_batch(payload: ConfirmBatchPayload):
             continue
         try:
             pdf_path = Path(file_origin)
+            if not pdf_path.is_absolute():
+                pdf_path = Path(settings().libros_base) / pdf_path
             if pdf_path.is_file():
                 pdf_path.unlink()
                 inbox_pdfs_deleted += 1
@@ -2416,6 +2418,8 @@ async def run_pipeline_endpoint():
             from src.pipeline import run_pipeline
 
             processed_acc = 0
+            # Lote nuevo: partir de cero; cada libro hace merge (multi-libro).
+            _delete_pending_confirm()
             for book_id, info in book_inbox_map.items():
                 if is_cancel_requested():
                     logger.warning("[pipeline] Cancelación solicitada — abortando libros pendientes")

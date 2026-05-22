@@ -18,6 +18,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -392,6 +393,19 @@ def rejection_count(folder: Path) -> int:
     return rejection_count_from_state(read(folder))
 
 
+def _replace_with_retry(src, dst, attempts: int = 5, base_delay: float = 0.1) -> None:
+    """os.replace con reintentos ante PermissionError transitorio (locks de
+    bind-mount en Windows/Docker Desktop). Re-lanza tras agotar intentos."""
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(base_delay * (2 ** i))
+
+
 def rename(folder: Path, new_name: str) -> Path:
     """Renombra la carpeta a ``new_name``, resolviendo colisiones con sufijo ``_2``, ``_3``...
 
@@ -420,7 +434,7 @@ def rename(folder: Path, new_name: str) -> Path:
         if target.resolve() == folder.resolve():
             return folder
 
-        os.replace(folder, target)
+        _replace_with_retry(folder, target)
         # Tras renombrar, el lock por la carpeta nueva apunta a un keypath
         # distinto. Llamamos a `_append_locked` pasando la nueva carpeta;
         # como el lock viejo ya cubre la transición, no hay race aquí.

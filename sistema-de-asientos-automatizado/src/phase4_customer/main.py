@@ -17,10 +17,10 @@ import logging
 import sys
 from pathlib import Path
 
-from src.config import LIBRO_SHORT, settings
+from src.config import settings
 from src.logging_config import setup_logging
 from .resolver import resolver_cliente
-from .maestro import cargar_maestro, registrar_cliente, guardar_maestro
+from .maestro import cargar_maestro
 
 logger = logging.getLogger("pipeline.cliente_destino")
 
@@ -74,34 +74,9 @@ def run_cliente(documento_id: str, doc_output_dir: str, libro: str) -> bool:
         documento_id=documento_id,
     )
 
-    # 4. Registrar cliente nuevo en maestro si procede
+    # 4. Extraer info para el log final (el maestro se actualiza solo al confirmar)
     cliente_info = resultado.get("cliente_info", {})
     decision_global = resultado.get("decision_global", "block")
-
-    if cliente_info.get("es_nuevo") and decision_global != "block":
-        nif = resultado["campos"]["nif_cliente"]["valor_final"]
-        nombre = resultado["campos"]["nombre_cliente"]["valor_final"] or ""
-        # Metadata operativa: fecha_expedicion y libro corto para la tarjeta
-        # de cliente. Si fecha no resuelta, queda None y no se actualiza.
-        fecha_exp = (
-            campos_identidad.get("fecha_expedicion", {}).get("valor_final")
-            if isinstance(campos_identidad.get("fecha_expedicion"), dict)
-            else None
-        )
-        libro_short = LIBRO_SHORT.get(libro, libro)
-        registrar_cliente(
-            maestro,
-            nif,
-            nombre,
-            fecha_expedicion=fecha_exp,
-            libro=libro_short,
-            decision=decision_global,
-        )
-        guardar_maestro(maestro_path, maestro)
-        logger.info(
-            f"[cliente_destino] Cliente nuevo registrado doc_id={documento_id} "
-            f"libro={libro_short}"
-        )
 
     # 5. Escribir artefacto
     try:
