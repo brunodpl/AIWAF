@@ -64,7 +64,7 @@ Source: "..\sistema-de-asientos-automatizado\*"; DestDir: "{app}\sistema-de-asie
   Excludes: "credentials\*,horeca_sandbox\*\*,libros\*\*,data\output\*,logs\*,__pycache__,*.pyc,.pytest_cache,.git*,tests\*"
 Source: "..\interfaz-asientos-automatizados\*"; DestDir: "{app}\interfaz-asientos-automatizados"; \
   Flags: ignoreversion recursesubdirs createallsubdirs; \
-  Excludes: "node_modules\*,.next\*,.git*,*.log"
+  Excludes: "node_modules\*,.next\*,.next-smoke\*,.git*,*.log"
 Source: "..\docker-compose.yml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Makefile"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\verify.ps1"; DestDir: "{app}"; Flags: ignoreversion
