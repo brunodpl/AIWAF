@@ -389,3 +389,84 @@ def test_override_prescan_rejects_as_single_false(client):
     )
     assert r.status_code == 400
     assert "as_single" in r.json()["detail"]
+
+
+# ──────────────────────────────────────────────────────────
+# Timeout del pre-scan → degradación no bloqueante (deferred)
+# ──────────────────────────────────────────────────────────
+
+
+def _patch_prescan_timeout(monkeypatch):
+    """Fuerza que el ``asyncio.wait_for`` que envuelve el ``to_thread`` del
+    pre-scan expire de inmediato, sin esperar segundos reales.
+
+    Selectivo: solo dispara TimeoutError sobre la corrutina de
+    ``asyncio.to_thread`` (``co_name == "to_thread"``); cualquier otra
+    corrutina se delega al ``wait_for`` real para no romper el TestClient.
+    El coro se cierra para evitar el warning "coroutine was never awaited" y
+    que el thread llegue a arrancar (no deja hilo huérfano en el test).
+    """
+    import asyncio as _asyncio
+
+    real_wait_for = _asyncio.wait_for
+
+    async def fake_wait_for(coro, timeout):
+        if getattr(getattr(coro, "cr_code", None), "co_name", "") == "to_thread":
+            if hasattr(coro, "close"):
+                coro.close()
+            raise _asyncio.TimeoutError
+        return await real_wait_for(coro, timeout)
+
+    monkeypatch.setattr(api_main.asyncio, "wait_for", fake_wait_for)
+
+
+def test_upload_prescan_timeout_is_non_blocking(monkeypatch, client):
+    """Timeout del pre-scan: NO bloquea. El archivo queda ``uploaded`` y el
+    pre_scan se reporta ``deferred`` (se dividirá al escanear).
+    """
+    c, root = client
+
+    # split_single_file no debería llegar a ejecutarse (wait_for expira antes),
+    # pero lo stubbeamos para no tocar Gemini si la selección fallara.
+    monkeypatch.setattr(api_main, "split_single_file", lambda *a, **kw: SplitOutcome(
+        source="x", status="single_page", n_pages=1, n_facturas=1,
+    ))
+    _patch_prescan_timeout(monkeypatch)
+
+    r = _upload(c, "lento.pdf", _pdf_bytes(11))
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["detected_summary"]["files_blocked"] == 0
+    assert body["detected_summary"]["files_skipped"] == 1
+    assert body["detected_summary"]["total_invoices"] == 1
+
+    [file_info] = body["files"]
+    pre = file_info["pre_scan"]
+    assert pre["status"] == "deferred"
+    assert pre["detected_invoices"] == 1
+    assert pre["error"] is None
+
+    # El sidecar NO debe quedar bloqueado: sigue en uploaded para que el
+    # splitter safeguard de pipeline.run lo divida al escanear.
+    asiento = root / "asientos" / "compras_lento"
+    assert state_writer.current_status(asiento) == "uploaded"
+
+
+def test_retry_prescan_timeout_promotes_to_uploaded(monkeypatch, client):
+    """Retry de un ``pre_scan_failed`` que vuelve a hacer timeout: desbloquea a
+    ``uploaded`` (deferred) en vez de re-bloquear.
+    """
+    c, root = client
+    folder = _seed_pre_scan_failed(root, "lento_retry")
+
+    monkeypatch.setattr(api_main, "split_single_file", lambda *a, **kw: SplitOutcome(
+        source="x", status="single_page", n_pages=1, n_facturas=1,
+    ))
+    _patch_prescan_timeout(monkeypatch)
+
+    r = c.post("/api/books/gastos/files/lento_retry/retry-prescan")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pre_scan"]["status"] == "deferred"
+    assert state_writer.current_status(folder) == "uploaded"

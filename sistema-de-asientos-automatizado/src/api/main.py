@@ -902,6 +902,18 @@ def _prescan_outcome_to_dict(
             "error": None,
         }
 
+    if outcome.status == "timeout":
+        # El pre-scan expiró sobre un PDF (probablemente grande). No es
+        # bloqueante: el sidecar queda en `uploaded` y el split se difiere al
+        # escaneo. La UI muestra "se dividirá al escanear".
+        return {
+            "status": "deferred",
+            "n_pages": n_pages,
+            "detected_invoices": 1,  # optimista; el conteo real llega al escanear
+            "children": [],
+            "error": None,
+        }
+
     # status == "error" → tras agotar reintentos
     return {
         "status": "failed",
@@ -1059,7 +1071,7 @@ async def _run_prescan_for_uploads(
                 )
             except asyncio.TimeoutError:
                 outcome = SplitOutcome(
-                    source=str(pdf_path), status="error",
+                    source=str(pdf_path), status="timeout",
                     error=f"timeout after {timeout_s}s",
                 )
             except Exception as exc:
@@ -1068,7 +1080,20 @@ async def _run_prescan_for_uploads(
                     error=f"unhandled: {exc}",
                 )
 
-        if outcome.status == "error":
+        if outcome.status == "timeout":
+            # Degradación no bloqueante: un PDF grande pero válido puede tardar
+            # más que el timeout del pre-scan. NO marcamos pre_scan_failed — el
+            # sidecar queda en `uploaded` y el splitter safeguard de pipeline.run
+            # (run_split) lo dividirá al escanear. pre_scan_failed se reserva
+            # para errores reales de Gemini (JSON inválido / páginas sin cubrir).
+            logger.warning(
+                "[prescan] %s superó %ds — split diferido al escaneo (no bloqueante)",
+                name, timeout_s,
+            )
+            file_entry["pre_scan"] = _prescan_outcome_to_dict(outcome, asiento_folder=asiento_folder)
+            summary["files_skipped"] += 1
+            summary["total_invoices"] += 1
+        elif outcome.status == "error":
             _record_prescan_failure(asiento_folder, outcome, model_used=cfg.gemini_ocr_model)
             file_entry["pre_scan"] = _prescan_outcome_to_dict(outcome, asiento_folder=asiento_folder)
             summary["files_blocked"] += 1
@@ -1513,19 +1538,22 @@ async def retry_prescan(book_id: str, doc_id: str):
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
-        outcome = SplitOutcome(source=str(pdf_path), status="error", error=f"timeout after {timeout_s}s")
+        outcome = SplitOutcome(source=str(pdf_path), status="timeout", error=f"timeout after {timeout_s}s")
     except Exception as exc:
         outcome = SplitOutcome(source=str(pdf_path), status="error", error=f"unhandled: {exc}")
 
     if outcome.status == "error":
         _record_prescan_failure(asiento_folder, outcome, model_used=cfg.gemini_ocr_model)
-    elif outcome.status in ("single_page", "single_factura"):
-        # Éxito como factura única: dejamos el sidecar en `uploaded` para que
-        # el pipeline lo procese normalmente.
+    elif outcome.status in ("single_page", "single_factura", "timeout"):
+        # Éxito como factura única — o timeout sobre un PDF grande: en ambos
+        # casos dejamos el sidecar en `uploaded` para que el pipeline lo procese
+        # / el splitter lo divida al escanear. El timeout NO re-bloquea (no es
+        # un error real de Gemini).
+        reason = "prescan_retry_timeout" if outcome.status == "timeout" else "prescan_retry_single"
         try:
             state_writer.append(asiento_folder, {
                 "status": "uploaded",
-                "reason": "prescan_retry_single",
+                "reason": reason,
                 "file_origin": str(pdf_path.resolve()),
             })
         except Exception:

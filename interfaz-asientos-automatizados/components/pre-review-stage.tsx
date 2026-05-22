@@ -96,6 +96,9 @@ function summarize(entries: PreReviewUploadEntry[]) {
       } else if (pre.status === "skipped_disabled") {
         filesSkipped += 1;
         totalInvoices += pre.detected_invoices;
+      } else if (pre.status === "deferred") {
+        filesSkipped += 1;
+        totalInvoices += pre.detected_invoices;
       } else {
         filesOk += 1;
         totalInvoices += pre.detected_invoices;
@@ -138,6 +141,13 @@ function StatusBadge({ pre }: { pre: PreScanResult | null | undefined }) {
     return (
       <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200">
         sin pre-scan
+      </span>
+    );
+  }
+  if (pre.status === "deferred") {
+    return (
+      <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200">
+        se dividirá al escanear
       </span>
     );
   }

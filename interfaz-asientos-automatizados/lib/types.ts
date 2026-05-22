@@ -103,8 +103,16 @@ export interface PreScanResult {
   /** "single" = 1 factura. "split" = N facturas (ver `children`).
    *  "failed" = bloqueado, requiere acción humana.
    *  "skipped_non_pdf" = imagen, no se llama a Gemini.
-   *  "skipped_disabled" = feature flag PRESCAN_ENABLED=false (legacy). */
-  status: "single" | "split" | "failed" | "skipped_non_pdf" | "skipped_disabled";
+   *  "skipped_disabled" = feature flag PRESCAN_ENABLED=false (legacy).
+   *  "deferred" = timeout del pre-scan (PDF grande); no bloqueante, se
+   *  dividirá al escanear. */
+  status:
+    | "single"
+    | "split"
+    | "failed"
+    | "skipped_non_pdf"
+    | "skipped_disabled"
+    | "deferred";
   n_pages: number;
   detected_invoices: number;
   children: PreScanChild[];

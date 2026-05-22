@@ -80,8 +80,8 @@ class Settings(BaseSettings):
         description="Pre-scans paralelos por upload (Semaphore Gemini).",
     )
     prescan_timeout_seconds: int = Field(
-        default=30, validation_alias="PRESCAN_TIMEOUT_SECONDS",
-        description="Timeout por pre-scan individual (s).",
+        default=180, validation_alias="PRESCAN_TIMEOUT_SECONDS",
+        description="Timeout por pre-scan individual (s). Dimensionado para lotes grandes: Gemini Vision tarda ~50s en un PDF de 60 facturas. Al expirar no se bloquea — el split se difiere al escaneo.",
     )
 
     # ── Gemini LLM árbitro (Fase 3) ──────────────────────────
