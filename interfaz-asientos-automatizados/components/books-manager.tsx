@@ -221,7 +221,9 @@ export function BooksManager({
   // simplemente no aparece — nunca rompe la vista de Gestión.
   const loadPendingReview = useCallback(async () => {
     try {
-      const { invoices } = await fetchInvoices();
+      // includeDone:false — `review` nunca es terminal, así que excluir las
+      // `done` aligera el payload sin perder ninguna factura relevante.
+      const { invoices } = await fetchInvoices({ includeDone: false });
       if (!mountedRef.current) return;
       const ids = invoices
         .filter((inv) => inv.status === "review")
@@ -246,10 +248,13 @@ export function BooksManager({
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-    void loadPendingReview();
-  }, [loadPendingReview]);
+  }, []);
 
+  // Desacoplado de loadBooks: el conteo de `review` no cambia al subir/borrar
+  // archivos, así que no lo recalculamos en cada refresh de Gestión. Basta al
+  // montar — BooksManager remonta al volver del Reviewer, así que sale fresco.
   useEffect(() => { loadBooks(); }, [loadBooks]);
+  useEffect(() => { loadPendingReview(); }, [loadPendingReview]);
 
   const pollBooksUntilSynced = useCallback(
     async (bookId: string, expectedNames: string[], maxWaitMs = 20000) => {
