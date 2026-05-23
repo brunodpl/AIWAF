@@ -33,6 +33,11 @@ Desktop.ini
 # Se crean automáticamente en cada despliegue; nunca deben commitearse.
 libros/
 
+# Maestro de clientes — se muta en runtime (contadores, fechas, altas).
+# Semilla vacía + bind-mount del host; nunca debe commitearse con datos reales.
+sistema-de-asientos-automatizado/data/maestros/maestro_clientes.yaml
+sistema-de-asientos-automatizado/data/maestros/maestro_clientes.yaml.lock
+
 # Playwright artifacts
 test-results/
 playwright-report/
