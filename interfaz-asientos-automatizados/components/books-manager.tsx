@@ -14,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { Book, BookFile, Libro, PreScanResult } from "@/lib/types";
-import { fetchBooks, uploadFiles, runPipeline, deleteBookFile } from "@/lib/api";
+import { fetchBooks, uploadFiles, runPipeline, deleteBookFile, fetchInvoices } from "@/lib/api";
 import { libroLabel } from "@/lib/libros";
 
 interface BooksManagerProps {
@@ -195,6 +195,10 @@ export function BooksManager({
   // No dispara navegación: la transición a Pre-revisión sólo ocurre cuando
   // el operario pulsa "Escanear" en el footer.
   const [accumulatedUploads, setAccumulatedUploads] = useState<Record<string, BookFile[]>>({});
+  // doc_ids de facturas que quedaron en `review` (pendientes de corregir/aprobar
+  // en el Reviewer). Alimenta el botón "Revisar pendientes" del footer, que
+  // reusa onNavigateToReview para saltar a REVISIÓN con solo esas facturas.
+  const [pendingReviewIds, setPendingReviewIds] = useState<string[]>([]);
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const uploadingRef = useRef(false);
@@ -210,6 +214,24 @@ export function BooksManager({
         abortRef.current = null;
       }
     };
+  }, []);
+
+  // Best-effort: facturas en `review` (las que el operario dejó pendientes de
+  // corregir). Si /api/invoices no responde, dejamos la lista vacía y el botón
+  // simplemente no aparece — nunca rompe la vista de Gestión.
+  const loadPendingReview = useCallback(async () => {
+    try {
+      // includeDone:false — `review` nunca es terminal, así que excluir las
+      // `done` aligera el payload sin perder ninguna factura relevante.
+      const { invoices } = await fetchInvoices({ includeDone: false });
+      if (!mountedRef.current) return;
+      const ids = invoices
+        .filter((inv) => inv.status === "review")
+        .map((inv) => inv.id);
+      setPendingReviewIds(ids);
+    } catch {
+      /* sin conexión a /api/invoices — ocultamos el botón sin romper Gestión */
+    }
   }, []);
 
   const loadBooks = useCallback(async () => {
@@ -228,7 +250,11 @@ export function BooksManager({
     }
   }, []);
 
+  // Desacoplado de loadBooks: el conteo de `review` no cambia al subir/borrar
+  // archivos, así que no lo recalculamos en cada refresh de Gestión. Basta al
+  // montar — BooksManager remonta al volver del Reviewer, así que sale fresco.
   useEffect(() => { loadBooks(); }, [loadBooks]);
+  useEffect(() => { loadPendingReview(); }, [loadPendingReview]);
 
   const pollBooksUntilSynced = useCallback(
     async (bookId: string, expectedNames: string[], maxWaitMs = 20000) => {
@@ -1053,6 +1079,16 @@ export function BooksManager({
         >
           {ctaCount === 0 ? "Sin archivos pendientes" : <>Escanear {ctaCount} Factura(s) →</>}
         </Button>
+        {onNavigateToReview && pendingReviewIds.length > 0 && (
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={() => onNavigateToReview(pendingReviewIds)}
+            className="h-11 px-6 border-slate-300 text-slate-700 hover:bg-slate-50 font-bold uppercase text-[10px] tracking-[0.2em] rounded-none transition-all"
+          >
+            Revisar pendientes ({pendingReviewIds.length}) →
+          </Button>
+        )}
       </footer>
     </div>
   );
