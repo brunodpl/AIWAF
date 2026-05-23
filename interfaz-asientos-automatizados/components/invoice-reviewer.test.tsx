@@ -157,6 +157,21 @@ describe("InvoiceReviewer index-divergence (filtered visible vs raw)", () => {
     expect(targetId).not.toBe("doc-A");
   });
 
+  it("pending mode: muestra SOLO las pendientes de forma persistente (no colapsa a vacío)", async () => {
+    // pendingReviewIds filtra la lista visible a SOLO doc-B, SIN focus (que se
+    // auto-limpia) ni lote activo (fetchPipelineBatch → in_flight:false, books:[]).
+    // Es el caso del botón "Revisar pendientes" desde Gestión. Antes del fix,
+    // visibleSummaries caía a [] y se pintaba "No hay facturas en proceso".
+    render(<InvoiceReviewer {...baseProps()} pendingReviewIds={["doc-B"]} />);
+
+    const targetId = await clickApproveAndGetTargetId();
+
+    expect(targetId).toBe("doc-B");
+    expect(targetId).not.toBe("doc-A");
+    // El filtro no se colapsa: no aparece el mensaje de lote vacío.
+    expect(screen.queryByText(/no hay facturas en proceso/i)).toBeNull();
+  });
+
   it("hard delete (focus): borra el FICHERO de la factura mostrada, no la del índice crudo", async () => {
     // doc-B ya fue rechazada una vez (rejection_count=1): el botón pasa a
     // "Eliminar definitivamente" y abre el diálogo de borrado. El borrado debe

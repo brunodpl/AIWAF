@@ -90,9 +90,14 @@ interface InvoiceReviewerProps {
   focusDocIds?: string[];
   /** Callback para que el padre limpie ``focusDocIds`` una vez aplicado. */
   onClearFocus?: () => void;
+  /** doc_ids de facturas en `review` a mostrar de forma PERSISTENTE — alimenta el
+   *  botón "Revisar pendientes" de Gestión. A diferencia de ``focusDocIds`` (cursor
+   *  transitorio que se auto-limpia), este filtro se mantiene mientras el operario
+   *  esté en Revisión, así la lista no se colapsa cuando no hay un lote en curso. */
+  pendingReviewIds?: string[];
 }
 
-export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove, onReject, onExport, totalQueued, focusDocIds, onClearFocus }: InvoiceReviewerProps) {
+export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove, onReject, onExport, totalQueued, focusDocIds, onClearFocus, pendingReviewIds }: InvoiceReviewerProps) {
   const [invoiceSummaries, setInvoiceSummaries] = useState<InvoiceSummary[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -282,12 +287,15 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   //
   // Prioridad:
   // 1. ``focusDocIds``: el usuario llegó vía "Abrir reviewer" tras resubir un
-  //    PDF padre con hijos pendientes. Solo mostramos esas facturas.
-  // 2. ``batchDocIds``: filtra a las facturas del lote en curso
+  //    PDF padre con hijos pendientes. Solo mostramos esas facturas (transitorio).
+  // 2. ``pendingReviewIds``: el operario pulsó "Revisar pendientes" en Gestión.
+  //    Filtro PERSISTENTE a esas facturas en `review`; no hay lote activo, así
+  //    que tiene que mandar sobre ``batchDocIds`` (que aquí estaría vacío).
+  // 3. ``batchDocIds``: filtra a las facturas del lote en curso
   //    (``/api/pipeline/batch``). Evita que facturas viejas en estados activos
   //    (``review``/``blocked``/``done``) de runs anteriores contaminen el lote.
-  // 3. Sin lote activo y sin focus: vacío. El JSX pinta un mensaje "vuelve a
-  //    Gestión" en lugar de listar ghosts.
+  // 4. Sin filtro alguno: vacío. El JSX pinta un mensaje "vuelve a Gestión" en
+  //    lugar de listar ghosts.
   //
   // ``invoiceSummaries`` sigue siendo la fuente cruda del backend (para cache,
   // matching de focus y `loadInvoices`). Solo la UI usa ``visibleSummaries``.
@@ -298,11 +306,24 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         (inv) => fset.has(inv.id) || (inv.folder_name ? fset.has(inv.folder_name) : false)
       );
     }
+    if (pendingReviewIds && pendingReviewIds.length > 0) {
+      const pset = new Set(pendingReviewIds);
+      return invoiceSummaries.filter(
+        (inv) => pset.has(inv.id) || (inv.folder_name ? pset.has(inv.folder_name) : false)
+      );
+    }
     if (batchDocIds && batchDocIds.size > 0) {
       return invoiceSummaries.filter((inv) => batchDocIds.has(inv.id));
     }
     return [];
-  }, [invoiceSummaries, focusDocIds, batchDocIds]);
+  }, [invoiceSummaries, focusDocIds, pendingReviewIds, batchDocIds]);
+
+  // Modo "Revisar pendientes" activo: hay filtro persistente de pendientes y no
+  // lo está pisando un focus transitorio. Se usa para no contar placeholders del
+  // lote (batchTotal/totalQueued) en este modo — el total es solo lo pendiente.
+  const usingPendingFilter =
+    (!focusDocIds || focusDocIds.length === 0) &&
+    !!(pendingReviewIds && pendingReviewIds.length > 0);
 
   // Espejo en ref de la lista VISIBLE (filtrada). Los handlers async resuelven
   // la factura accionada por ``visibleSummariesRef.current[currentIdxRef.current]``
@@ -798,9 +819,11 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
         <div className="text-center max-w-md p-8">
           <p className="text-sm text-slate-600 mb-4">
             {error
-              ?? (hasRawButFiltered
-                ? "No hay facturas en proceso. Vuelve a Gestión y sube un PDF para empezar un nuevo escaneo."
-                : "No hay facturas disponibles")}
+              ?? (usingPendingFilter
+                ? "Ya no hay facturas pendientes de revisión."
+                : hasRawButFiltered
+                  ? "No hay facturas en proceso. Vuelve a Gestión y sube un PDF para empezar un nuevo escaneo."
+                  : "No hay facturas disponibles")}
           </p>
           <Button onClick={() => loadInvoices()} variant="outline" className="text-xs">
             Reintentar
@@ -822,11 +845,16 @@ export function InvoiceReviewer({ approvedInvoices, rejectedInvoices, onApprove,
   // garantiza placeholders correctos para PDFs multi-factura (batchTotal manda),
   // y no muestra placeholders fantasma cuando el reviewer entra fuera de un run
   // (todos en 0 → cae a visibleSummaries.length).
-  const effectiveTotal = Math.max(
-    batchTotal ?? 0,
-    totalQueued ?? 0,
-    visibleSummaries.length,
-  );
+  // En modo "Revisar pendientes" el total es exactamente las facturas pendientes
+  // visibles — no contamos placeholders del lote (batchTotal/totalQueued), que
+  // podrían inflar el pager con fantasmas de un `pending_confirm` residual.
+  const effectiveTotal = usingPendingFilter
+    ? visibleSummaries.length
+    : Math.max(
+        batchTotal ?? 0,
+        totalQueued ?? 0,
+        visibleSummaries.length,
+      );
   const totalVisible = effectiveTotal;
   const totalInvoices = totalVisible;
   const loadedCount = visibleSummaries.length;

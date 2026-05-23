@@ -130,6 +130,11 @@ export default function Home() {
   // doc_ids a enfocar en el reviewer (set por BooksManager cuando el usuario
   // resube un PDF ya conocido con hijos pendientes — ver toast "Abrir reviewer").
   const [reviewFocusIds, setReviewFocusIds] = useState<string[] | undefined>(undefined);
+  // doc_ids de facturas en `review` que el operario abre con "Revisar pendientes"
+  // desde Gestión. Filtro PERSISTENTE (a diferencia de reviewFocusIds): se mantiene
+  // mientras está en Revisión para que la lista no se colapse al no haber lote en
+  // curso. Se limpia al iniciar un escaneo, en reset y al confirmar el lote.
+  const [reviewPendingIds, setReviewPendingIds] = useState<string[] | undefined>(undefined);
   // "Nuevo escaneo" = empezar un lote limpio. Primero CANCELA cualquier
   // pipeline en curso (cooperativo: el backend termina la factura actual y
   // sale del loop); sin esto el reset devolvería 409 y el pipeline seguiría
@@ -194,6 +199,7 @@ export default function Home() {
       setRejectedInvoices(new Set());
       setTotalQueued(0);
       setPreReviewEntries([]);
+      setReviewPendingIds(undefined);
       setStage("books");
       localStorage.removeItem(STORAGE_KEY_INVOICES);
       localStorage.removeItem(STORAGE_KEY_STAGE);
@@ -316,14 +322,14 @@ export default function Home() {
         {stage === "books" && (
           <BooksManager
             key={booksNonce}
-            onPipelineStart={() => setStage("processing")}
+            onPipelineStart={() => { setReviewPendingIds(undefined); setStage("processing"); }}
             onUploadComplete={handleUploadComplete}
             parentPreReviewFilesByBook={Object.fromEntries(
               preReviewEntries.map((e) => [e.bookId, e.files] as const),
             )}
             onFileRemoved={handlePreReviewFileRemoved}
-            onNavigateToReview={(focusDocIds) => {
-              setReviewFocusIds(focusDocIds);
+            onNavigateToReview={(ids) => {
+              setReviewPendingIds(ids);
               setStage("review");
             }}
           />
@@ -337,6 +343,7 @@ export default function Home() {
             onBack={() => setStage("books")}
             onPipelineStart={() => {
               setPreReviewEntries([]);
+              setReviewPendingIds(undefined);
               setStage("processing");
             }}
           />
@@ -356,6 +363,7 @@ export default function Home() {
             totalQueued={totalQueued > 0 ? totalQueued : undefined}
             focusDocIds={reviewFocusIds}
             onClearFocus={() => setReviewFocusIds(undefined)}
+            pendingReviewIds={reviewPendingIds}
             onApprove={handleApprove}
             onReject={handleReject}
             onExport={() => setStage("export")}
@@ -373,6 +381,7 @@ export default function Home() {
               // y se consultan desde el botón HISTORIAL.
               setApprovedInvoices(new Map());
               setRejectedInvoices(new Set());
+              setReviewPendingIds(undefined);
               localStorage.removeItem(STORAGE_KEY_INVOICES);
               localStorage.removeItem(STORAGE_KEY_STAGE);
               setStage("books");
