@@ -6,7 +6,10 @@ import { test, expect, type Page } from "@playwright/test";
 // playwright.smoke.config.ts en un puerto dedicado (ver ese fichero).
 
 const NEW_VERSION = "99.0.0";
-const OLD_VERSION = "0.0.0-dev";
+// Versión "instalada" que simula una gestoría en producción. NO usar el centinela
+// "0.0.0-dev": el banner se oculta cuando current === DEV_VERSION (guard de build
+// dev en update-banner.tsx), y todos estos tests dejarían de ver el banner.
+const OLD_VERSION = "0.9.0";
 
 const fakeLatest = {
   version: NEW_VERSION,
