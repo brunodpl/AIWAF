@@ -81,6 +81,13 @@ function sanitizeNifKey(nif: string): string {
   return (nif || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase() || "SIN_CLIENTE";
 }
 
+/** FECHA y Nº FACTURA son obligatorios en Intermega: un fichero con filas que
+ *  los omitan se rechaza entero ("no se han encontrado registros" / error de
+ *  importación). Avisamos al operario antes de descargar. */
+function isMissingRequiredFields(fd: Record<string, string>): boolean {
+  return !fd.fecha_expedicion || !fd.numero_factura;
+}
+
 function buildAsientoRows(approvedInvoices: Map<string, ApprovedInvoiceData>): AsientoRow[] {
   const rows: AsientoRow[] = [];
 
@@ -243,6 +250,10 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [missingAccountsCount, setMissingAccountsCount] = useState(0);
   const [missingFilesCount, setMissingFilesCount] = useState(0);
+  const [missingRequiredCount, setMissingRequiredCount] = useState(0);
+  const [missingRequiredFilesCount, setMissingRequiredFilesCount] = useState(0);
+  const [missingFiscalCount, setMissingFiscalCount] = useState(0);
+  const [missingFiscalFilesCount, setMissingFiscalFilesCount] = useState(0);
 
   /**
    * "CONFIRMAR Y SEGUIR ESCANEANDO" — CTA primario del flujo:
@@ -339,19 +350,28 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
   // --- Single-file download ---
   const handleFileDownload = useCallback(
     (file: IntermegaCsvFile) => {
-      // Count invoices in this file that lack cuenta_contable
+      // Count invoices in this file that lack cuenta_contable, a required
+      // Intermega field (FECHA / Nº FACTURA), or a fiscal breakdown.
       let missing = 0;
+      let missingReq = 0;
+      let missingFiscal = 0;
       for (const [, invoice] of approvedInvoices) {
         const cliente = resolveClienteGestoria(invoice.libro, invoice.formData);
         const nifKey = sanitizeNifKey(cliente.nif);
         const tipo: ExportKind = invoice.libro === "ingresos" ? "emitidas" : "recibidas";
-        if (nifKey === file.nifCliente && tipo === file.tipo && !invoice.formData.cuenta_contable) {
-          missing++;
+        if (nifKey === file.nifCliente && tipo === file.tipo) {
+          if (!invoice.formData.cuenta_contable) missing++;
+          if (isMissingRequiredFields(invoice.formData)) missingReq++;
+          if (invoice.fiscalLines.length === 0) missingFiscal++;
         }
       }
-      if (missing > 0) {
+      if (missing > 0 || missingReq > 0 || missingFiscal > 0) {
         setMissingAccountsCount(missing);
-        setMissingFilesCount(1);
+        setMissingFilesCount(missing > 0 ? 1 : 0);
+        setMissingRequiredCount(missingReq);
+        setMissingRequiredFilesCount(missingReq > 0 ? 1 : 0);
+        setMissingFiscalCount(missingFiscal);
+        setMissingFiscalFilesCount(missingFiscal > 0 ? 1 : 0);
         setPendingAction({ type: "file", file });
       } else {
         downloadCsvFile(file);
@@ -365,22 +385,40 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
   const handleZipDownload = useCallback(async () => {
     if (csvFiles.length === 0) return;
 
-    // Count all invoices missing cuenta_contable
+    // Count all invoices missing cuenta_contable, a required Intermega field,
+    // or a fiscal breakdown.
     let missing = 0;
+    let missingReq = 0;
+    let missingFiscal = 0;
     const affectedFiles = new Set<string>();
+    const affectedReqFiles = new Set<string>();
+    const affectedFiscalFiles = new Set<string>();
     for (const [, invoice] of approvedInvoices) {
+      const cliente = resolveClienteGestoria(invoice.libro, invoice.formData);
+      const nifKey = sanitizeNifKey(cliente.nif);
+      const tipo: ExportKind = invoice.libro === "ingresos" ? "emitidas" : "recibidas";
+      const key = `${nifKey}__${tipo}`;
       if (!invoice.formData.cuenta_contable) {
         missing++;
-        const cliente = resolveClienteGestoria(invoice.libro, invoice.formData);
-        const nifKey = sanitizeNifKey(cliente.nif);
-        const tipo: ExportKind = invoice.libro === "ingresos" ? "emitidas" : "recibidas";
-        affectedFiles.add(`${nifKey}__${tipo}`);
+        affectedFiles.add(key);
+      }
+      if (isMissingRequiredFields(invoice.formData)) {
+        missingReq++;
+        affectedReqFiles.add(key);
+      }
+      if (invoice.fiscalLines.length === 0) {
+        missingFiscal++;
+        affectedFiscalFiles.add(key);
       }
     }
 
-    if (missing > 0) {
+    if (missing > 0 || missingReq > 0 || missingFiscal > 0) {
       setMissingAccountsCount(missing);
       setMissingFilesCount(affectedFiles.size);
+      setMissingRequiredCount(missingReq);
+      setMissingRequiredFilesCount(affectedReqFiles.size);
+      setMissingFiscalCount(missingFiscal);
+      setMissingFiscalFilesCount(affectedFiscalFiles.size);
       setPendingAction({ type: "zip" });
     } else {
       await doZip();
@@ -416,19 +454,41 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
   }, [pendingAction, doZip]);
 
   const dialogOpen = pendingAction !== null;
+  const isZipAction = pendingAction?.type === "zip";
 
+  const dialogParts: string[] = [];
+  if (missingAccountsCount > 0) {
+    dialogParts.push(
+      isZipAction
+        ? `${missingAccountsCount} factura(s) sin cuenta contable asignada en ${missingFilesCount} archivo(s)`
+        : `${missingAccountsCount} factura(s) sin cuenta contable asignada en este archivo`
+    );
+  }
+  if (missingFiscalCount > 0) {
+    dialogParts.push(
+      isZipAction
+        ? `${missingFiscalCount} factura(s) sin desglose fiscal (base/IVA) en ${missingFiscalFilesCount} archivo(s) — no generarán filas; Intermega rechazará el fichero`
+        : `${missingFiscalCount} factura(s) sin desglose fiscal (base/IVA) — no generarán filas; Intermega rechazará el fichero`
+    );
+  }
+  if (missingRequiredCount > 0) {
+    dialogParts.push(
+      isZipAction
+        ? `${missingRequiredCount} factura(s) sin FECHA o sin Nº FACTURA en ${missingRequiredFilesCount} archivo(s) — Intermega rechazará el fichero`
+        : `${missingRequiredCount} factura(s) sin FECHA o sin Nº FACTURA — Intermega rechazará el fichero`
+    );
+  }
   const dialogDescription =
-    pendingAction?.type === "zip"
-      ? `Hay ${missingAccountsCount} factura(s) sin cuenta contable asignada en ${missingFilesCount} archivo(s). Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.`
-      : `Hay ${missingAccountsCount} factura(s) sin cuenta contable asignada en este archivo. Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.`;
+    `Revisa estas facturas antes de descargar:\n• ${dialogParts.join("\n• ")}\n\n` +
+    `Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.`;
 
   return (
     <div className="flex flex-col h-full bg-white">
       <AlertDialog open={dialogOpen} onOpenChange={(open) => !open && setPendingAction(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cuentas contables incompletas</AlertDialogTitle>
-            <AlertDialogDescription>{dialogDescription}</AlertDialogDescription>
+            <AlertDialogTitle>Revisar antes de descargar</AlertDialogTitle>
+            <AlertDialogDescription className="whitespace-pre-line text-left">{dialogDescription}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="rounded-none text-xs uppercase tracking-[0.15em]">

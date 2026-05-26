@@ -25,6 +25,8 @@ def patched_settings(monkeypatch, tmp_path):
         # (estos no validan reintentos — eso vive en test_split_single_file).
         prescan_max_attempts=1,
         prescan_timeout_seconds=30,
+        # Estos tests ejercitan el path Gemini → desactivamos el determinista.
+        split_one_invoice_per_page=False,
     )
     monkeypatch.setattr(splitter_main, "get_settings", lambda: cfg)
     return cfg, audit

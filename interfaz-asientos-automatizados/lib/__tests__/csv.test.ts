@@ -190,3 +190,31 @@ describe("generateIntermegaCSVsByCliente", () => {
     expect(generateIntermegaCSVsByCliente(new Map(), FECHA)).toEqual([]);
   });
 });
+
+describe("intermegaRowsFor — no fabrica filas cuando faltan líneas fiscales (Error 1: no inventar IVA cero)", () => {
+  // Decisión: una factura sin desglose fiscal NO debe emitir una fila con
+  // BASE=total y CUOTA 0,00 — eso importaría en Intermega una venta sin IVA
+  // repercutido (dato fiscal incorrecto). En su lugar no se emite fila y la UI
+  // avisa al operario (ver export-stage). "nunca inventar datos".
+  it("fiscalLines vacío → 0 filas (no se inventa una fila con IVA cero)", () => {
+    const rows = intermegaRowsFor(
+      makeInvoice({
+        libro: "ingresos",
+        fiscalLines: [],
+        formData: { total_euros: "121", numero_factura: "F-9", fecha_expedicion: "2026-05-08" },
+      })
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it("generateIntermegaCSVsByCliente: una emitida sin líneas fiscales NO añade fila de datos (solo cabecera)", () => {
+    const invoices = new Map<string, ApprovedInvoiceData>([
+      ["d1", makeInvoice({ libro: "ingresos", fiscalLines: [], formData: { total_euros: "121" } })],
+    ]);
+    const files = generateIntermegaCSVsByCliente(invoices, new Date("2026-05-08T12:00:00Z"));
+    const emitidas = files.find((f) => f.tipo === "emitidas");
+    expect(emitidas).toBeDefined();
+    const lines = emitidas!.content.split("\r\n").filter((l) => l.length > 0);
+    expect(lines).toHaveLength(1); // solo cabecera, sin fila fabricada
+  });
+});

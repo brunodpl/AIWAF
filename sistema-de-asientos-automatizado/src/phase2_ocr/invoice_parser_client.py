@@ -10,9 +10,10 @@ o main para evitar side-effects en imports (tests, CI).
 
 import logging
 import time
+import fitz  # PyMuPDF
 from google.cloud import vision
 from google.oauth2 import service_account
-from typing import Tuple
+from typing import List, Tuple
 from .config import settings as get_settings
 
 logger = logging.getLogger("pipeline.ocr")
@@ -27,6 +28,28 @@ MIME_TYPES = {
     "tiff": "image/tiff",
     "tif": "image/tiff",
 }
+
+
+def _pdf_page_chunks(content: bytes, limit: int) -> List[bytes]:
+    """Trocear un PDF en lotes de ≤``limit`` páginas.
+
+    Devuelve una lista de PDFs (bytes), cada uno con como máximo ``limit``
+    páginas, en orden. Si el PDF cabe en un solo lote, devuelve un único
+    elemento. La ruta síncrona de Cloud Vision rechaza PDFs con más páginas
+    que el límite de la API, así que el OCR los procesa por lotes.
+    """
+    chunks: List[bytes] = []
+    with fitz.open(stream=content, filetype="pdf") as src:
+        total = src.page_count
+        for start in range(0, total, limit):
+            end = min(start + limit - 1, total - 1)
+            out = fitz.open()
+            try:
+                out.insert_pdf(src, from_page=start, to_page=end)
+                chunks.append(out.tobytes())
+            finally:
+                out.close()
+    return chunks
 
 
 class VisionOcrClient:
@@ -48,6 +71,7 @@ class VisionOcrClient:
             credentials=self.credentials
         )
         self.max_retries = cfg.vision_max_retries
+        self.vision_sync_page_limit = cfg.vision_sync_page_limit
         logger.info("[Vision] Cloud Vision client initialized")
 
     def get_mime_type(self, file_path: str) -> str:
@@ -112,36 +136,66 @@ class VisionOcrClient:
         """
         Extraer texto de PDF (potencialmente multipágina) vía batch annotate.
 
+        La ruta síncrona de Cloud Vision rechaza PDFs con más páginas que
+        ``vision_sync_page_limit``. Los PDFs que superen el límite se trocean
+        en lotes de ≤límite y el texto se concatena con numeración de página
+        global continua (factura Gadis multipágina y similares).
+
         Returns:
             Tupla de (texto_concatenado, num_paginas)
         """
-        input_config = vision.InputConfig(
-            content=content,
-            mime_type="application/pdf"
-        )
-        feature = vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
-        request = vision.AnnotateFileRequest(
-            input_config=input_config,
-            features=[feature],
-        )
+        # __init__ siempre setea vision_sync_page_limit; acceso directo para
+        # que falle ruidoso si alguna vez dejara de hacerlo (no enmascarar).
+        page_limit = self.vision_sync_page_limit
 
-        response = self.client.batch_annotate_files(requests=[request])
+        with fitz.open(stream=content, filetype="pdf") as doc:
+            total_pages = doc.page_count
+
+        if total_pages <= page_limit:
+            chunks = [content]
+        else:
+            chunks = _pdf_page_chunks(content, page_limit)
+            logger.info(
+                "[Vision] PDF de %d páginas troceado en %d lote(s) de ≤%d para "
+                "Cloud Vision síncrono",
+                total_pages, len(chunks), page_limit,
+            )
 
         pages_text = []
         num_paginas = 0
 
-        for file_response in response.responses:
-            for i, page_response in enumerate(file_response.responses):
-                num_paginas += 1
-                if page_response.error.message:
-                    logger.warning(
-                        f"[Vision] Error en página {num_paginas}: "
-                        f"{page_response.error.message}"
+        for chunk in chunks:
+            input_config = vision.InputConfig(
+                content=chunk,
+                mime_type="application/pdf"
+            )
+            feature = vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
+            request = vision.AnnotateFileRequest(
+                input_config=input_config,
+                features=[feature],
+            )
+
+            response = self.client.batch_annotate_files(requests=[request])
+
+            for file_response in response.responses:
+                # Error a nivel de fichero (p.ej. "exceeds page limit"): es
+                # determinista, no transitorio — abortar con motivo en vez de
+                # devolver texto parcial silenciosamente.
+                if file_response.error.message:
+                    raise Exception(
+                        f"Vision API error (fichero): {file_response.error.message}"
                     )
-                    continue
-                if page_response.full_text_annotation:
-                    page_text = page_response.full_text_annotation.text
-                    pages_text.append(f"--- PÁGINA {num_paginas} ---\n{page_text}")
+                for page_response in file_response.responses:
+                    num_paginas += 1
+                    if page_response.error.message:
+                        logger.warning(
+                            f"[Vision] Error en página {num_paginas}: "
+                            f"{page_response.error.message}"
+                        )
+                        continue
+                    if page_response.full_text_annotation:
+                        page_text = page_response.full_text_annotation.text
+                        pages_text.append(f"--- PÁGINA {num_paginas} ---\n{page_text}")
 
         texto = "\n".join(pages_text)
         return texto, max(num_paginas, 1)

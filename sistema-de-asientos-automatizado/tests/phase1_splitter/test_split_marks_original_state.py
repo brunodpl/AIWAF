@@ -31,6 +31,8 @@ def patched_env(monkeypatch, tmp_path):
         libros_base=str(libros),
         prescan_max_attempts=1,
         prescan_timeout_seconds=30,
+        # Estos tests ejercitan el path Gemini → desactivamos el determinista.
+        split_one_invoice_per_page=False,
     )
     monkeypatch.setattr(splitter_main, "get_settings", lambda: cfg)
     return cfg, inbox, asientos

@@ -26,7 +26,7 @@ from src import state_writer
 from src.config import settings as get_settings
 from src.phase2_ocr.mapper_document_ai_to_json import _init_gemini_model
 
-from .gemini_splitter import SplitDecision, detect_splits
+from .gemini_splitter import SplitDecision, SplitGroup, detect_splits
 from .pdf_utils import extract_pages, page_count, read_bytes, sha256_file
 
 logger = logging.getLogger("pipeline.splitter")
@@ -53,6 +53,21 @@ class SplitOutcome:
     latency_ms: Optional[int] = None
     confidence_min: Optional[float] = None
     confidence_avg: Optional[float] = None
+
+
+def _deterministic_page_split(n_pages: int) -> SplitDecision:
+    """Corte determinista: una factura por página, sin Gemini.
+
+    Cada página del PDF se convierte en una factura independiente. 100%
+    reproducible — no hay llamada a ningún modelo.
+    """
+    groups = tuple(
+        SplitGroup(pages=(i,), emisor_cif_aparente=None, confidence=1.0)
+        for i in range(1, n_pages + 1)
+    )
+    return SplitDecision(
+        groups=groups, model_used="deterministic_page_split", latency_ms=0,
+    )
 
 
 def split_single_file(
@@ -99,6 +114,14 @@ def split_single_file(
             source=str(pdf), status="single_page", n_pages=n_pages,
             n_facturas=1, outputs=[str(pdf)],
         )
+
+    # Modo determinista (default): 1 página = 1 factura, sin Gemini.
+    if cfg.split_one_invoice_per_page:
+        logger.info(
+            "[splitter] %s → split determinista 1 pág/factura (%d facturas)",
+            pdf.name, n_pages,
+        )
+        return _apply_split(pdf, n_pages, _deterministic_page_split(n_pages))
 
     # PDF multi-página: hace falta Gemini. Lazy init del cliente.
     active_client = client if client is not None else _init_gemini_model()
@@ -169,8 +192,9 @@ def run_split(folder_path: str, client=None, model: Optional[str] = None) -> Lis
     lazy_client = client
     for pdf in pdfs:
         # Reusar lazy client entre PDFs de la misma carpeta evita pagar
-        # el init de Gemini múltiples veces en runs legacy.
-        if lazy_client is None:
+        # el init de Gemini múltiples veces en runs legacy. En modo
+        # determinista no se usa Gemini, así que no se inicializa el cliente.
+        if lazy_client is None and not cfg.split_one_invoice_per_page:
             try:
                 # Si el primer PDF es single-page, split_single_file no usa
                 # cliente — diferimos el init hasta que aparezca un multi-página.

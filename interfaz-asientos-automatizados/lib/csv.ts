@@ -71,6 +71,9 @@ export function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
   const nifCliPro = sanitizeNIF(contraparte.nif);
   const concepto = (f.concepto || "").toUpperCase();
 
+  // Sin líneas fiscales NO se emite fila: fabricar BASE=total/CUOTA 0 importaría
+  // una venta sin IVA repercutido en Intermega (dato fiscal incorrecto). El aviso
+  // al operario vive en export-stage (no se exporta en silencio). "nunca inventar".
   return invoice.fiscalLines.map((line) => {
     // vatRate 0 → exenta → Intermega usa tipo 9
     const pctIVA = line.vatRate === 0 ? "9" : String(line.vatRate ?? "");
