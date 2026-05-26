@@ -190,3 +190,37 @@ describe("generateIntermegaCSVsByCliente", () => {
     expect(generateIntermegaCSVsByCliente(new Map(), FECHA)).toEqual([]);
   });
 });
+
+describe("intermegaRowsFor — fallback cuando no hay líneas fiscales (Error 1: CSV emitidas vacío)", () => {
+  it("emite una fila sintética (BASE=TOTAL=total, %IVA vacío, CUOTA 0,00) cuando fiscalLines está vacío", () => {
+    const rows = intermegaRowsFor(
+      makeInvoice({
+        libro: "ingresos",
+        fiscalLines: [],
+        formData: { total_euros: "121", numero_factura: "F-9", fecha_expedicion: "2026-05-08" },
+      })
+    );
+    expect(rows).toHaveLength(1);
+    const cells = rows[0].split(";");
+    // FECHA;SERIE;Nº FACTURA;NOMBRE CLI-PRO;NIF CLI-PRO;DESCRIPCION;BASE;%IVA;CUOTA IVA;...;TOTAL FACTURA
+    expect(cells[6]).toBe("121,00"); // BASE = total
+    expect(cells[7]).toBe(""); // %IVA vacío (NO 9 — eso es exenta real)
+    expect(cells[8]).toBe("0,00"); // CUOTA IVA
+    expect(cells[14]).toBe("121,00"); // TOTAL FACTURA
+  });
+
+  it("generateIntermegaCSVsByCliente: el fichero emitidas tiene cabecera + 1 fila de datos (no solo cabecera)", () => {
+    const invoices = new Map<string, ApprovedInvoiceData>([
+      ["d1", makeInvoice({ libro: "ingresos", fiscalLines: [], formData: { total_euros: "121" } })],
+    ]);
+    const files = generateIntermegaCSVsByCliente(invoices, new Date("2026-05-08T12:00:00Z"));
+    const emitidas = files.find((f) => f.tipo === "emitidas");
+    expect(emitidas).toBeDefined();
+    const lines = emitidas!.content.split("\r\n").filter((l) => l.length > 0);
+    expect(lines.length).toBeGreaterThanOrEqual(2); // cabecera + ≥1 fila de datos
+    const dataCells = lines[1].split(";");
+    expect(dataCells[6]).toBe("121,00"); // BASE = total
+    expect(dataCells[8]).toBe("0,00"); // CUOTA 0,00
+    expect(dataCells[14]).toBe("121,00"); // TOTAL = total
+  });
+});

@@ -1,4 +1,4 @@
-import type { ApprovedInvoiceData } from "./types";
+import type { ApprovedInvoiceData, FiscalLine } from "./types";
 import { resolveClienteGestoria, resolveContraparteFactura } from "./cliente-gestoria";
 
 /**
@@ -71,7 +71,15 @@ export function intermegaRowsFor(invoice: ApprovedInvoiceData): string[] {
   const nifCliPro = sanitizeNIF(contraparte.nif);
   const concepto = (f.concepto || "").toUpperCase();
 
-  return invoice.fiscalLines.map((line) => {
+  // Sin líneas fiscales → fila de fallback: BASE = TOTAL = total, %IVA vacío
+  // (NO 9: eso es exenta real con vatRate 0), CUOTA 0,00. Garantiza ≥1 fila de
+  // datos para que Intermega no responda "no se han encontrado registros".
+  const lineas: Array<Pick<FiscalLine, "base" | "vatAmount"> & { vatRate: number | null }> =
+    invoice.fiscalLines.length > 0
+      ? invoice.fiscalLines
+      : [{ base: normalizeNumber(f.total_euros), vatRate: null, vatAmount: 0 }];
+
+  return lineas.map((line) => {
     // vatRate 0 → exenta → Intermega usa tipo 9
     const pctIVA = line.vatRate === 0 ? "9" : String(line.vatRate ?? "");
     const fields = [
