@@ -33,6 +33,8 @@ def patched_settings(monkeypatch, tmp_path):
         audit_path=lambda: str(audit),
         prescan_max_attempts=2,
         prescan_timeout_seconds=30,
+        # Estos tests ejercitan el path Gemini → desactivamos el determinista.
+        split_one_invoice_per_page=False,
     )
     monkeypatch.setattr(splitter_main, "get_settings", lambda: cfg)
     # Backoff a 0 → tests rápidos.

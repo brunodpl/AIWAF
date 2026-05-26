@@ -91,6 +91,17 @@ class Settings(BaseSettings):
         description="Timeout por pre-scan individual (s). Dimensionado para lotes grandes: Gemini Vision tarda ~50s en un PDF de 60 facturas. Al expirar no se bloquea — el split se difiere al escaneo.",
     )
 
+    # ── Splitter Fase 1: modo de corte ────────────────────────
+    # Determinista: 1 página = 1 factura, sin llamar a Gemini → corte 100%
+    # reproducible para lotes ADF donde cada factura ocupa una página. Si una
+    # página no es una factura válida, el pipeline la bloquea como incidencia y
+    # sigue con las demás. Poner a False para volver al corte por Gemini Vision
+    # (detección de rangos multi-página, no determinista).
+    split_one_invoice_per_page: bool = Field(
+        default=True, validation_alias="SPLIT_ONE_INVOICE_PER_PAGE",
+        description="Split determinista 1 página = 1 factura (sin Gemini). False → corte por Gemini Vision.",
+    )
+
     # ── Gemini LLM árbitro (Fase 3) ──────────────────────────
     # Sin defaults — modelo y location deben ser explícitos en .env.
     # Usar siempre versión anclada (ej: gemini-2.0-flash-001), nunca alias flotante.
