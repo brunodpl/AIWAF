@@ -61,6 +61,13 @@ class Settings(BaseSettings):
         default=3,
         validation_alias="VISION_MAX_RETRIES"
     )
+    # La ruta inline (síncrona) de Cloud Vision rechaza PDFs con más páginas que
+    # este límite. Los PDFs multipágina se trocean en lotes de ≤límite antes de
+    # llamar a batch_annotate_files. Default 5 = límite real de la API.
+    vision_sync_page_limit: int = Field(
+        default=5,
+        validation_alias="VISION_SYNC_PAGE_LIMIT"
+    )
 
     # ── Pre-scan síncrono en upload (Fase 1 anticipada) ───────
     # El splitter Fase 1 se ejecuta dentro del endpoint /upload para que la
