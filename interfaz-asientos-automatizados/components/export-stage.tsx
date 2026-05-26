@@ -252,6 +252,8 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
   const [missingFilesCount, setMissingFilesCount] = useState(0);
   const [missingRequiredCount, setMissingRequiredCount] = useState(0);
   const [missingRequiredFilesCount, setMissingRequiredFilesCount] = useState(0);
+  const [missingFiscalCount, setMissingFiscalCount] = useState(0);
+  const [missingFiscalFilesCount, setMissingFiscalFilesCount] = useState(0);
 
   /**
    * "CONFIRMAR Y SEGUIR ESCANEANDO" — CTA primario del flujo:
@@ -348,10 +350,11 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
   // --- Single-file download ---
   const handleFileDownload = useCallback(
     (file: IntermegaCsvFile) => {
-      // Count invoices in this file that lack cuenta_contable, or that lack a
-      // required Intermega field (FECHA / Nº FACTURA).
+      // Count invoices in this file that lack cuenta_contable, a required
+      // Intermega field (FECHA / Nº FACTURA), or a fiscal breakdown.
       let missing = 0;
       let missingReq = 0;
+      let missingFiscal = 0;
       for (const [, invoice] of approvedInvoices) {
         const cliente = resolveClienteGestoria(invoice.libro, invoice.formData);
         const nifKey = sanitizeNifKey(cliente.nif);
@@ -359,13 +362,16 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
         if (nifKey === file.nifCliente && tipo === file.tipo) {
           if (!invoice.formData.cuenta_contable) missing++;
           if (isMissingRequiredFields(invoice.formData)) missingReq++;
+          if (invoice.fiscalLines.length === 0) missingFiscal++;
         }
       }
-      if (missing > 0 || missingReq > 0) {
+      if (missing > 0 || missingReq > 0 || missingFiscal > 0) {
         setMissingAccountsCount(missing);
         setMissingFilesCount(missing > 0 ? 1 : 0);
         setMissingRequiredCount(missingReq);
         setMissingRequiredFilesCount(missingReq > 0 ? 1 : 0);
+        setMissingFiscalCount(missingFiscal);
+        setMissingFiscalFilesCount(missingFiscal > 0 ? 1 : 0);
         setPendingAction({ type: "file", file });
       } else {
         downloadCsvFile(file);
@@ -379,11 +385,14 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
   const handleZipDownload = useCallback(async () => {
     if (csvFiles.length === 0) return;
 
-    // Count all invoices missing cuenta_contable, or a required Intermega field.
+    // Count all invoices missing cuenta_contable, a required Intermega field,
+    // or a fiscal breakdown.
     let missing = 0;
     let missingReq = 0;
+    let missingFiscal = 0;
     const affectedFiles = new Set<string>();
     const affectedReqFiles = new Set<string>();
+    const affectedFiscalFiles = new Set<string>();
     for (const [, invoice] of approvedInvoices) {
       const cliente = resolveClienteGestoria(invoice.libro, invoice.formData);
       const nifKey = sanitizeNifKey(cliente.nif);
@@ -397,13 +406,19 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
         missingReq++;
         affectedReqFiles.add(key);
       }
+      if (invoice.fiscalLines.length === 0) {
+        missingFiscal++;
+        affectedFiscalFiles.add(key);
+      }
     }
 
-    if (missing > 0 || missingReq > 0) {
+    if (missing > 0 || missingReq > 0 || missingFiscal > 0) {
       setMissingAccountsCount(missing);
       setMissingFilesCount(affectedFiles.size);
       setMissingRequiredCount(missingReq);
       setMissingRequiredFilesCount(affectedReqFiles.size);
+      setMissingFiscalCount(missingFiscal);
+      setMissingFiscalFilesCount(affectedFiscalFiles.size);
       setPendingAction({ type: "zip" });
     } else {
       await doZip();
@@ -447,6 +462,13 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
       isZipAction
         ? `${missingAccountsCount} factura(s) sin cuenta contable asignada en ${missingFilesCount} archivo(s)`
         : `${missingAccountsCount} factura(s) sin cuenta contable asignada en este archivo`
+    );
+  }
+  if (missingFiscalCount > 0) {
+    dialogParts.push(
+      isZipAction
+        ? `${missingFiscalCount} factura(s) sin desglose fiscal (base/IVA) en ${missingFiscalFilesCount} archivo(s) — no generarán filas; Intermega rechazará el fichero`
+        : `${missingFiscalCount} factura(s) sin desglose fiscal (base/IVA) — no generarán filas; Intermega rechazará el fichero`
     );
   }
   if (missingRequiredCount > 0) {

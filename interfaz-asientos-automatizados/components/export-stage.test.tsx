@@ -42,13 +42,13 @@ const toastMock = vi.hoisted(() => ({
 vi.mock("sonner", () => ({ toast: toastMock }));
 
 import { ExportStage } from "@/components/export-stage";
-import type { ApprovedInvoiceData } from "@/lib/types";
+import type { ApprovedInvoiceData, FiscalLine } from "@/lib/types";
 
-function makeInvoice(formOver: Record<string, string>): ApprovedInvoiceData {
+function makeInvoice(formOver: Record<string, string>, fiscalLines?: FiscalLine[]): ApprovedInvoiceData {
   return {
     libro: "ingresos",
     cuenta_contable: "700000",
-    fiscalLines: [{ id: "l1", base: 100, vatRate: 21, vatAmount: 21, total: 121 }],
+    fiscalLines: fiscalLines ?? [{ id: "l1", base: 100, vatRate: 21, vatAmount: 21, total: 121 }],
     formData: {
       nif_entidad: "B111",
       nombre_entidad: "ACME SL",
@@ -101,7 +101,20 @@ describe("ExportStage — aviso de FECHA / Nº FACTURA ausentes antes de descarg
     expect(toastMock.success).not.toHaveBeenCalled();
   });
 
-  it("descarga sin aviso cuando FECHA, Nº FACTURA y cuenta están presentes", () => {
+  it("avisa con dialog si una factura no tiene desglose fiscal (fiscalLines vacío)", () => {
+    // Todos los campos obligatorios OK, pero sin líneas fiscales → la factura
+    // exportaría sin filas (Intermega: "no se han encontrado registros").
+    const invoices = new Map<string, ApprovedInvoiceData>([
+      ["d1", makeInvoice({}, [])],
+    ]);
+    render(<ExportStage approvedInvoices={invoices} onBack={() => {}} />);
+    clickPerFileDownload();
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(/desglose fiscal/i)).toBeTruthy();
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it("descarga sin aviso cuando FECHA, Nº FACTURA, cuenta y desglose están presentes", () => {
     const invoices = new Map<string, ApprovedInvoiceData>([
       ["d1", makeInvoice({})],
     ]);

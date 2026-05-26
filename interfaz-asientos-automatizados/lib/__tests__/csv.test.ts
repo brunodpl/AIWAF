@@ -191,8 +191,12 @@ describe("generateIntermegaCSVsByCliente", () => {
   });
 });
 
-describe("intermegaRowsFor — fallback cuando no hay líneas fiscales (Error 1: CSV emitidas vacío)", () => {
-  it("emite una fila sintética (BASE=TOTAL=total, %IVA vacío, CUOTA 0,00) cuando fiscalLines está vacío", () => {
+describe("intermegaRowsFor — no fabrica filas cuando faltan líneas fiscales (Error 1: no inventar IVA cero)", () => {
+  // Decisión: una factura sin desglose fiscal NO debe emitir una fila con
+  // BASE=total y CUOTA 0,00 — eso importaría en Intermega una venta sin IVA
+  // repercutido (dato fiscal incorrecto). En su lugar no se emite fila y la UI
+  // avisa al operario (ver export-stage). "nunca inventar datos".
+  it("fiscalLines vacío → 0 filas (no se inventa una fila con IVA cero)", () => {
     const rows = intermegaRowsFor(
       makeInvoice({
         libro: "ingresos",
@@ -200,16 +204,10 @@ describe("intermegaRowsFor — fallback cuando no hay líneas fiscales (Error 1:
         formData: { total_euros: "121", numero_factura: "F-9", fecha_expedicion: "2026-05-08" },
       })
     );
-    expect(rows).toHaveLength(1);
-    const cells = rows[0].split(";");
-    // FECHA;SERIE;Nº FACTURA;NOMBRE CLI-PRO;NIF CLI-PRO;DESCRIPCION;BASE;%IVA;CUOTA IVA;...;TOTAL FACTURA
-    expect(cells[6]).toBe("121,00"); // BASE = total
-    expect(cells[7]).toBe(""); // %IVA vacío (NO 9 — eso es exenta real)
-    expect(cells[8]).toBe("0,00"); // CUOTA IVA
-    expect(cells[14]).toBe("121,00"); // TOTAL FACTURA
+    expect(rows).toHaveLength(0);
   });
 
-  it("generateIntermegaCSVsByCliente: el fichero emitidas tiene cabecera + 1 fila de datos (no solo cabecera)", () => {
+  it("generateIntermegaCSVsByCliente: una emitida sin líneas fiscales NO añade fila de datos (solo cabecera)", () => {
     const invoices = new Map<string, ApprovedInvoiceData>([
       ["d1", makeInvoice({ libro: "ingresos", fiscalLines: [], formData: { total_euros: "121" } })],
     ]);
@@ -217,10 +215,6 @@ describe("intermegaRowsFor — fallback cuando no hay líneas fiscales (Error 1:
     const emitidas = files.find((f) => f.tipo === "emitidas");
     expect(emitidas).toBeDefined();
     const lines = emitidas!.content.split("\r\n").filter((l) => l.length > 0);
-    expect(lines.length).toBeGreaterThanOrEqual(2); // cabecera + ≥1 fila de datos
-    const dataCells = lines[1].split(";");
-    expect(dataCells[6]).toBe("121,00"); // BASE = total
-    expect(dataCells[8]).toBe("0,00"); // CUOTA 0,00
-    expect(dataCells[14]).toBe("121,00"); // TOTAL = total
+    expect(lines).toHaveLength(1); // solo cabecera, sin fila fabricada
   });
 });
