@@ -478,7 +478,9 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
         : `${missingRequiredCount} factura(s) sin FECHA o sin Nº FACTURA — Intermega rechazará el fichero`
     );
   }
-  const dialogDescription = `Hay ${dialogParts.join("; y ")}. Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.`;
+  const dialogDescription =
+    `Revisa estas facturas antes de descargar:\n• ${dialogParts.join("\n• ")}\n\n` +
+    `Puedes volver a la fase de revisión para corregirlo, o continuar con la descarga.`;
 
   return (
     <div className="flex flex-col h-full bg-white">
@@ -486,7 +488,7 @@ export function ExportStage({ approvedInvoices, onBack, onConfirmed }: ExportSta
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Revisar antes de descargar</AlertDialogTitle>
-            <AlertDialogDescription>{dialogDescription}</AlertDialogDescription>
+            <AlertDialogDescription className="whitespace-pre-line text-left">{dialogDescription}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="rounded-none text-xs uppercase tracking-[0.15em]">

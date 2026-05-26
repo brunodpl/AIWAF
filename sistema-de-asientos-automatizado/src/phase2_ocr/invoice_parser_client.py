@@ -144,7 +144,9 @@ class VisionOcrClient:
         Returns:
             Tupla de (texto_concatenado, num_paginas)
         """
-        page_limit = getattr(self, "vision_sync_page_limit", 5)
+        # __init__ siempre setea vision_sync_page_limit; acceso directo para
+        # que falle ruidoso si alguna vez dejara de hacerlo (no enmascarar).
+        page_limit = self.vision_sync_page_limit
 
         with fitz.open(stream=content, filetype="pdf") as doc:
             total_pages = doc.page_count

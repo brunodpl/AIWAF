@@ -35,6 +35,7 @@ def _make_client_with_mock(batch_side_effect) -> "ipc.VisionOcrClient":
     client.client = MagicMock()
     client.client.batch_annotate_files.side_effect = batch_side_effect
     client.max_retries = 1
+    client.vision_sync_page_limit = 5
     return client
 
 
