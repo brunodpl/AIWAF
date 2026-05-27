@@ -6,9 +6,11 @@ asignación de confianzas deterministas y fallback de mínimos.
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from datetime import date, timezone, datetime
 
+from src.phase2_ocr import mapper_document_ai_to_json as mapper
 from src.phase2_ocr.mapper_document_ai_to_json import (
     _confianza_campo,
     validar_suma_fiscal,
@@ -19,6 +21,29 @@ from src.phase2_ocr.mapper_document_ai_to_json import (
     CONFIANZA_CAMPO_KO,
     CONFIANZA_TOTAL_WARN,
 )
+
+
+# ─── _init_gemini_model: timeout (bug del lote colgado) ──────────────────
+
+def test_init_gemini_model_aplica_timeout_desde_config():
+    """El cliente Gemini debe llevar timeout (en ms) tomado de config.
+
+    Sin timeout, una llamada colgada bloquea el lote entero (un cuelgue no
+    lanza excepción → el bucle de reintentos no actúa → el lote no avanza).
+    """
+    cfg = SimpleNamespace(
+        google_application_credentials=None,
+        google_cloud_project_id="proj-test",
+        gemini_ocr_location="europe-west1",
+        gemini_ocr_model="gemini-2.5-flash",
+        gemini_ocr_timeout_seconds=120,
+    )
+    with patch.object(mapper, "get_settings", return_value=cfg), \
+            patch.object(mapper.genai, "Client") as mock_client:
+        mapper._init_gemini_model()
+
+    http_options = mock_client.call_args.kwargs["http_options"]
+    assert http_options.timeout == 120 * 1000
 
 
 # ─── _confianza_campo ──────────���────────────────────────────────────────

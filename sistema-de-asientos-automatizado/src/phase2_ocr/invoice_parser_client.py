@@ -72,6 +72,7 @@ class VisionOcrClient:
         )
         self.max_retries = cfg.vision_max_retries
         self.vision_sync_page_limit = cfg.vision_sync_page_limit
+        self.vision_timeout_seconds = cfg.vision_timeout_seconds
         logger.info("[Vision] Cloud Vision client initialized")
 
     def get_mime_type(self, file_path: str) -> str:
@@ -122,7 +123,9 @@ class VisionOcrClient:
     def _extract_text_image(self, content: bytes) -> str:
         """Extraer texto de imagen o PDF de una sola página (síncrono)."""
         image = vision.Image(content=content)
-        response = self.client.document_text_detection(image=image)
+        response = self.client.document_text_detection(
+            image=image, timeout=self.vision_timeout_seconds
+        )
 
         if response.error.message:
             raise Exception(f"Vision API error: {response.error.message}")
@@ -175,7 +178,9 @@ class VisionOcrClient:
                 features=[feature],
             )
 
-            response = self.client.batch_annotate_files(requests=[request])
+            response = self.client.batch_annotate_files(
+                requests=[request], timeout=self.vision_timeout_seconds
+            )
 
             for file_response in response.responses:
                 # Error a nivel de fichero (p.ej. "exceeds page limit"): es

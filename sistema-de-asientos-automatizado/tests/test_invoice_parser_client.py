@@ -36,10 +36,11 @@ def _make_client_with_mock(batch_side_effect) -> "ipc.VisionOcrClient":
     client.client.batch_annotate_files.side_effect = batch_side_effect
     client.max_retries = 1
     client.vision_sync_page_limit = 5
+    client.vision_timeout_seconds = 120
     return client
 
 
-def _ok_response_for(requests):
+def _ok_response_for(requests, timeout=None):
     """side_effect: una página OK por cada página real del chunk recibido."""
     req = requests[0]
     content = req.input_config.content
@@ -96,8 +97,19 @@ class TestExtractTextPdfChunking:
         assert client.client.batch_annotate_files.call_count == 1
         assert num_paginas == 3
 
+    def test_batch_annotate_recibe_timeout(self):
+        # Sin timeout en la llamada a Cloud Vision, un cuelgue bloquea el lote.
+        client = _make_client_with_mock(_ok_response_for)
+        client.vision_timeout_seconds = 99
+        content = _make_pdf_bytes(2)
+
+        client._extract_text_pdf(content)
+
+        for call in client.client.batch_annotate_files.call_args_list:
+            assert call.kwargs["timeout"] == 99
+
     def test_error_a_nivel_fichero_lanza_excepcion(self):
-        def _file_error(requests):
+        def _file_error(requests, timeout=None):
             file_response = SimpleNamespace(
                 error=SimpleNamespace(message="Document exceeds page limit"),
                 responses=[],

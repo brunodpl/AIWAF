@@ -117,8 +117,26 @@ def resolver_cliente(
                 f"NIF {match_nombre['nif']} en maestro — requiere verificación"
             )
         else:
+            # Cliente desconocido en el maestro. Nunca autocargar en silencio: un
+            # cliente de la gestoría (emisor en ventas / receptor en compras) que
+            # no figura en el maestro merece revisión humana.
             es_nuevo = True
-            motivo_parts.append(f"Cliente nuevo: {nif_valor}")
+            decision_nif = _peor_decision(decision_nif, "warn")
+            otro_rol_nif = _otro_rol_nif(campos_identidad, libro)
+            if otro_rol_nif and otro_rol_nif in clientes:
+                # El otro rol SÍ es cliente conocido y este no → patrón de
+                # inversión emisor/receptor (p.ej. autofactura de máquina
+                # recreativa donde la operadora se imprime como emisor).
+                motivo_parts.append(
+                    f"posible inversión emisor/receptor: el otro rol "
+                    f"(NIF {otro_rol_nif}) es cliente conocido en el maestro "
+                    f"pero {nif_valor} no — revisar"
+                )
+            else:
+                motivo_parts.append(
+                    f"cliente desconocido (NIF {nif_valor} no está en el maestro) "
+                    f"— revisar"
+                )
 
     # La decisión final del campo es la peor entre identidad y maestro
     decision_final_nif = _peor_decision(decision_nif, nif_decision)
@@ -170,6 +188,18 @@ def resolver_cliente(
 # ──────────────────────────────────────────────────────────
 
 _PRIORIDAD = {"block": 3, "warn": 2, "pendiente": 1, "auto": 0}
+
+
+def _otro_rol_nif(campos_identidad: dict, libro: str) -> str | None:
+    """NIF del rol que NO representa al cliente de la gestoría para este libro.
+
+    En ventas el cliente es el emisor (``nif_entidad``), así que el "otro rol"
+    es el receptor; en compras/bienes es al revés. Sirve para detectar la
+    inversión emisor/receptor cruzando contra el maestro.
+    """
+    campo_nif_cliente, _ = LIBRO_A_ROL_CLIENTE[libro]
+    campo_otro = "nif_receptor" if campo_nif_cliente == "nif_entidad" else "nif_entidad"
+    return (campos_identidad.get(campo_otro) or {}).get("valor_final")
 
 
 def _peor_decision(a: str, b: str) -> str:
