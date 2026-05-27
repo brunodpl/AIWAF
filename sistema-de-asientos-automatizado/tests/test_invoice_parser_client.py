@@ -108,6 +108,22 @@ class TestExtractTextPdfChunking:
         for call in client.client.batch_annotate_files.call_args_list:
             assert call.kwargs["timeout"] == 99
 
+    def test_document_text_detection_recibe_timeout(self):
+        # Path de imagen (JPG/PNG/TIFF): el timeout también debe llegar a
+        # document_text_detection, no solo a batch_annotate_files (PDF). Sin esta
+        # aserción, un refactor que quite/renombre el kwarg ahí pasaría inadvertido.
+        client = _make_client_with_mock(_ok_response_for)
+        client.vision_timeout_seconds = 77
+        client.client.document_text_detection.return_value = SimpleNamespace(
+            error=SimpleNamespace(message=""),
+            full_text_annotation=SimpleNamespace(text="texto imagen"),
+        )
+
+        texto = client._extract_text_image(b"\xff\xd8\xff\xe0")
+
+        assert texto == "texto imagen"
+        assert client.client.document_text_detection.call_args.kwargs["timeout"] == 77
+
     def test_error_a_nivel_fichero_lanza_excepcion(self):
         def _file_error(requests, timeout=None):
             file_response = SimpleNamespace(
