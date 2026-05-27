@@ -57,9 +57,26 @@ class Settings(BaseSettings):
     gemini_ocr_location: str = Field(
         validation_alias="GEMINI_OCR_LOCATION"
     )
+    # Timeout por llamada a Gemini (estructuración OCR). Sin él, un cuelgue de
+    # red/servidor bloquea el lote entero: el cuelgue no lanza excepción, así
+    # que el bucle de reintentos no actúa y la factura nunca avanza. Al expirar,
+    # el SDK lanza → reintenta → fallback json_minimos → BLOCK → el lote sigue.
+    gemini_ocr_timeout_seconds: int = Field(
+        default=120,
+        validation_alias="GEMINI_OCR_TIMEOUT_SECONDS",
+        description="Timeout por llamada a Gemini de estructuración OCR (s).",
+    )
     vision_max_retries: int = Field(
         default=3,
         validation_alias="VISION_MAX_RETRIES"
+    )
+    # Timeout por llamada a Cloud Vision (defensa en profundidad: también puede
+    # colgarse). Al expirar lanza → _retry_call reintenta → re-lanza → el
+    # pipeline marca la factura como error y continúa con la siguiente.
+    vision_timeout_seconds: int = Field(
+        default=120,
+        validation_alias="VISION_TIMEOUT_SECONDS",
+        description="Timeout por llamada a Cloud Vision (s).",
     )
     # La ruta inline (síncrona) de Cloud Vision rechaza PDFs con más páginas que
     # este límite. Los PDFs multipágina se trocean en lotes de ≤límite antes de
@@ -202,7 +219,13 @@ class Settings(BaseSettings):
         description="Feature flag para desactivar la inversión emisor/receptor en autofacturas.",
     )
     autofactura_marcadores_raw: str = Field(
-        default="FACTURACION POR EL DESTINATARIO",
+        default=(
+            "FACTURACION POR EL DESTINATARIO"
+            "|FACTURA EXPEDIDA POR EL DESTINATARIO"
+            "|FACTURA EMITIDA POR EL DESTINATARIO"
+            "|EXPEDIDA POR EL DESTINATARIO"
+            "|AUTOFACTURA"
+        ),
         validation_alias="AUTOFACTURA_MARCADORES",
         description="Marcadores de autofactura en el OCR (separados por '|'); se comparan sin acentos ni mayúsculas.",
     )

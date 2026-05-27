@@ -46,7 +46,11 @@ def _init_gemini_model() -> genai.Client:
         project=cfg.google_cloud_project_id,
         location=cfg.gemini_ocr_location,
         credentials=credentials,
-        http_options=types.HttpOptions(api_version="v1"),
+        # timeout en ms (HttpOptions). Evita que un cuelgue de Gemini bloquee el lote.
+        http_options=types.HttpOptions(
+            api_version="v1",
+            timeout=cfg.gemini_ocr_timeout_seconds * 1000,
+        ),
     )
     logger.info(
         f"[Gemini] Cliente Vertex AI inicializado: "

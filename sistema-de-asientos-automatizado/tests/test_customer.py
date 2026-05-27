@@ -87,8 +87,9 @@ class TestResolverClienteCompras:
         maestro = _maestro_con_cliente("B12345678")
         result = resolver_cliente(campos, "20_COMPRAS_GASTOS", maestro, "test_002")
         assert result["cliente_info"]["es_nuevo"] is True
-        # Clientes nuevos nunca son auto
-        assert result["decision_global"] in ("warn", "auto")
+        # Clientes nuevos nunca son auto: un cliente desconocido en el maestro
+        # debe ir a revisión, nunca autocargar en silencio.
+        assert result["decision_global"] == "warn"
 
     def test_nif_block_propaga_block(self):
         campos = _campos_identidad(decision="block")
@@ -112,6 +113,61 @@ class TestResolverClienteVentas:
         result = resolver_cliente(campos, "21_VENTAS_INGRESOS", maestro, "test_005")
         assert result["campos"]["nif_cliente"]["valor_final"] == "A87654321"
         assert result["cliente_info"]["es_nuevo"] is False
+
+
+class TestSalvaguardaClienteDesconocido:
+    """Salvaguarda determinista: un cliente desconocido en el maestro nunca autocarga.
+
+    Caso real (LOLI): factura de Luckia (operadora máquinas recreativas) en VENTAS.
+    Gemini etiqueta Luckia como emisor → para VENTAS sería "nuestro asociado".
+    Luckia no está en el maestro pero la clienta real (receptor) sí → posible
+    inversión emisor/receptor → debe ir a revisión, no autocargar.
+    """
+
+    def test_ventas_emisor_desconocido_receptor_conocido_warn_inversion(self):
+        # Luckia (emisor, A11111111) NO en maestro; clienta (receptor, B12345678) SÍ.
+        campos = _campos_identidad(
+            nif_entidad="A11111111",
+            nombre_entidad="LUCKIA SA",
+            nif_receptor="B12345678",
+            nombre_receptor="MARIA CONCEPCION PRECEDO",
+        )
+        maestro = _maestro_con_cliente("B12345678", "MARIA CONCEPCION PRECEDO")
+        result = resolver_cliente(campos, "21_VENTAS_INGRESOS", maestro, "luckia")
+        assert result["decision_global"] == "warn"
+        assert "inversión" in result["campos"]["nif_cliente"]["motivo"].lower()
+
+    def test_compras_receptor_desconocido_emisor_conocido_warn_inversion(self):
+        # Cliente (receptor) desconocido pero el otro rol (emisor) sí está en el maestro.
+        campos = _campos_identidad(
+            nif_receptor="A11111111",
+            nombre_receptor="DESCONOCIDO SL",
+            nif_entidad="B12345678",
+            nombre_entidad="PROVEEDOR CONOCIDO SL",
+        )
+        maestro = _maestro_con_cliente("B12345678", "PROVEEDOR CONOCIDO SL")
+        result = resolver_cliente(campos, "20_COMPRAS_GASTOS", maestro, "c_inv")
+        assert result["decision_global"] == "warn"
+        assert "inversión" in result["campos"]["nif_cliente"]["motivo"].lower()
+
+    def test_cliente_nuevo_ambos_roles_desconocidos_es_warn(self):
+        # Ni emisor ni receptor están en el maestro → cliente genuinamente nuevo → warn.
+        campos = _campos_identidad(
+            nif_receptor="X99999999",
+            nombre_receptor="OTRO PROVEEDOR SA",
+            nif_entidad="Y88888888",
+            nombre_entidad="OTRO EMISOR SA",
+        )
+        maestro = _maestro_con_cliente("B12345678", "PROVEEDOR SL")
+        result = resolver_cliente(campos, "20_COMPRAS_GASTOS", maestro, "c_nuevo")
+        assert result["decision_global"] == "warn"
+
+    def test_ventas_emisor_conocido_es_auto(self):
+        # Sin regresión: si el emisor (cliente en VENTAS) está en el maestro → auto.
+        campos = _campos_identidad(nif_entidad="A87654321", nombre_entidad="CLIENTE SL")
+        maestro = _maestro_con_cliente("A87654321", "CLIENTE SL")
+        result = resolver_cliente(campos, "21_VENTAS_INGRESOS", maestro, "v_ok")
+        assert result["decision_global"] == "auto"
 
 
 class TestResolverClienteLibroDesconocido:

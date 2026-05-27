@@ -12,7 +12,11 @@ identifica ambos NIF válidos, intercambiar nif_entidad<->nif_receptor y
 nombre_entidad<->nombre_receptor, forzando decisión >= WARN (revisión humana).
 """
 
-from src.phase3_identidad_cabecera.cabecera_resolver import CabeceraResolver
+from src.config import Settings
+from src.phase3_identidad_cabecera.cabecera_resolver import (
+    CabeceraResolver,
+    _es_autofactura,
+)
 from src.phase3_identidad_cabecera.field_candidate import DecisionCampo
 
 
@@ -87,3 +91,33 @@ class TestAutofacturaSwap:
         resultado = _resolver().resolver(raw, "doc-parcial")
 
         assert resultado.nif_entidad["valor_final"] == _COMAR_NIF
+
+
+class TestMarcadoresDefaultAmpliados:
+    """El default de config debe cubrir variantes habituales de autofactura.
+
+    Muchas autofacturas (máquinas recreativas) no usan literalmente
+    "FACTURACIÓN POR EL DESTINATARIO". El default debe reconocer variantes
+    para que el swap salte sin necesidad de tocar el .env por gestoría.
+    """
+
+    def _marcadores_default(self) -> list[str]:
+        raw = Settings.model_fields["autofactura_marcadores_raw"].default
+        return [m.strip() for m in raw.split("|") if m.strip()]
+
+    def test_default_reconoce_variantes(self):
+        marcadores = self._marcadores_default()
+        textos = [
+            "Total 100\nFACTURACIÓN POR EL DESTINATARIO\n",
+            "Esta es una FACTURA EXPEDIDA POR EL DESTINATARIO de la operación",
+            "FACTURA EMITIDA POR EL DESTINATARIO en nombre del titular",
+            "Documento tipo AUTOFACTURA",
+        ]
+        for texto in textos:
+            assert _es_autofactura(texto, marcadores), f"no reconocido: {texto!r}"
+
+    def test_default_no_marca_factura_normal(self):
+        marcadores = self._marcadores_default()
+        assert not _es_autofactura(
+            "Factura ordinaria\nBase 100\nIVA 21\nTOTAL 121\n", marcadores
+        )
