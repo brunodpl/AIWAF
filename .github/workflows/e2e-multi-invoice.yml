@@ -1,0 +1,182 @@
+name: E2E multi-invoice (Gemini real)
+
+# Manual / nocturno. NO se ejecuta en cada PR porque:
+# - Coste: ~€0.20 por run (llamadas reales a Gemini Vision + Gemini structuring).
+# - Tiempo: ~6-9 min por run.
+# - Determinismo: depende de la disponibilidad de Gemini y del PDF de fixture.
+#
+# Disparar a demanda desde la pestaña Actions o por cron nocturno.
+# El gate de cada PR sigue siendo .github/workflows/ci.yml (hermetic).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/SHA to test (default: main)"
+        required: false
+        default: "main"
+  schedule:
+    # Diario a las 03:00 UTC (05:00 hora Madrid en invierno, 05:00/06:00 en verano).
+    # Si falla, abre alerta — no bloquea PRs.
+    - cron: "0 3 * * *"
+
+# Serializar runs: si el cron dispara mientras corre un workflow_dispatch
+# (o viceversa), encolar en vez de ejecutar en paralelo contra el mismo
+# fixture (Gemini real, ~0.20 euros/run; gemelos son derroche).
+concurrency:
+  group: e2e-multi-invoice
+  cancel-in-progress: false
+
+jobs:
+  multi-invoice:
+    name: Multi-invoice E2E (Gemini real)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: interfaz-asientos-automatizados/pnpm-lock.yaml
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            sistema-de-asientos-automatizado/requirements.txt
+            sistema-de-asientos-automatizado/requirements-dev.txt
+
+      - name: Install backend deps
+        working-directory: sistema-de-asientos-automatizado
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install "fastapi[standard]" uvicorn
+
+      - name: Write GCP service account
+        env:
+          GEMINI_SERVICE_ACCOUNT_JSON: ${{ secrets.GEMINI_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p sistema-de-asientos-automatizado/credentials
+          # Usar printf y env passthrough para que el JSON no aparezca expandido
+          # en el shell antes de la mascara de GH (echo "${{...}}" hace eso).
+          printf '%s' "$GEMINI_SERVICE_ACCOUNT_JSON" > sistema-de-asientos-automatizado/credentials/gcp-sa.json
+          # Validar JSON valido (fail-loud si el secret esta vacio o roto).
+          python -c "import json,sys; json.load(open('sistema-de-asientos-automatizado/credentials/gcp-sa.json'))" || {
+            echo "::error::GEMINI_SERVICE_ACCOUNT_JSON secret invalido (no es JSON)."
+            exit 1
+          }
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/sistema-de-asientos-automatizado/credentials/gcp-sa.json" >> $GITHUB_ENV
+
+      - name: Configure backend .env
+        working-directory: sistema-de-asientos-automatizado
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          # Guard: GCP project id es siempre [a-z0-9-]+. Si el secret tiene
+          # otra cosa, abortar antes de que sed produzca garbage en .env.
+          if ! [[ "${GCP_PROJECT_ID}" =~ ^[a-z0-9-]+$ ]]; then
+            # No imprimir el valor: GH masking solo cubre el match exacto;
+            # un secret malformado (e.g. mayúscula) que falla el regex se
+            # filtraria al log. Mostrar solo la longitud.
+            echo "::error::GCP_PROJECT_ID secret invalido (esperado [a-z0-9-]+, got ${#GCP_PROJECT_ID} chars)"
+            exit 1
+          fi
+          cp .env.example .env
+          # Override variables que las fixtures necesitan reales.
+          # GCP_PROJECT_ID ya validado arriba; no contiene |, & ni newlines.
+          sed -i "s|^GOOGLE_CLOUD_PROJECT_ID=.*|GOOGLE_CLOUD_PROJECT_ID=${GCP_PROJECT_ID}|" .env
+
+      - name: Start backend (uvicorn)
+        working-directory: sistema-de-asientos-automatizado
+        run: |
+          mkdir -p libros/facturas libros/asientos libros/.runtime
+          nohup uvicorn src.api.main:app --host 0.0.0.0 --port 8003 > backend.log 2>&1 &
+          echo "BACKEND_PID=$!" >> $GITHUB_ENV
+          # Esperar healthcheck.
+          ready=0
+          for i in {1..30}; do
+            if curl -sf http://localhost:8003/api/books > /dev/null; then
+              echo "Backend listo (intento $i)."
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::Backend no arranco en 60s — abortando."
+            cat backend.log || true
+            exit 1
+          fi
+
+      - name: Install frontend deps
+        working-directory: interfaz-asientos-automatizados
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: interfaz-asientos-automatizados
+        env:
+          NEXT_PUBLIC_PIPELINE_API: http://localhost:8003
+        run: pnpm run build
+
+      - name: Start frontend
+        working-directory: interfaz-asientos-automatizados
+        env:
+          PIPELINE_API_URL: http://localhost:8003
+          NEXT_PUBLIC_PIPELINE_API: http://localhost:8003
+        run: |
+          nohup pnpm exec next start -p 3003 > frontend.log 2>&1 &
+          ready=0
+          for i in {1..30}; do
+            if curl -sf http://localhost:3003 > /dev/null; then
+              echo "Frontend listo (intento $i)."
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::Frontend no arranco en 60s — abortando."
+            cat frontend.log || true
+            exit 1
+          fi
+
+      - name: Install Playwright
+        working-directory: interfaz-asientos-automatizados
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run multi-invoice suite
+        working-directory: interfaz-asientos-automatizados
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3003
+          LIBROS_HOST_PATH: ${{ github.workspace }}/sistema-de-asientos-automatizado/libros
+        run: pnpm exec playwright test --project=multi-invoice --reporter=list
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-multi-invoice
+          path: interfaz-asientos-automatizados/playwright-report/
+          retention-days: 14
+
+      - name: Dump backend log on failure
+        if: failure()
+        run: cat sistema-de-asientos-automatizado/backend.log || true
+
+      - name: Dump frontend log on failure
+        if: failure()
+        run: cat interfaz-asientos-automatizados/frontend.log || true

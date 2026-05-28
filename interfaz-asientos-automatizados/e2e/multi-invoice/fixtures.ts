@@ -348,5 +348,41 @@ export async function clickScanFooterButton(page: Page): Promise<void> {
   await page.getByRole("button", { name: /escanear .* factura/i }).click();
 }
 
+/**
+ * Tras subir un PDF multi-factura por UI, la app debe transitar al stage
+ * "Pre-revisión" automáticamente (callback onUploadComplete en books-manager).
+ * Este helper espera el heading "Pre-revisión", verifica el detected count
+ * y pulsa "Escanear N Factura(s)" para avanzar a processing → review.
+ *
+ * Reemplaza la asunción vieja "navigateToReview salta desde books" que asumían
+ * los specs 02/03/07 antes del fix de Pre-revisión Fase 1.
+ *
+ * Spec: docs/superpowers/specs/2026-05-28-pre-revision-callback-y-test-drift-design.md
+ */
+export async function expectPreRevisionAndConfirm(
+  page: Page,
+  { expectedInvoices }: { expectedInvoices: number }
+): Promise<void> {
+  const preRevisionHeader = page.getByRole("heading", { name: /Pre-revisión/i });
+  await expect(preRevisionHeader).toBeVisible({ timeout: 90_000 });
+
+  const escanearBtn = page.getByRole("button", { name: /Escanear .* factura/i });
+  await expect(escanearBtn).toBeVisible();
+  await expect(escanearBtn).toBeEnabled();
+
+  const label = (await escanearBtn.textContent())?.trim() ?? "";
+  const match = label.match(/Escanear\s+(\d+)/i);
+  // Fail loud si el formato del botón cambió, no degradar a "0 < N".
+  expect(match, `formato del botón Escanear cambió: "${label}"`).not.toBeNull();
+  const detected = parseInt(match![1], 10);
+  expect(detected).toBeGreaterThanOrEqual(expectedInvoices);
+
+  await escanearBtn.click();
+
+  // Esperar el reviewer (botón "Aprobar" en footer cuando carga la 1ª factura).
+  const aprobar = page.getByRole("button", { name: /^(Aprobar|Aprobada)$/i });
+  await expect(aprobar).toBeVisible({ timeout: 5 * 60_000 });
+}
+
 export const test = base.extend({});
 export { expect };

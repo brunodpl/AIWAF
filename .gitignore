@@ -59,3 +59,7 @@ compose-build.log
 
 # Local [AI assistant] Code settings (user-specific)
 .[AI assistant]/settings.local.json
+
+# Ficheros temporales para crear PRs (gh pr create --body-file)
+.pr-body.tmp.md
+pr-body.tmp.md

@@ -478,9 +478,12 @@ export function BooksManager({
           setUploadProgress((prev) => (prev?.bookId === bookId ? null : prev));
         }, 600);
 
-        // Acumulamos los resultados con `pre_scan` para pasárselos al stage
-        // Pre-revisión, pero NO transicionamos automáticamente. El operario
-        // pulsará "Escanear" para confirmar el paso (ver handleRunPipeline).
+        // Acumulamos los resultados con `pre_scan` y transicionamos automáticamente
+        // a Pre-revisión (llamada a onUploadComplete unas líneas más abajo, dentro
+        // del guard `if (newFiles.length > 0)`). El acumulador permite añadir más
+        // archivos desde Pre-revisión sin perder los anteriores; el operario
+        // confirma con "Escanear" desde Pre-revisión (handleRunPipeline).
+        // Spec: docs/superpowers/specs/2026-05-28-pre-revision-callback-y-test-drift-design.md
         if (
           result.files &&
           result.files.length > 0 &&
@@ -495,6 +498,12 @@ export function BooksManager({
               for (const f of newFiles) byName.set(f.name, f);
               return { ...prev, [bookId]: [...byName.values()] };
             });
+            // Pre-revisión Fase 1: disparar la transición a stage="pre-review"
+            // inmediatamente tras un upload con facturas detectadas. El acumulador
+            // sigue funcionando para permitir añadir más archivos desde Pre-revisión.
+            // Idempotente: setStage en page.tsx no re-renderiza si ya estás ahí.
+            // Spec: docs/superpowers/specs/2026-05-28-pre-revision-callback-y-test-drift-design.md
+            onUploadComplete?.(bookId as Libro, newFiles);
           }
         }
       } catch (err) {

@@ -55,20 +55,31 @@ test.describe.serial("Approve all 3 invoices", () => {
     // ─── UI: navegar a review y aprobar cada factura ─────────────────────
     await page.goto("/");
 
-    // El frontend arranca en stage="books" (localStorage vacío en cada
-    // contexto Playwright). Esperamos a que /api/books termine de cargar
-    // — el botón "Sin archivos pendientes" se transforma en
-    // "Escanear N Factura(s) →" una vez que totalFiles > 0.
-    const escanearBtn = page.getByRole("button", { name: /escanear .* factura/i });
-    await expect(escanearBtn).toBeVisible({ timeout: 30_000 });
-    await escanearBtn.click();
+    // Auto-jump canonizado: si el backend tiene pending_confirm (caso típico tras
+    // hardReset + uploadFile + runPipelineAndWait), el frontend salta directo a
+    // Revisión sin pasar por Pre-revisión (page.tsx:82-95). Detectamos ambos casos:
+    // 1) Si /api/pipeline/status reporta pending_confirm → directo a review.
+    // 2) Si no → flujo books → pre-review → review (raro en este test, pero
+    //    lo cubrimos por defensa).
+    //
+    // Esperar a que la app termine de hidratar (sale el "Aprobar" si pending_confirm,
+    // o el botón Escanear si arrancó en books). Sin $ final en el regex para cubrir
+    // plural "Factura(s)" del botón Escanear.
+    await expect(
+      page.getByRole("button", { name: /^(Aprobar|Aprobada|Escanear .* factura)/i })
+    ).toBeVisible({ timeout: 3 * 60_000 });
 
-    // Esperamos a que la app transicione de books → processing → review.
-    // El reviewer pinta el botón "Aprobar" en footer cuando carga la
-    // primera factura. Damos 3 min porque puede haber un re-run del
-    // pipeline si los sidecars no estaban en estado terminal.
-    const aprobar = page.getByRole("button", { name: /^(Aprobar|Aprobada)$/i });
-    await expect(aprobar).toBeVisible({ timeout: 3 * 60_000 });
+    // Si seguimos en books (caso menos común tras pipeline.run via API), pulsamos
+    // Escanear; si ya estamos en review, no hacemos nada.
+    const escanearBtn = page.getByRole("button", { name: /escanear .* factura/i });
+    if (await escanearBtn.isVisible().catch(() => false)) {
+      await escanearBtn.click();
+      const aprobar = page.getByRole("button", { name: /^(Aprobar|Aprobada)$/i });
+      await expect(aprobar).toBeVisible({ timeout: 5 * 60_000 });
+    }
+
+    // Documentado: auto-jump canonizado en app/page.tsx:82-95.
+    // Spec: docs/superpowers/specs/2026-05-28-pre-revision-callback-y-test-drift-design.md
 
     // Capturamos el payload del confirm para verificar al final.
     let confirmPayload: unknown = null;
