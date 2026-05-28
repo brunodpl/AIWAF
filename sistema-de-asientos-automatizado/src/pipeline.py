@@ -18,7 +18,8 @@ import json
 import logging
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,6 +146,128 @@ class PhaseResult:
     fase: str
     ok: bool
     motivo: str = ""
+    duration_ms: float = 0.0
+
+
+def _finalize_document(
+    doc_id: str | None,
+    doc_dir: str | None,
+    results: list[PhaseResult],
+    file_path: str,
+    *,
+    audit: AuditWriter,
+    asientos_root: str,
+    libro_short: str,
+    summary: dict,
+    status_file: str | None,
+    processed_offset: int,
+) -> None:
+    """Reducer serial: bookkeeping ordenado tras process_document.
+
+    Detección de duplicado fiscal, estado del sidecar, rename, auditoría,
+    contadores y status_file. DEBE invocarse en serie (un documento a la vez)
+    desde el hilo principal: find_by_fiscal_hash y los contadores no son
+    seguros bajo concurrencia.
+    """
+    decision = _leer_decision_global(doc_dir) if doc_id else "error"
+
+    folder_final = Path(doc_dir) if doc_dir else None
+    if folder_final and folder_final.exists():
+        validacion = _leer_validacion(folder_final)
+        status = DECISION_TO_STATUS.get(decision, "error")
+        event: dict = {"status": status, "decision": decision}
+        motivos = list(validacion.get("motivos_revision") or []) if validacion else []
+
+        fiscal_hash: str | None = None
+        if validacion:
+            nif_emisor = _campo_valor(validacion, "nif_entidad")
+            num_fact = _campo_valor(validacion, "numero_factura")
+            fecha_exp = _campo_valor(validacion, "fecha_expedicion")
+            if nif_emisor and num_fact and fecha_exp:
+                fiscal_hash = _compute_fiscal_hash(
+                    str(nif_emisor), str(num_fact), str(fecha_exp)
+                )
+                try:
+                    dup_folder = state_writer.find_by_fiscal_hash(
+                        Path(asientos_root), fiscal_hash
+                    )
+                except Exception:
+                    dup_folder = None
+                if dup_folder is not None and dup_folder.resolve() != folder_final.resolve():
+                    try:
+                        dup_status = state_writer.current_status(dup_folder)
+                    except Exception:
+                        dup_status = None
+                    dup_rejected = _was_rejected_by_human(dup_folder)
+                    if dup_status not in {"cancelled", "error"} and not dup_rejected:
+                        logger.warning(
+                            "[pipeline] Duplicado fiscal: doc_id=%s ya existe como %s (status=%s)",
+                            doc_id, dup_folder.name, dup_status,
+                        )
+                        status = "blocked"
+                        decision = "block"
+                        motivos.append(
+                            f"duplicado fiscal: ya existe como '{dup_folder.name}' "
+                            f"(estado: {dup_status or 'desconocido'})"
+                        )
+                        event["duplicate_of"] = dup_folder.name
+        event["status"] = status
+        event["decision"] = decision
+        if motivos:
+            event["motivos"] = motivos
+        if fiscal_hash:
+            event["fiscal_hash"] = fiscal_hash
+        try:
+            state_writer.append(folder_final, event)
+        except Exception:
+            logger.error(
+                "[pipeline] no se pudo registrar status=%s en sidecar para %s",
+                status, doc_id, exc_info=True,
+            )
+
+        # NO renombrar carpetas bloqueadas/errored: si f1 y f2 comparten triplete
+        # fiscal (caso duplicado), f1 se renombra a `compras_FECHA_NIF_NUM` y
+        # f2 quedaría con el MISMO nombre destino → colisión en
+        # `state_writer.rename`. Mantener `compras_f2` (genérico) para el
+        # bloqueado evita la colisión y deja una pista visual clara: la
+        # carpeta con nombre descriptivo es la canónica, la genérica es la
+        # bloqueada. Cambio de comportamiento intencionado vs el loop serie
+        # previo, que dependía de que `decision_global` en el JSON aún fuera
+        # "auto" (el orquestador override a "block" solo en memoria).
+        if validacion and decision not in {"block", "error"}:
+            try:
+                folder_final = _try_rename(folder_final, libro_short, validacion)
+            except Exception:
+                logger.warning(
+                    "[pipeline] rename falló para %s; carpeta queda como %s",
+                    doc_id, folder_final.name, exc_info=True,
+                )
+
+    audit.write(
+        doc_id=doc_id,
+        file_path=file_path,
+        results=results,
+        decision=decision,
+        output_base_path=asientos_root,
+        folder_name=folder_final.name if folder_final else None,
+    )
+
+    if decision == "auto":
+        summary["ok"] += 1
+    elif decision in ("warn", "pendiente"):
+        summary["warn"] += 1
+    else:
+        summary["error"] += 1
+
+    _log_resumen_documento(doc_id, results, decision)
+
+    if status_file:
+        _update_status_file(
+            status_file,
+            doc_id=doc_id,
+            phases=[{"fase": r.fase, "ok": r.ok, "motivo": r.motivo} for r in results],
+            processed=processed_offset + summary["ok"] + summary["warn"] + summary["error"],
+        )
 
 
 def process_document(
@@ -154,7 +277,6 @@ def process_document(
     gemini_model,
     libro: str,
     output_base_path: str,
-    status_file: str | None = None,
 ) -> tuple[str | None, str | None, list[PhaseResult]]:
     """Ejecuta OCR → Identidad → Ensamblador para un documento.
 
@@ -165,6 +287,7 @@ def process_document(
     libro_short = LIBRO_SHORT.get(libro, libro)
 
     # ── Fase 2: OCR ──────────────────────────────────────────────────────
+    _t0 = time.monotonic()
     try:
         doc_id, doc_dir, is_valid, motivos = run_ocr(
             file_path,
@@ -174,7 +297,7 @@ def process_document(
             output_base_path,
             libro=libro_short,
         )
-        results.append(PhaseResult("ocr", ok=True))
+        results.append(PhaseResult("ocr", ok=True, duration_ms=(time.monotonic() - _t0) * 1000))
         logger.info(f"[pipeline] OCR completado: {doc_id} (valid={is_valid})")
     except Exception as e:
         logger.error(f"[pipeline] OCR falló para {file_path}: {e}", exc_info=True)
@@ -213,42 +336,46 @@ def process_document(
         "semantica":          lambda: run_semantica(doc_id, doc_dir, libro),
     }
 
-    fase3_resultados = {}
+    fase3_resultados: dict[str, tuple[bool, float]] = {}
     FASE3_TIMEOUT = 300  # 5 minutos por módulo
     with ThreadPoolExecutor(max_workers=len(fase3_modulos)) as executor:
-        futuros = {
-            executor.submit(fn): nombre
-            for nombre, fn in fase3_modulos.items()
-        }
+        _t_submit = {}
+        futuros = {}
+        for nombre, fn in fase3_modulos.items():
+            _t_submit[nombre] = time.monotonic()
+            futuros[executor.submit(fn)] = nombre
         for futuro in as_completed(futuros):
             nombre = futuros[futuro]
+            ms = (time.monotonic() - _t_submit[nombre]) * 1000
             try:
-                fase3_resultados[nombre] = futuro.result(timeout=FASE3_TIMEOUT)
+                fase3_resultados[nombre] = (futuro.result(timeout=FASE3_TIMEOUT), ms)
             except TimeoutError:
                 logger.error(
                     f"[pipeline] Fase 3 '{nombre}' excedió timeout ({FASE3_TIMEOUT}s) para {doc_id}"
                 )
-                fase3_resultados[nombre] = False
+                fase3_resultados[nombre] = (False, ms)
             except Exception as e:
                 logger.error(
                     f"[pipeline] Fase 3 '{nombre}' lanzó excepción para {doc_id}: {e}",
                     exc_info=True,
                 )
-                fase3_resultados[nombre] = False
+                fase3_resultados[nombre] = (False, ms)
 
     for nombre in fase3_modulos:
-        ok = fase3_resultados.get(nombre, False)
+        ok, ms = fase3_resultados.get(nombre, (False, 0.0))
         results.append(PhaseResult(
             nombre,
             ok=ok,
             motivo="" if ok else f"error técnico en fase {nombre}",
+            duration_ms=ms,
         ))
         if not ok:
             logger.warning(f"[pipeline] {nombre} falló (error técnico) para {doc_id}")
 
     # ── Fase 4: Cliente destino (secuencial, requiere identidad) ────────
     ok_cliente = False
-    if fase3_resultados.get("identidad_cabecera"):
+    _t = time.monotonic()
+    if fase3_resultados.get("identidad_cabecera", (False, 0.0))[0]:
         try:
             ok_cliente = run_cliente(doc_id, doc_dir, libro)
         except Exception as e:
@@ -260,12 +387,14 @@ def process_document(
         "cliente_destino",
         ok=ok_cliente,
         motivo="" if ok_cliente else "error o identidad no disponible",
+        duration_ms=(time.monotonic() - _t) * 1000,
     ))
     if not ok_cliente:
         logger.warning(f"[pipeline] cliente_destino falló para {doc_id}")
 
     # ── Fase 5: Ensamblado ───────────────────────────────────────────────
     ok_ensamblado = False
+    _t = time.monotonic()
     try:
         ok_ensamblado = run_ensamblador(doc_id, doc_dir, libro)
     except Exception:
@@ -276,16 +405,10 @@ def process_document(
         "ensamblador",
         ok=ok_ensamblado,
         motivo="" if ok_ensamblado else "error tecnico en fase ensamblador",
+        duration_ms=(time.monotonic() - _t) * 1000,
     ))
     if not ok_ensamblado:
         logger.error(f"[pipeline] Ensamblador fallo para {doc_id}", exc_info=True)
-
-    if status_file:
-        _update_status_file(
-            status_file,
-            doc_id=doc_id,
-            phases=[{"fase": r.fase, "ok": r.ok, "motivo": r.motivo} for r in results],
-        )
 
     return doc_id, doc_dir, results
 
@@ -455,144 +578,67 @@ def run_pipeline(
     libro_short = LIBRO_SHORT.get(libro, libro)
     asientos_root = cfg.asientos_path()
 
+    max_workers = max(1, int(getattr(cfg, "pipeline_max_concurrency", 1)))
+    file_iter = iter(files)
+    inflight: dict = {}  # future -> file_path
+    t_start = time.monotonic()
+
+    def _submit_next(ex) -> bool:
+        fp = next(file_iter, None)
+        if fp is None:
+            return False
+        if status_file:
+            _update_status_file(status_file, current_file=os.path.basename(fp))
+        fut = ex.submit(
+            process_document, fp, folder_name, vision_client, gemini_model,
+            libro, asientos_root,
+        )
+        inflight[fut] = fp
+        return True
+
     try:
-        cancelled_count = 0
-        for file_path in files:
-            # Cancelación cooperativa: chequeamos antes de cada documento. Los
-            # PDFs que aún no se han tocado se quedan en su estado previo (típ.
-            # ``uploaded``); el doc actual procesa hasta el final.
-            if cancel_requested is not None and cancel_requested():
-                remaining = len(files) - (cancelled_count + summary["ok"] + summary["warn"] + summary["error"])
-                logger.warning(
-                    "[pipeline] Cancelación solicitada — saliendo del loop (%d docs sin procesar)",
-                    remaining,
-                )
-                break
-
-            if status_file:
-                _update_status_file(status_file, current_file=os.path.basename(file_path))
-
-            doc_id, doc_dir, results = process_document(
-                file_path, folder_name, vision_client, gemini_model, libro, asientos_root,
-                status_file=status_file,
-            )
-
-            # Determinar decisión final desde resultado_validacion.json
-            decision = _leer_decision_global(doc_dir) if doc_id else "error"
-
-            # ── Registrar estado en el sidecar y renombrar si procede ──
-            #
-            # Trazabilidad 2.0: el PDF NO se mueve. El estado del documento
-            # vive en `.state.json` dentro de su carpeta de asiento, y la
-            # carpeta se renombra al esquema operario-friendly si hay datos
-            # suficientes.
-            folder_final = Path(doc_dir) if doc_dir else None
-            if folder_final and folder_final.exists():
-                validacion = _leer_validacion(folder_final)
-                status = DECISION_TO_STATUS.get(decision, "error")
-                event: dict = {"status": status, "decision": decision}
-                motivos = list(validacion.get("motivos_revision") or []) if validacion else []
-
-                # ── Detección de duplicado fiscal ──────────────────────────
-                #
-                # Tres campos identifican unívocamente un asiento contable
-                # según AEAT: NIF emisor + número factura + fecha expedición.
-                # Si otro asiento previo ya tiene el mismo triplete (mismo
-                # ``fiscal_hash``) y NO está en estado terminal de "rechazado",
-                # marcamos esta factura como bloqueada por duplicado.
-                fiscal_hash: str | None = None
-                if validacion:
-                    nif_emisor = _campo_valor(validacion, "nif_entidad")
-                    num_fact = _campo_valor(validacion, "numero_factura")
-                    fecha_exp = _campo_valor(validacion, "fecha_expedicion")
-                    if nif_emisor and num_fact and fecha_exp:
-                        fiscal_hash = _compute_fiscal_hash(
-                            str(nif_emisor), str(num_fact), str(fecha_exp)
-                        )
-                        try:
-                            dup_folder = state_writer.find_by_fiscal_hash(
-                                Path(asientos_root), fiscal_hash
-                            )
-                        except Exception:
-                            dup_folder = None
-                        # Solo bloqueamos si el duplicado existe Y no es la propia
-                        # carpeta (auto-match cuando se reprocesa el mismo doc).
-                        if dup_folder is not None and dup_folder.resolve() != folder_final.resolve():
-                            try:
-                                dup_status = state_writer.current_status(dup_folder)
-                            except Exception:
-                                dup_status = None
-                            # Estados que NO consideran activo el duplicado:
-                            # - ``cancelled``/``error``: terminales no contables.
-                            # - cualquier estado con un evento ``action=reject``:
-                            #   el operario ya descartó esa factura, no debe
-                            #   bloquear nuevas subidas con la misma identidad
-                            #   fiscal (típicamente: rechazo + re-subida con
-                            #   corrección de fecha o número factura).
-                            dup_rejected = _was_rejected_by_human(dup_folder)
-                            if dup_status not in {"cancelled", "error"} and not dup_rejected:
-                                logger.warning(
-                                    "[pipeline] Duplicado fiscal: doc_id=%s ya existe como %s (status=%s)",
-                                    doc_id, dup_folder.name, dup_status,
-                                )
-                                status = "blocked"
-                                decision = "block"
-                                motivos.append(
-                                    f"duplicado fiscal: ya existe como '{dup_folder.name}' "
-                                    f"(estado: {dup_status or 'desconocido'})"
-                                )
-                                event["duplicate_of"] = dup_folder.name
-                # Refrescamos status/decision en el evento por si dup forzó cambio.
-                event["status"] = status
-                event["decision"] = decision
-                if motivos:
-                    event["motivos"] = motivos
-                if fiscal_hash:
-                    event["fiscal_hash"] = fiscal_hash
-                try:
-                    state_writer.append(folder_final, event)
-                except Exception:
-                    logger.error(
-                        "[pipeline] no se pudo registrar status=%s en sidecar para %s",
-                        status, doc_id, exc_info=True,
-                    )
-
-                # Rename si la decisión y los campos lo permiten.
-                if validacion:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            cancelled = bool(cancel_requested and cancel_requested())
+            if not cancelled:
+                for _ in range(max_workers):
+                    if not _submit_next(ex):
+                        break
+            while inflight:
+                done, _pending = wait(list(inflight), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    fp = inflight.pop(fut)
                     try:
-                        folder_final = _try_rename(folder_final, libro_short, validacion)
-                    except Exception:
-                        logger.warning(
-                            "[pipeline] rename falló para %s; carpeta queda como %s",
-                            doc_id, folder_final.name, exc_info=True,
+                        doc_id, doc_dir, results = fut.result()
+                    except Exception as e:
+                        logger.error(
+                            "[pipeline] process_document lanzó excepción para %s: %s",
+                            fp, e, exc_info=True,
                         )
+                        summary["error"] += 1
+                        if status_file:
+                            _update_status_file(
+                                status_file,
+                                processed=processed_offset + summary["ok"] + summary["warn"] + summary["error"],
+                            )
+                        continue
+                    _finalize_document(
+                        doc_id, doc_dir, results, fp,
+                        audit=audit, asientos_root=asientos_root,
+                        libro_short=libro_short, summary=summary,
+                        status_file=status_file, processed_offset=processed_offset,
+                    )
+                if cancel_requested and cancel_requested():
+                    if not cancelled:
+                        logger.warning(
+                            "[pipeline] Cancelación solicitada — no se enviarán más documentos (%d en vuelo)",
+                            len(inflight),
+                        )
+                        cancelled = True
+                else:
+                    while len(inflight) < max_workers and _submit_next(ex):
+                        pass
 
-            # Registrar en auditoría de negocio (nunca interrumpe el pipeline)
-            audit.write(
-                doc_id=doc_id,
-                file_path=file_path,
-                results=results,
-                decision=decision,
-                output_base_path=asientos_root,
-                folder_name=folder_final.name if folder_final else None,
-            )
-
-            # Contadores de resumen
-            if decision == "auto":
-                summary["ok"] += 1
-            elif decision in ("warn", "pendiente"):
-                summary["warn"] += 1
-            else:
-                summary["error"] += 1
-
-            _log_resumen_documento(doc_id, results, decision)
-
-            if status_file:
-                _update_status_file(
-                    status_file,
-                    processed=processed_offset + summary["ok"] + summary["warn"] + summary["error"],
-                )
-
+        summary["elapsed_s"] = round(time.monotonic() - t_start, 2)
         _print_summary(folder_path, summary)
 
         if status_file and not is_multi_book:

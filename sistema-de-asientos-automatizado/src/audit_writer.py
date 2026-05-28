@@ -135,6 +135,7 @@ class AuditWriter:
             fases[r.fase] = {
                 "ok":    r.ok,
                 "motivo": r.motivo if r.motivo else None,
+                "duration_ms": getattr(r, "duration_ms", None),
             }
 
         # ── Localizar carpeta del documento ───────────────────────────────

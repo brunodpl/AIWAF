@@ -208,3 +208,20 @@ class TestAuditWriterFases:
             assert fases["ocr"]["ok"] is True
             assert fases["semantica"]["ok"] is False
             assert fases["semantica"]["motivo"] is not None
+
+
+def test_audit_record_includes_phase_duration(tmp_path):
+    """El registro de auditoría incluye duration_ms por fase."""
+    from src.audit_writer import AuditWriter
+    from src.pipeline import PhaseResult
+
+    writer = AuditWriter(str(tmp_path / "audit"), libro="20_COMPRAS_GASTOS")
+    record = writer._build_record(
+        doc_id="f1",
+        file_path="f1.pdf",
+        results=[PhaseResult("ocr", ok=True, duration_ms=42.0)],
+        decision="auto",
+        output_base_path=str(tmp_path),
+        folder_name=None,
+    )
+    assert record["fases"]["ocr"]["duration_ms"] == 42.0

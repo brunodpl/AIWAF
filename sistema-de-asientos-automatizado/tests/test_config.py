@@ -208,3 +208,24 @@ def test_confianza_minima_validation(monkeypatch, tmp_path):
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_pipeline_max_concurrency_default(monkeypatch, tmp_path):
+    """Por defecto el pipeline procesa 4 documentos en paralelo."""
+    _set_required_env_only(monkeypatch, tmp_path)
+
+    from src.config import Settings
+    settings = Settings(_env_file=None)
+
+    assert settings.pipeline_max_concurrency == 4
+
+
+def test_pipeline_max_concurrency_override(monkeypatch, tmp_path):
+    """PIPELINE_MAX_CONCURRENCY del entorno sobreescribe el default."""
+    _set_required_env_only(monkeypatch, tmp_path)
+    monkeypatch.setenv("PIPELINE_MAX_CONCURRENCY", "8")
+
+    from src.config import Settings
+    settings = Settings(_env_file=None)
+
+    assert settings.pipeline_max_concurrency == 8

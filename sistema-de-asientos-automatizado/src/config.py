@@ -119,6 +119,17 @@ class Settings(BaseSettings):
         description="Split determinista 1 página = 1 factura (sin Gemini). False → corte por Gemini Vision.",
     )
 
+    # ── Concurrencia del pipeline (L1) ────────────────────────
+    # Documentos procesados en paralelo dentro de run_pipeline.
+    # Patrón map-paralelo/reduce-serial: el trabajo caro (OCR + Fase 3) corre
+    # en un pool de workers; el bookkeeping ordenado (dedup fiscal, contadores,
+    # estado) se serializa en el hilo principal. 1 = comportamiento serie.
+    pipeline_max_concurrency: int = Field(
+        default=4,
+        validation_alias="PIPELINE_MAX_CONCURRENCY",
+        description="Documentos procesados en paralelo en run_pipeline. 1 = serie.",
+    )
+
     # ── Gemini LLM árbitro (Fase 3) ──────────────────────────
     # Sin defaults — modelo y location deben ser explícitos en .env.
     # Usar siempre versión anclada (ej: gemini-2.0-flash-001), nunca alias flotante.
