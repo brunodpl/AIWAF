@@ -20,7 +20,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import urllib.request
 import urllib.error
@@ -1836,6 +1836,63 @@ def _delete_pending_confirm() -> None:
         logger.warning("[confirm] no se pudo borrar pending_confirm: %s", e)
 
 
+def _remove_doc_ids_from_pending_confirm(confirmed: Iterable[str]) -> int:
+    """Quita ``confirmed`` de ``doc_ids_lote`` en ``.pending_confirm.json``.
+
+    Soporta "confirmar parcial mientras el pipeline sigue procesando": el
+    fichero define la composición del lote para ``/api/pipeline/batch`` (y por
+    tanto para el filtro ``batchDocIds`` del reviewer). Borrarlo entero al
+    confirmar 3 de 60 dejaba al reviewer ciego de las 57 restantes mientras
+    el pipeline seguía produciendo sidecars en background.
+
+    Política:
+      - Si el fichero no existe: no-op (caller pudo arrancar sin guardia).
+      - Si todos los doc_ids restantes coinciden con ``confirmed`` → el lote
+        queda vacío → borramos el fichero (preserva el caso clásico
+        "confirma todo el lote de golpe" + limpieza para el siguiente run).
+      - Si quedan doc_ids → reescribimos atómicamente vía tmp + os.replace.
+
+    Devuelve el número de doc_ids que quedan en el lote tras la purga (0 si
+    se borró el fichero) — el caller lo usa para el log "X siguen en lote".
+    Idempotente: confirmar dos veces el mismo subset es no-op en la 2ª.
+    """
+    p = _pending_confirm_path()
+    if not p.exists():
+        return 0
+    try:
+        with p.open(encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("[confirm] no se pudo leer pending_confirm para purgar: %s", e)
+        return 0
+
+    existing = list(data.get("doc_ids_lote") or [])
+    to_remove = set(confirmed)
+    remaining = [d for d in existing if d not in to_remove]
+
+    if not remaining:
+        # Lote cerrado: misma semántica que el borrado clásico.
+        try:
+            p.unlink()
+        except OSError as e:
+            logger.warning("[confirm] no se pudo borrar pending_confirm: %s", e)
+        return 0
+
+    if len(remaining) == len(existing):
+        # Ningún doc_id confirmado estaba en el lote — no tocamos el fichero.
+        return len(remaining)
+
+    data["doc_ids_lote"] = remaining
+    tmp = str(p) + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, p)
+    except OSError as e:
+        logger.warning("[confirm] no se pudo reescribir pending_confirm: %s", e)
+    return len(remaining)
+
+
 @app.post("/api/pipeline/confirm")
 def confirm_batch(payload: ConfirmBatchPayload):
     """
@@ -2120,11 +2177,15 @@ def confirm_batch(payload: ConfirmBatchPayload):
     _invoices_cache.clear()
     _stats_cache.clear()
     _clients_cache.clear()
-    _delete_pending_confirm()
+    # Confirm parcial: quita SOLO los doc_ids confirmados de pending_confirm.
+    # Si era el último del lote, el helper borra el fichero (semántica clásica
+    # "confirmar todo de golpe"). Si quedan doc_ids, los preserva para que el
+    # reviewer pueda seguir mostrando el resto mientras el pipeline corre.
+    remaining_in_batch = _remove_doc_ids_from_pending_confirm(confirmed_doc_ids)
 
     logger.info(
-        "[confirm] lote confirmado: %d facturas, %d clientes nuevos, %d PDFs inbox eliminados, %d errores parciales",
-        confirmadas, clientes_nuevos, inbox_pdfs_deleted, len(per_doc_errors),
+        "[confirm] lote confirmado: %d facturas, %d siguen en lote, %d clientes nuevos, %d PDFs inbox eliminados, %d errores parciales",
+        confirmadas, remaining_in_batch, clientes_nuevos, inbox_pdfs_deleted, len(per_doc_errors),
     )
     return {
         # ``ok`` solo si no hubo errores parciales. El frontend puede mostrar
