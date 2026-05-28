@@ -478,12 +478,15 @@ export function BooksManager({
           setUploadProgress((prev) => (prev?.bookId === bookId ? null : prev));
         }, 600);
 
-        // Acumulamos los resultados con `pre_scan` y transicionamos automáticamente
-        // a Pre-revisión (llamada a onUploadComplete unas líneas más abajo, dentro
-        // del guard `if (newFiles.length > 0)`). El acumulador permite añadir más
-        // archivos desde Pre-revisión sin perder los anteriores; el operario
-        // confirma con "Escanear" desde Pre-revisión (handleRunPipeline).
+        // Acumulamos los resultados con `pre_scan` en `accumulatedUploads`, pero
+        // NO transicionamos a Pre-revisión aquí: el operario se queda en Gestión
+        // pudiendo añadir más archivos sin interrupción. La transición a
+        // Pre-revisión la dispara el botón "Escanear N Factura(s)" en
+        // handleRunPipeline. Esto mantiene el checkpoint OCR (Pre-revisión antes
+        // de gastar Gemini) sin la fricción de saltar tras cada upload.
         // Spec: docs/superpowers/specs/2026-05-28-pre-revision-callback-y-test-drift-design.md
+        //   (auto-jump revertido 2026-05-28 por feedback de Bruno: añadir varias
+        //   facturas en lote requería ir-y-volver de Pre-revisión cada vez).
         if (
           result.files &&
           result.files.length > 0 &&
@@ -498,12 +501,6 @@ export function BooksManager({
               for (const f of newFiles) byName.set(f.name, f);
               return { ...prev, [bookId]: [...byName.values()] };
             });
-            // Pre-revisión Fase 1: disparar la transición a stage="pre-review"
-            // inmediatamente tras un upload con facturas detectadas. El acumulador
-            // sigue funcionando para permitir añadir más archivos desde Pre-revisión.
-            // Idempotente: setStage en page.tsx no re-renderiza si ya estás ahí.
-            // Spec: docs/superpowers/specs/2026-05-28-pre-revision-callback-y-test-drift-design.md
-            onUploadComplete?.(bookId as Libro, newFiles);
           }
         }
       } catch (err) {
@@ -515,27 +512,34 @@ export function BooksManager({
           );
         } else if (message.includes("timed out") || message.includes("AbortError")) {
           // F4: el backend puede haber completado el split pese al timeout del
-          // proxy. Recuperamos el desglose desde /api/books y vamos a
-          // Pre-revisión en vez de dejar hijos huérfanos en Gestión.
+          // proxy. Acumulamos las entradas reconstruidas para que el operario
+          // las vea en Gestión con su badge "N facturas detectadas". El loadBooks
+          // del finally sincroniza la lista visible; el acumulador conserva el
+          // pre_scan que /api/books no expone por archivo. NO transicionamos a
+          // Pre-revisión (consistencia con el happy path tras la reversión del
+          // auto-jump, 2026-05-28).
           let recovered = false;
-          if (onUploadComplete) {
-            try {
-              const { books: latest } = await fetchBooks();
-              const book = latest.find((b) => b.id === bookId);
-              const entries = recoverSplitEntriesFromBooks(
-                book,
-                droppedFiles.map((f) => f.name),
+          try {
+            const { books: latest } = await fetchBooks();
+            const book = latest.find((b) => b.id === bookId);
+            const entries = recoverSplitEntriesFromBooks(
+              book,
+              droppedFiles.map((f) => f.name),
+            );
+            if (entries.length > 0 && mountedRef.current) {
+              setAccumulatedUploads((prev) => {
+                const existing = prev[bookId] || [];
+                const byName = new Map(existing.map((f) => [f.name, f] as const));
+                for (const f of entries) byName.set(f.name, f);
+                return { ...prev, [bookId]: [...byName.values()] };
+              });
+              toast.success(
+                "El análisis se completó pese a la espera — archivos disponibles en Gestión.",
               );
-              if (entries.length > 0 && mountedRef.current) {
-                onUploadComplete(bookId as Libro, entries);
-                toast.success(
-                  "El análisis se completó pese a la espera — continúa en Pre-revisión.",
-                );
-                recovered = true;
-              }
-            } catch {
-              // /api/books no disponible — caemos al aviso de recarga.
+              recovered = true;
             }
+          } catch {
+            // /api/books no disponible — caemos al aviso de recarga.
           }
           if (!recovered) {
             toast.warning("La subida tardó más de lo normal; recargando estado…");
