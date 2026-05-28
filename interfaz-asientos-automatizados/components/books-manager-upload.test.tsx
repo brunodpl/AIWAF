@@ -221,8 +221,12 @@ describe("recoverSplitEntriesFromBooks (F4)", () => {
   });
 });
 
-describe("BooksManager — recuperación de Pre-revisión tras timeout (F4)", () => {
-  it("transiciona a Pre-revisión si el split se completó pese al timeout", async () => {
+describe("BooksManager — recuperación tras timeout (F4)", () => {
+  // Tras la reversión del auto-jump (2026-05-28), el recovery del catch
+  // acumula las entries reconstruidas vía `recoverSplitEntriesFromBooks` en
+  // `accumulatedUploads` y se queda en Gestión — mismo contrato que el happy
+  // path. El operario decide cuándo escanear con "Escanear N Factura(s)".
+  it("recupera el split tras timeout sin transicionar a Pre-revisión", async () => {
     api.fetchBooks.mockResolvedValue({ books: makeBooksWithSplitChildren() });
     api.uploadFiles.mockRejectedValue(
       new Error("Request timed out. The server may still be processing."),
@@ -234,18 +238,22 @@ describe("BooksManager — recuperación de Pre-revisión tras timeout (F4)", ()
     );
 
     await screen.findByText("Recibidas (compras/gastos)");
+    const initialFetchBooksCalls = api.fetchBooks.mock.calls.length;
 
     const gastoInput = document.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
     const fakeFile = new File(["x"], "nueva_factura.pdf", { type: "application/pdf" });
     Object.defineProperty(gastoInput, "files", { value: [fakeFile], configurable: true });
     fireEvent.change(gastoInput);
 
-    await waitFor(() => expect(onUploadComplete).toHaveBeenCalled(), { timeout: 3000 });
-
-    const [bookId, entries] = onUploadComplete.mock.calls[0];
-    expect(bookId).toBe("gastos");
-    expect(entries[0].pre_scan.status).toBe("split");
-    expect(entries[0].pre_scan.detected_invoices).toBe(3);
+    // El catch hace fetchBooks de nuevo para reconstruir las entries vía
+    // recoverSplitEntriesFromBooks. Esperamos a que ese fetch ocurra.
+    await waitFor(
+      () => expect(api.fetchBooks.mock.calls.length).toBeGreaterThan(initialFetchBooksCalls),
+      { timeout: 3000 },
+    );
+    // Y verificamos que NO se transiciona a Pre-revisión.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(onUploadComplete).not.toHaveBeenCalled();
   });
 });
 
@@ -262,7 +270,7 @@ describe("BooksManager — happy path: trigger automático de Pre-revisión", ()
     vi.clearAllMocks();
   });
 
-  it("T1: tras upload con detected_summary.total_invoices > 0, llama onUploadComplete con los archivos del bookId", async () => {
+  it("T1: tras upload con detected_summary.total_invoices > 0, NO llama onUploadComplete (auto-jump revertido)", async () => {
     // Backend ya tiene los hijos del split sincronizados (caso ideal happy path).
     api.fetchBooks.mockResolvedValue({
       books: makeBooksWithSplitChildren(),
@@ -318,19 +326,18 @@ describe("BooksManager — happy path: trigger automático de Pre-revisión", ()
     });
     fireEvent.change(gastoInput);
 
-    // Esperar a que el upload y el acumulador completen, y que el callback
-    // se dispare 1 vez.
+    // Tras la reversión del auto-jump (2026-05-28), el upload acumula en
+    // `accumulatedUploads` y se queda en Gestión — NO transiciona a
+    // Pre-revisión. Esperamos a que el handler termine el bloque finally
+    // (que siempre llama loadBooks → fetchBooks) y verificamos que el
+    // callback no se ha disparado.
+    const initialFetchBooksCalls = api.fetchBooks.mock.calls.length;
     await waitFor(
-      () => expect(onUploadComplete).toHaveBeenCalledTimes(1),
+      () => expect(api.fetchBooks.mock.calls.length).toBeGreaterThan(initialFetchBooksCalls),
       { timeout: 3000 }
     );
-
-    const [bookId, files] = onUploadComplete.mock.calls[0];
-    expect(bookId).toBe("gastos");
-    expect(files).toHaveLength(1);
-    expect(files[0].name).toBe("nueva_factura.pdf");
-    expect(files[0].pre_scan?.status).toBe("split");
-    expect(files[0].pre_scan?.children).toHaveLength(3);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(onUploadComplete).not.toHaveBeenCalled();
   });
 
   it("T2: con detected_summary.total_invoices = 0 (pre_scan_failed) NO llama onUploadComplete", async () => {
@@ -404,7 +411,7 @@ describe("BooksManager — happy path: trigger automático de Pre-revisión", ()
     expect(onUploadComplete).not.toHaveBeenCalled();
   });
 
-  it("T4: dos uploads consecutivos al mismo libro llaman al callback 2 veces; la 2ª solo trae los nuevos", async () => {
+  it("T4: dos uploads consecutivos NO llaman al callback (auto-jump revertido); el acumulador sigue funcionando", async () => {
     // Mock /api/books con los hijos que ambos uploads van a esperar (primer__*
     // y segundo__*), para que pollBooksUntilSynced retorne en la primera vuelta
     // y el test no espere los 20s del deadline interno.
@@ -465,37 +472,40 @@ describe("BooksManager — happy path: trigger automático de Pre-revisión", ()
     render(<BooksManager onPipelineStart={() => {}} onUploadComplete={onUploadComplete} />);
     await screen.findByText("Recibidas (compras/gastos)");
 
-    // Drop 1
+    // Drop 1 — esperamos a que el handler termine el finally (loadBooks).
+    let fetchBaseline = api.fetchBooks.mock.calls.length;
     let gastoInput = document.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
     Object.defineProperty(gastoInput, "files", {
       value: [new File(["x"], "primer.pdf", { type: "application/pdf" })],
       configurable: true,
     });
     fireEvent.change(gastoInput);
-    await waitFor(() => expect(onUploadComplete).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    await waitFor(
+      () => expect(api.fetchBooks.mock.calls.length).toBeGreaterThan(fetchBaseline),
+      { timeout: 3000 },
+    );
 
     // Drop 2 — re-query del input (el componente puede haber re-renderizado).
+    fetchBaseline = api.fetchBooks.mock.calls.length;
     gastoInput = document.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
     Object.defineProperty(gastoInput, "files", {
       value: [new File(["x"], "segundo.pdf", { type: "application/pdf" })],
       configurable: true,
     });
     fireEvent.change(gastoInput);
-    await waitFor(() => expect(onUploadComplete).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    await waitFor(
+      () => expect(api.fetchBooks.mock.calls.length).toBeGreaterThan(fetchBaseline),
+      { timeout: 3000 },
+    );
 
-    // Primer call: solo el primer.pdf (no contaminacion del estado vacio inicial).
-    const [bookIdFirst, filesFirst] = onUploadComplete.mock.calls[0];
-    expect(bookIdFirst).toBe("gastos");
-    expect(filesFirst.map((f: { name: string }) => f.name)).toEqual(["primer.pdf"]);
-
-    // Segundo call: solo el segundo.pdf (no se acumula con el primero — el
-    // callback recibe el diff por upload, no el cumulativo).
-    const [bookIdA, filesA] = onUploadComplete.mock.calls[1];
-    expect(bookIdA).toBe("gastos");
-    expect(filesA.map((f: { name: string }) => f.name)).toEqual(["segundo.pdf"]);
+    // Tras la reversión del auto-jump (2026-05-28), ninguno de los dos uploads
+    // dispara onUploadComplete: ambos acumulan internamente y se quedan en
+    // Gestión. La transición la dispara el botón "Escanear N Factura(s)".
+    await new Promise((r) => setTimeout(r, 100));
+    expect(onUploadComplete).not.toHaveBeenCalled();
   });
 
-  it("T5: timeout recovery del catch llama al callback 1 vez (NO doble: happy y catch son mutuamente excluyentes)", async () => {
+  it("T5: timeout recovery del catch NO llama al callback (auto-jump revertido); acumula entries reconstruidas", async () => {
     // Simulamos un timeout/abort en uploadFiles, pero el backend dejó los hijos
     // visibles en /api/books (caso F4 cubierto por el catch del handler).
     api.fetchBooks.mockResolvedValue({ books: makeBooksWithSplitChildren() });
@@ -505,6 +515,7 @@ describe("BooksManager — happy path: trigger automático de Pre-revisión", ()
     const onUploadComplete = vi.fn();
     render(<BooksManager onPipelineStart={() => {}} onUploadComplete={onUploadComplete} />);
     await screen.findByText("Recibidas (compras/gastos)");
+    const initialFetchBooksCalls = api.fetchBooks.mock.calls.length;
 
     const gastoInput = document.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
     Object.defineProperty(gastoInput, "files", {
@@ -514,11 +525,16 @@ describe("BooksManager — happy path: trigger automático de Pre-revisión", ()
     fireEvent.change(gastoInput);
 
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled());
-    // El catch hace fetchBooks de nuevo para recuperar entries vía
-    // recoverSplitEntriesFromBooks. Verificamos que el callback dispara 1 sola vez.
-    await waitFor(() => expect(onUploadComplete).toHaveBeenCalledTimes(1), { timeout: 3000 });
-    // Y nada más después (el happy path no entra al catch).
+    // El catch hace fetchBooks de nuevo para reconstruir entries vía
+    // recoverSplitEntriesFromBooks. Esperamos a que ese fetch ocurra.
+    await waitFor(
+      () => expect(api.fetchBooks.mock.calls.length).toBeGreaterThan(initialFetchBooksCalls),
+      { timeout: 3000 },
+    );
+    // Tras la reversión del auto-jump (2026-05-28), el recovery acumula
+    // entries en `accumulatedUploads` pero NO transiciona — consistencia con
+    // el happy path.
     await new Promise((r) => setTimeout(r, 100));
-    expect(onUploadComplete).toHaveBeenCalledTimes(1);
+    expect(onUploadComplete).not.toHaveBeenCalled();
   });
 });
