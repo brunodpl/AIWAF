@@ -372,11 +372,18 @@ def run_pipeline(
     #   - ``split``            — original ya dividido, los hijos se procesan por separado
     #   - ``pre_scan_failed``  — pre-scan Fase 1 falló en /upload, requiere retry u override-as-single humano
     asientos_root_for_skip = cfg.asientos_path()
+    # Scope por libro: un mismo nombre de fichero en libros distintos son
+    # facturas distintas (ej. ``factura.pdf`` en compras vs ventas). Sin
+    # scope, ``find_folder_by_doc_id`` devolvería un asiento de OTRO libro y
+    # el nuevo upload se silencia sin avisar.
+    libro_short_for_skip = LIBRO_SHORT.get(libro, libro)
     pending_files: list[str] = []
     skipped = 0
     for fp in files:
         doc_id = os.path.basename(fp).rsplit(".", 1)[0]
-        existing_folder = state_writer.find_folder_by_doc_id(asientos_root_for_skip, doc_id)
+        existing_folder = state_writer.find_folder_by_doc_id(
+            asientos_root_for_skip, doc_id, libro_short=libro_short_for_skip
+        )
         if existing_folder and (
             state_writer.is_done(existing_folder)
             or state_writer.is_terminal(existing_folder)

@@ -453,16 +453,29 @@ def rename(folder: Path, new_name: str) -> Path:
         return target
 
 
-def find_folder_by_doc_id(asientos_root: Path, doc_id: str) -> Optional[Path]:
+def find_folder_by_doc_id(
+    asientos_root: Path,
+    doc_id: str,
+    libro_short: Optional[str] = None,
+) -> Optional[Path]:
     """Busca la carpeta que pertenece a ``doc_id`` escaneando ``asientos_root``.
 
     Lee la cabecera del sidecar de cada carpeta. Devuelve None si no se encuentra.
+
+    Si se pasa ``libro_short``, restringe la búsqueda a carpetas cuyo nombre
+    empiece por ``f"{libro_short}_"``. Esto evita colisiones cross-libro cuando
+    dos facturas distintas comparten ``doc_id`` (mismo nombre de fichero en
+    libros distintos): sin scope, el splitter/pipeline reutilizan silenciosamente
+    sidecars de otro libro y la subida nueva nunca llega a revisión.
     """
     asientos_root = Path(asientos_root)
     if not asientos_root.exists():
         return None
+    prefix = f"{libro_short}_" if libro_short else None
     for child in asientos_root.iterdir():
         if not child.is_dir():
+            continue
+        if prefix is not None and not child.name.startswith(prefix):
             continue
         sidecar = _sidecar_path(child)
         if not sidecar.exists():

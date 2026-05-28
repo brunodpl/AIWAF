@@ -206,6 +206,42 @@ def test_find_folder_skips_dirs_without_sidecar(tmp_path: Path) -> None:
     assert find_folder_by_doc_id(asientos, "doc-1") == f
 
 
+def test_find_folder_by_doc_id_scoped_by_libro(tmp_path: Path) -> None:
+    """Dos libros con sidecars del mismo doc_id deben quedar aislados.
+
+    Escenario real: el operario sube ``febrero.pdf`` a ventas hoy, pero hace
+    meses subió otro ``febrero.pdf`` (contenido distinto) a compras. Sin scope
+    por libro, el splitter/pipeline reutilizan silenciosamente la sidecar de
+    compras y la subida nueva nunca llega a la cola de revisión.
+    """
+    asientos = tmp_path / "asientos"
+    asientos.mkdir()
+    f_compras = asientos / "compras_febrero"
+    f_ventas = asientos / "ventas_febrero"
+    f_compras.mkdir()
+    f_ventas.mkdir()
+    init(f_compras, doc_id="febrero", file_origin="compras/febrero.pdf")
+    init(f_ventas, doc_id="febrero", file_origin="ventas/febrero.pdf")
+
+    # Con scope por libro, cada búsqueda devuelve su carpeta.
+    assert find_folder_by_doc_id(asientos, "febrero", libro_short="ventas") == f_ventas
+    assert find_folder_by_doc_id(asientos, "febrero", libro_short="compras") == f_compras
+
+    # Libro sin matches → None (no fallback al otro libro).
+    assert find_folder_by_doc_id(asientos, "febrero", libro_short="bienes") is None
+
+
+def test_find_folder_by_doc_id_libro_blind_backward_compat(tmp_path: Path) -> None:
+    """Sin ``libro_short`` se mantiene el comportamiento original (libro-blind)."""
+    asientos = tmp_path / "asientos"
+    asientos.mkdir()
+    f = asientos / "compras_solo"
+    f.mkdir()
+    init(f, doc_id="solo", file_origin="x.pdf")
+
+    assert find_folder_by_doc_id(asientos, "solo") == f
+
+
 # --- atomicidad ----------------------------------------------------------
 
 

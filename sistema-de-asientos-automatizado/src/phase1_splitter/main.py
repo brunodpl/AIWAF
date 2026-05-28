@@ -317,7 +317,7 @@ def _update_state_for_split(
     original_doc_id = original_pdf.stem
     try:
         original_folder = state_writer.find_folder_by_doc_id(
-            asientos_root, original_doc_id
+            asientos_root, original_doc_id, libro_short=libro_short
         )
         if original_folder is not None:
             try:
@@ -341,9 +341,15 @@ def _update_state_for_split(
         folder_name = f"{libro_short}_{doc_id}"
         asiento_folder = asientos_root / folder_name
         try:
-            if state_writer.find_folder_by_doc_id(asientos_root, doc_id) is not None:
+            if state_writer.find_folder_by_doc_id(
+                asientos_root, doc_id, libro_short=libro_short
+            ) is not None:
                 # Idempotencia: si por alguna razón ya existe sidecar para
-                # este doc_id, no lo tocamos (caso rerun manual).
+                # este doc_id EN EL MISMO LIBRO, no lo tocamos (caso rerun
+                # manual). Si existe en OTRO libro, ese caso lo ignoramos a
+                # propósito: el nuevo split debe tener su propio sidecar bajo
+                # ``{libro_short}_{doc_id}`` para no contaminar el inbox del
+                # otro libro.
                 continue
             try:
                 size_bytes = split_pdf.stat().st_size
