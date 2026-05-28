@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import yaml
 
 from .catalogo import (
     buscar_por_nif,

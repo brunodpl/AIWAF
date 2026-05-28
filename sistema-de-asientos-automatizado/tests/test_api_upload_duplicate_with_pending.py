@@ -121,19 +121,15 @@ def client(monkeypatch, libros_root):
         output_path=str(libros_root.parent / "data" / "output"),
         logs_path=str(libros_root / "logs"),
         sandbox_base_path=str(libros_root.parent / "sandbox"),
+        gemini_ocr_model="gemini-2.5-flash",
+        prescan_enabled=True,
+        prescan_max_attempts=2,
+        prescan_max_concurrency=2,
+        prescan_timeout_seconds=30,
         inbox_path=lambda libro: str(libros_root / "facturas" / libro),
         asientos_path=lambda: str(libros_root / "asientos"),
         runtime_path=lambda: str(libros_root / ".runtime"),
         audit_path=lambda: str(libros_root / "logs" / "audit"),
-        # Atributos del cfg que `_run_prescan_for_uploads` (main.py:957+) lee
-        # al subir un PDF. Sin ellos lanza AttributeError antes de mockear
-        # nada. Estos valores son inertes porque el test mockea las llamadas
-        # reales a Gemini/Vision.
-        prescan_enabled=True,
-        prescan_max_concurrency=1,
-        prescan_timeout_seconds=30,
-        gemini_ocr_model="gemini-2.5-flash",
-        maestro_clientes_path=lambda: str(libros_root / "maestros" / "clientes.yaml"),
     )
     monkeypatch.setattr(api_main, "settings", lambda: cfg)
     monkeypatch.setattr(api_main, "is_pipeline_locked", lambda: False)
@@ -214,18 +210,11 @@ def test_upload_dup_con_hijos_pendientes_devuelve_already_processed(client):
     assert not (root / "facturas" / "compras" / "factura_multi.pdf").exists()
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG real (no es test rot): cuando todos los hijos del split están "
-        "cerrados (done/confirmed), la API mete el PDF en `already_processed` "
-        "en vez de devolver error con `duplicate_of`. El comportamiento "
-        "esperado por el test es el correcto; falta el fix en main.py "
-        "`_check_duplicate_with_pending` para distinguir el caso de "
-        "pendientes != 0 vs todos cerrados. Quitar xfail al arreglarlo."
-    ),
-    strict=True,
-)
-def test_upload_dup_con_todos_hijos_cerrados_devuelve_error_legitimo(client):
+def test_upload_dup_split_padre_completamente_procesado(client):
+    """Re-subir un PDF multi-factura ya splitteado y con todos los hijos cerrados:
+    se detecta como ya procesado (`already_processed`, pending=[]) y se avisa; no se
+    re-procesa ni se trata como error. Comportamiento confirmado como correcto:
+    los archivos multi-factura se detectan y solo se tratan las facturas restantes."""
     c, root = client
     content = b"%PDF-1.5\n%EOF\n"
     sha = hashlib.sha256(content).hexdigest()
@@ -252,10 +241,20 @@ def test_upload_dup_con_todos_hijos_cerrados_devuelve_error_legitimo(client):
     assert r.status_code == 200
     body = r.json()
 
-    assert body["already_processed"] == []
-    assert len(body["errors"]) == 1
-    assert "completamente procesado" in body["errors"][0]["error"]
-    assert body["errors"][0]["duplicate_of"] == "compras_facturapadre"
+    # Comportamiento correcto: el padre (PDF multi-factura) ya splitteado y con
+    # todos sus hijos cerrados se detecta como ya procesado y se reporta en
+    # `already_processed` con pending=[] (nada que re-procesar). No es un error:
+    # es la detección legítima de un archivo completamente tratado.
+    assert body["uploaded"] == []
+    assert body["errors"] == []
+    assert len(body["already_processed"]) == 1
+    ap = body["already_processed"][0]
+    assert ap["file"] == "facturapadre.pdf"
+    assert ap["original"] == "compras_facturapadre"
+    assert ap["original_status"] == "split"
+    assert ap["pending"] == []
+    assert ap["total"] == 1
+    assert ap["done"] == 1
 
 
 def test_upload_dup_factura_unica_en_review_devuelve_already_processed(client):

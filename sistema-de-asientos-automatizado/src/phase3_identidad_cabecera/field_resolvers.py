@@ -744,7 +744,7 @@ def _resolver_fecha_generico(
         for m in patron_contexto.finditer(texto_ocr):
             # Tomar el texto justo después del contexto y buscar una fecha
             resto = texto_ocr[m.end():m.end() + 40]
-            for patron_f, formato in _PATRONES_FECHA:
+            for patron_f, _formato in _PATRONES_FECHA:
                 mf = patron_f.search(resto)
                 if mf:
                     fecha_raw = mf.group(0)
@@ -847,7 +847,7 @@ def resolver_fecha_expedicion(
         for m in _CONTEXTO_FECHA_EXP.finditer(texto_ocr):
             # Tomar el texto justo después del contexto y buscar una fecha
             resto = texto_ocr[m.end() : m.end() + 40]
-            for patron_f, formato in _PATRONES_FECHA:
+            for patron_f, _formato in _PATRONES_FECHA:
                 mf = patron_f.search(resto)
                 if mf:
                     fecha_raw = mf.group(0)

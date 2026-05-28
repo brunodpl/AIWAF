@@ -49,7 +49,7 @@ def libros_root(tmp_path: Path) -> Path:
 def fake_settings(libros_root: Path):
     """Reemplaza ``settings()`` por un namespace que apunta al tmp libros/."""
     base = str(libros_root)
-    cfg = SimpleNamespace(
+    return SimpleNamespace(
         libros_base=base,
         output_path=str(libros_root.parent / "data" / "output"),
         logs_path=str(libros_root / "logs"),
@@ -60,7 +60,6 @@ def fake_settings(libros_root: Path):
         runtime_path=lambda: str(libros_root / ".runtime"),
         audit_path=lambda: str(libros_root / "logs" / "audit"),
     )
-    return cfg
 
 
 @pytest.fixture
@@ -448,10 +447,9 @@ def test_list_invoices_include_done_false_no_lee_validacion_de_done(
     client, libros_root, monkeypatch
 ):
     """include_done=False must skip done folders BEFORE reading resultado_validacion."""
-    from unittest.mock import patch
 
     # Carpeta done: .state.json con último evento done + resultado_validacion.json
-    folder = _make_asiento(libros_root, "compras_factura_done", "factura_done", decision="auto")
+    _make_asiento(libros_root, "compras_factura_done", "factura_done", decision="auto")
 
     call_count = 0
     original_gvr = api_main.get_validation_result

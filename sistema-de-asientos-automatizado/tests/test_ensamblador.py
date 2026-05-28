@@ -8,9 +8,7 @@ No requiere credenciales de GCP. Lee/escribe JSONs en directorios temporales.
 import json
 import tempfile
 from pathlib import Path
-from copy import deepcopy
 
-import pytest
 
 from src.phase4_ensamblador.ensamblador import (
     run_ensamblador,
@@ -137,7 +135,7 @@ class TestDetectarModulos:
     def test_no_artifacts_all_pendiente(self, tmp_path):
         """Sin artefactos, todos los módulos quedan pendiente."""
         modulos = _detectar_modulos(tmp_path)
-        for nombre, info in modulos.items():
+        for _nombre, info in modulos.items():
             assert info["estado"] == "pendiente"
             assert info["data"] is None
 
@@ -200,7 +198,7 @@ class TestEnsamblarCampos:
             "cliente_destino": {"estado": "pendiente", "data": None, "artefacto": None},
         }
         campos = _ensamblar_campos(modulos)
-        for campo_name, campo_data in campos.items():
+        for _campo_name, campo_data in campos.items():
             assert campo_data["decision"] == "pendiente"
             assert campo_data["valor_final"] is None
             assert campo_data["fuente_modulo"] == "pendiente"
@@ -495,7 +493,7 @@ class TestSchema:
 
     def test_every_campo_maps_to_known_modulo(self):
         from src.phase4_ensamblador.schema import MODULOS_FASE3
-        for campo, modulo in CAMPOS_POR_MODULO.items():
+        for _campo, modulo in CAMPOS_POR_MODULO.items():
             assert modulo in MODULOS_FASE3
 
     def test_campos_obligatorios_subset_of_campos_por_modulo(self):

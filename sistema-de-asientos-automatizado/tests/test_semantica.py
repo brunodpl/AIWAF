@@ -16,7 +16,6 @@ No requiere credenciales de GCP (LLM mockeado).
 """
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest

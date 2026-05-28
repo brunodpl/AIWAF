@@ -394,38 +394,6 @@ export async function sendInvoiceAction(
   }
 }
 
-/**
- * Fetch pipeline statistics.
- */
-export async function fetchStats(): Promise<{
-  total: number;
-  by_decision: {
-    auto: number;
-    warn: number;
-    pendiente: number;
-    block: number;
-  };
-  by_user_action: {
-    approved: number;
-    rejected: number;
-  };
-}> {
-  try {
-    const response = await fetchWithTimeout(`${API_URL}/api/stats`);
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch stats: ${response.statusText}`);
-    }
-
-    return response.json();
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("Request timed out. The server may still be processing.");
-    }
-    throw error;
-  }
-}
-
 /** Types for new API functions */
 export interface BooksResponse {
   books: Book[];
@@ -717,24 +685,6 @@ export async function resetPipeline(): Promise<ResetPipelineResponse> {
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("Timeout reseteando pipeline.");
-    }
-    throw error;
-  }
-}
-
-/**
- * Fetch registered clients from the gestoria.
- */
-export async function fetchClients(): Promise<ClientsResponse> {
-  try {
-    const response = await fetchWithTimeout(`${API_URL}/api/clients`);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch clients: ${response.statusText}`);
-    }
-    return response.json();
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("Request timed out. The server may still be processing.");
     }
     throw error;
   }

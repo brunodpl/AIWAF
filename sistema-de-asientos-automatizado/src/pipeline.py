@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -29,7 +29,6 @@ from src.audit_writer import AuditWriter
 from src.phase2_ocr.file_queue_service import (
     run_ocr,
     scan_folder,
-    ProcessingStats,
 )
 from src.phase2_ocr.invoice_parser_client import VisionOcrClient
 from src.phase2_ocr.mapper_document_ai_to_json import _init_gemini_model
@@ -269,7 +268,7 @@ def process_document(
     ok_ensamblado = False
     try:
         ok_ensamblado = run_ensamblador(doc_id, doc_dir, libro)
-    except Exception as e:
+    except Exception:
         logger.error(
             "[pipeline] Fase 5 ensamblador lanzo excepcion doc_id=%s", doc_id, exc_info=True
         )
@@ -320,7 +319,6 @@ def run_pipeline(
         {"total": N, "ok": N, "warn": N, "error": N}
     """
     cfg = get_settings()
-    stats = ProcessingStats()
     summary = {"total": 0, "ok": 0, "warn": 0, "error": 0}
 
     # Inicializar escritor de auditoría para esta ejecución.

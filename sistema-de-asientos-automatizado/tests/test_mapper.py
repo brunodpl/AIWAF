@@ -5,10 +5,8 @@ Valida transformación de datos Gemini a documento_extraido.json schema,
 asignación de confianzas deterministas y fallback de mínimos.
 """
 
-import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-from datetime import date, timezone, datetime
+from unittest.mock import patch
 
 from src.phase2_ocr import mapper_document_ai_to_json as mapper
 from src.phase2_ocr.mapper_document_ai_to_json import (

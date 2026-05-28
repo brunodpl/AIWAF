@@ -4,7 +4,6 @@ Tests para el módulo de validación de campos críticos.
 Valida presencia y confianza mínima de campos requeridos.
 """
 
-import pytest
 
 from src.phase2_ocr import validator
 import src.config as config

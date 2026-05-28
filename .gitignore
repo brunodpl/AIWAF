@@ -11,6 +11,7 @@ node_modules/
 
 # Build outputs
 .next/
+.next-smoke/
 .next-ci/
 out/
 dist/
@@ -26,9 +27,13 @@ Desktop.ini
 *.swp
 *~
 
-# Git worktrees / [AI assistant] Code worktrees
+# Git worktrees / [AI assistant] Code worktrees (cualquier nivel, incl. subproyectos)
 .worktrees/
 .[AI assistant]/worktrees/
+**/.[AI assistant]/worktrees/
+
+# Firecrawl scrape cache (resultados de scraping; no es código fuente)
+.firecrawl/
 
 # Trazabilidad 2.0 — datos runtime (inboxes de PDFs, asientos, logs, .runtime).
 # Se crean automáticamente en cada despliegue; nunca deben commitearse.

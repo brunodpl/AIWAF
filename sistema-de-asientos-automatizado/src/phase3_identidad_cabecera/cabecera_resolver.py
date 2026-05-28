@@ -18,7 +18,6 @@ Salida: resultado_identidad_cabecera.json
 
 from __future__ import annotations
 
-import json
 import logging
 import unicodedata
 import uuid
@@ -36,12 +35,10 @@ from .field_resolvers import (
     resolver_fecha_operacion,
     resolver_nif_receptor,
     resolver_nombre_receptor,
-    _necesita_llm,
-    _decidir,
     _candidatos_desde_fase2,
 )
 from .nif_cif_validator import validar_identificador_fiscal
-from .llm_disambiguator import LLMDisambiguator, ArbitrajeResult
+from .llm_disambiguator import LLMDisambiguator
 
 logger = logging.getLogger("pipeline.identidad")
 

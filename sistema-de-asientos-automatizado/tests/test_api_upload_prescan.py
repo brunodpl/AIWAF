@@ -259,7 +259,6 @@ def test_reupload_of_pre_scan_failed_pdf_is_allowed(monkeypatch, client):
     assert r1.json()["detected_summary"]["files_blocked"] == 1
 
     # 2ª subida del mismo sha256 → ahora pre-scan tiene éxito.
-    asiento = root / "asientos" / "compras_retry"
     monkeypatch.setattr(api_main, "split_single_file", lambda pdf_path, **kw: SplitOutcome(
         source=str(pdf_path), status="single_page", n_pages=1, n_facturas=1,
     ))

@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 import src.state_writer as sw
-from src import state_writer
 from src.state_writer import (
     SCHEMA_V,
     SIDECAR_NAME,

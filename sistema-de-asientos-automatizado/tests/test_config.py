@@ -6,7 +6,6 @@ Valida carga de .env, validaciones y propiedades derivadas.
 
 import pytest
 import os
-from unittest.mock import patch, MagicMock
 from pydantic import ValidationError
 
 

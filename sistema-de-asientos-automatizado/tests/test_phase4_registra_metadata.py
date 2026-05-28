@@ -10,11 +10,9 @@ Contrato nuevo (TDD):
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import yaml
 
 
 def _identidad(nif_emisor: str, nombre_emisor: str, fecha: str) -> dict:

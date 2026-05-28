@@ -8,14 +8,13 @@ Incluye tests del contrato de subcarpetas por documento_id.
 import pytest
 import os
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.phase2_ocr.file_queue_service import (
     scan_folder,
     save_json,
     ProcessingStats,
     run_ocr,
-    process_single_file,
 )
 from src.phase2_ocr import file_queue_service as file_queue
 

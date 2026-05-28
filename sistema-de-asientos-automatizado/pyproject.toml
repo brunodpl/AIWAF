@@ -1,0 +1,15 @@
+[tool.ruff]
+target-version = "py312"
+src = ["src", "tests"]
+line-length = 120
+
+[tool.ruff.lint]
+# Detección de código muerto / higiene de imports:
+#   F401 imports sin usar · F811 redefiniciones · F841 variables locales sin usar
+select = ["F401", "F811", "F841"]
+
+[tool.vulture]
+min_confidence = 80
+paths = ["src"]
+# Excluir tests y caches del barrido de código muerto
+exclude = ["*/tests/*", "*/__pycache__/*"]

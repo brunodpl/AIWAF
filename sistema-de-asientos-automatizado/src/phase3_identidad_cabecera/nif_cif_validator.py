@@ -118,14 +118,13 @@ def _validar_nif(numero: str, letra: str) -> ResultadoValidacion:
                 checksum_ok=True,
                 razon="NIF válido"
             )
-        else:
-            return ResultadoValidacion(
-                es_valido=False,
-                tipo=TipoIdentificador.NIF,
-                formato_ok=True,
-                checksum_ok=False,
-                razon=f"Checksum NIF incorrecto: esperada '{letra_esperada}', encontrada '{letra}'"
-            )
+        return ResultadoValidacion(
+            es_valido=False,
+            tipo=TipoIdentificador.NIF,
+            formato_ok=True,
+            checksum_ok=False,
+            razon=f"Checksum NIF incorrecto: esperada '{letra_esperada}', encontrada '{letra}'"
+        )
     except ValueError:
         return ResultadoValidacion(
             es_valido=False,
@@ -189,14 +188,13 @@ def _validar_cif(letra_org: str, numero: str, control: str) -> ResultadoValidaci
                 checksum_ok=True,
                 razon="CIF válido"
             )
-        else:
-            return ResultadoValidacion(
-                es_valido=False,
-                tipo=TipoIdentificador.CIF,
-                formato_ok=True,
-                checksum_ok=False,
-                razon=f"Checksum CIF incorrecto: esperado '{digito_control}' o '{letra_control}', encontrado '{control}'"
-            )
+        return ResultadoValidacion(
+            es_valido=False,
+            tipo=TipoIdentificador.CIF,
+            formato_ok=True,
+            checksum_ok=False,
+            razon=f"Checksum CIF incorrecto: esperado '{digito_control}' o '{letra_control}', encontrado '{control}'"
+        )
     except (ValueError, IndexError) as e:
         return ResultadoValidacion(
             es_valido=False,
@@ -236,14 +234,13 @@ def _validar_nie(letra_inicial: str, numero: str, letra_control: str) -> Resulta
                 checksum_ok=True,
                 razon="NIE válido"
             )
-        else:
-            return ResultadoValidacion(
-                es_valido=False,
-                tipo=TipoIdentificador.NIE,
-                formato_ok=True,
-                checksum_ok=False,
-                razon=f"Checksum NIE incorrecto: esperada '{letra_esperada}', encontrada '{letra_control}'"
-            )
+        return ResultadoValidacion(
+            es_valido=False,
+            tipo=TipoIdentificador.NIE,
+            formato_ok=True,
+            checksum_ok=False,
+            razon=f"Checksum NIE incorrecto: esperada '{letra_esperada}', encontrada '{letra_control}'"
+        )
     except ValueError:
         return ResultadoValidacion(
             es_valido=False,

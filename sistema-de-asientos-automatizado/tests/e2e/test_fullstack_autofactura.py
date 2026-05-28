@@ -18,8 +18,6 @@ inline, no hace falta ningún patch.
 
 from __future__ import annotations
 
-import pytest
-
 from src.phase3_identidad_cabecera.cabecera_resolver import CabeceraResolver
 from src.phase4_customer.resolver import resolver_cliente
 

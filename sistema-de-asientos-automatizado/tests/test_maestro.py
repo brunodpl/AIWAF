@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import yaml
-import pytest
-from pathlib import Path
 from src.phase4_customer.maestro import (
     cargar_maestro, registrar_cliente, guardar_maestro
 )

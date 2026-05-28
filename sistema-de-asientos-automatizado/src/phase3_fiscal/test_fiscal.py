@@ -7,7 +7,6 @@ Estilo replicado de test_3_cabecera.py.
 
 from __future__ import annotations
 
-import pytest
 from decimal import Decimal
 
 from src.phase3_fiscal.verificador import (
@@ -15,7 +14,6 @@ from src.phase3_fiscal.verificador import (
     safe_decimal,
     _clasificar_linea,
     ClasificacionLinea,
-    TOLERANCIA_DEFAULT,
 )
 
 

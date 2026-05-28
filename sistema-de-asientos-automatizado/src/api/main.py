@@ -27,9 +27,9 @@ import urllib.error
 
 import httpx
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from urllib.parse import quote
 
@@ -2418,7 +2418,7 @@ async def run_pipeline_endpoint():
             processed_acc = 0
             # Lote nuevo: partir de cero; cada libro hace merge (multi-libro).
             _delete_pending_confirm()
-            for book_id, info in book_inbox_map.items():
+            for _book_id, info in book_inbox_map.items():
                 if is_cancel_requested():
                     logger.warning("[pipeline] Cancelación solicitada — abortando libros pendientes")
                     break

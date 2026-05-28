@@ -11,7 +11,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from src.phase2_ocr.file_queue_service import run_ocr
 from src import state_writer

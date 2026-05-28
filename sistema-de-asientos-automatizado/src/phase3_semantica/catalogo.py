@@ -31,8 +31,7 @@ def _normalizar_texto(texto: str) -> str:
     texto = texto.upper().strip()
     texto = unicodedata.normalize("NFD", texto)
     texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
-    texto = re.sub(r"\s+", " ", texto)
-    return texto
+    return re.sub(r"\s+", " ", texto)
 
 
 def cargar_maestro_contable(path: str | Path) -> dict:

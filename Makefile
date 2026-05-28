@@ -3,7 +3,7 @@
 # Uso: make <comando>
 # =============================================================
 
-.PHONY: start stop restart rebuild logs status update reset-output release help
+.PHONY: start stop restart rebuild logs status update reset-output release deadcode deadcode-front deadcode-back help
 
 ## Iniciar todos los servicios (sin rebuild)
 start:
@@ -55,6 +55,17 @@ release:
 	git push origin v$(VERSION)
 	@echo "Tag v$(VERSION) empujado. La GitHub Action construirá y publicará las imágenes."
 
+## Detectar código muerto en el frontend (knip)
+deadcode-front:
+	cd interfaz-asientos-automatizados && pnpm exec knip
+
+## Detectar código muerto en el backend (ruff + vulture)
+deadcode-back:
+	cd sistema-de-asientos-automatizado && ruff check src tests && vulture src --min-confidence 80
+
+## Detectar código muerto en todo el repo (frontend + backend)
+deadcode: deadcode-front deadcode-back
+
 ## Mostrar esta ayuda
 help:
 	@echo ""
@@ -70,6 +81,7 @@ help:
 	@echo "  make update        Actualizar a la última versión"
 	@echo "  make reset-output  Borrar resultados previos"
 	@echo "  make release VERSION=x.y.z  Taggear y publicar una release"
+	@echo "  make deadcode      Detectar código muerto (frontend + backend)"
 	@echo ""
 
 .DEFAULT_GOAL := help

@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(cmd /c \"cd /d C:\\\\Users\\\\bruno\\\\Desktop\\\\Repos\\\\sistema-de-asientos-automatizado && rmdir /S /Q .[AI assistant]\\\\worktrees\\\\affectionate-banach && rmdir /S /Q .[AI assistant]\\\\worktrees\\\\bold-herschel && echo Eliminados\")",
-      "Bash(powershell -Command \"Remove-Item -Recurse -Force ''C:\\\\Users\\\\bruno\\\\Desktop\\\\Repos\\\\sistema-de-asientos-automatizado\\\\.[AI assistant]\\\\worktrees\\\\affectionate-banach''; Remove-Item -Recurse -Force ''C:\\\\Users\\\\bruno\\\\Desktop\\\\Repos\\\\sistema-de-asientos-automatizado\\\\.[AI assistant]\\\\worktrees\\\\bold-herschel''; Write-Host ''Eliminados''\")"
-    ]
-  }
-}

@@ -10,7 +10,6 @@ Usa fixtures de raw_document_ai.json reales anonimizados.
 """
 
 import json
-import os
 import tempfile
 from pathlib import Path
 

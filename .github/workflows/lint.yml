@@ -1,0 +1,86 @@
+name: CI (lint, tests, dead code)
+
+# Gate de calidad: tipos, código muerto y tests en cada PR y en cada push a main.
+# NO se dispara en tags vX.Y.Z (eso es el workflow de release). Restringir push a
+# main evita ejecuciones duplicadas cuando hay un PR abierto.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend (knip + tsc + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: interfaz-asientos-automatizados
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: interfaz-asientos-automatizados/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Dead code (knip)
+        run: pnpm exec knip
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      - name: Unit tests (vitest)
+        run: pnpm test
+
+  backend:
+    name: Backend (ruff + vulture + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sistema-de-asientos-automatizado
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        # Mirror the Dockerfile: requirements.txt + fastapi[standard]/uvicorn,
+        # plus the dev tooling (ruff, vulture, pytest).
+        run: |
+          pip install -r requirements.txt
+          pip install "fastapi[standard]" uvicorn
+          pip install -r requirements-dev.txt
+
+      - name: Lint / unused imports (ruff)
+        run: ruff check src tests
+
+      - name: Dead code (vulture)
+        run: vulture src --min-confidence 80
+
+      - name: Unit tests (pytest)
+        # Settings (pydantic-settings) requiere vars de .env y un fichero de
+        # credenciales que exista (solo se valida la existencia). En CI usamos
+        # los valores de ejemplo + un service-account dummy; los tests mockean
+        # los clientes GCP/Gemini, así que credenciales dummy son suficientes.
+        run: |
+          cp .env.example .env
+          echo '{"type":"service_account"}' > "$RUNNER_TEMP/ci-sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/ci-sa.json"
+          python -m pytest -q

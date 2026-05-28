@@ -6,10 +6,7 @@ los tipos de fecha disponibles (invoice_date, delivery_date, receive_date, due_d
 para permitir que el LLM árbitro elija la correcta.
 """
 
-import json
-from pathlib import Path
 
-import pytest
 
 from src.phase3_identidad_cabecera.docai_extractor import DocumentAIEntityExtractor
 from src.phase3_identidad_cabecera.field_resolvers import resolver_fecha_expedicion

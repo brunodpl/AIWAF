@@ -11,7 +11,7 @@ import pytest
 
 from src import state_writer
 from src.phase1_splitter import main as splitter_main
-from src.phase1_splitter.main import ORIGINALES_DIRNAME, run_split
+from src.phase1_splitter.main import run_split
 
 
 @pytest.fixture

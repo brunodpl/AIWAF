@@ -18,17 +18,14 @@ Ejecutar: pytest tests/test_3_cabecera.py -v
 import json
 import os
 import sys
-from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
-from nif_cif_validator import validar_identificador_fiscal
 from field_candidate import (
-    FieldCandidate, FieldResolution, CabeceraResult,
-    FuenteCandidato, DecisionCampo
+    FieldResolution, FuenteCandidato, DecisionCampo
 )
-from docai_extractor import DocumentAIEntityExtractor, _extraer_bbox_desde_page_refs
+from docai_extractor import DocumentAIEntityExtractor
 from field_resolvers import (
     _normalizar_fecha, resolver_nif_entidad, resolver_numero_factura,
     resolver_fecha_expedicion, resolver_fecha_operacion, _necesita_llm
