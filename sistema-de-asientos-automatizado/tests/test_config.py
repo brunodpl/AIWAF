@@ -55,10 +55,26 @@ def test_config_loads_with_valid_env(monkeypatch, tmp_path):
 def test_config_fails_on_missing_required_field(monkeypatch):
     """Test fail-fast si falta variable requerida.
 
-    Aislamos del `.env` real del repo con ``_env_file=None`` — sin él,
-    pydantic-settings carga todas las variables del fichero y el test
-    no puede verificar el fail-fast.
+    Aislamos del `.env` real del repo con ``_env_file=None`` Y de cualquier
+    env var heredada (CI, tests/conftest.py, shell, etc.). Sin estos
+    delenv, las vars sembradas por tests/conftest.py para que la suite
+    arranque sin .env hacen que Settings valide y el test no pueda
+    verificar el fail-fast.
     """
+    # Vars que tests/conftest.py siembra cuando no hay .env — limpiarlas
+    # aquí para garantizar el escenario "todo ausente menos PROJECT_ID".
+    for var in (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GEMINI_OCR_MODEL",
+        "GEMINI_OCR_LOCATION",
+        "GEMINI_ARBITRO_MODEL",
+        "GEMINI_ARBITRO_LOCATION",
+        "GEMINI_ARBITRO_MAX_RETRIES",
+        "EXTENSIONES_ADMITIDAS",
+        "CONFIANZA_MINIMA",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT_ID", "test-project")
 
     from src.config import Settings

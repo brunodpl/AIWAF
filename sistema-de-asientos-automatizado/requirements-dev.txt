@@ -1,0 +1,4 @@
+# Dependencias de desarrollo / CI. Las dependencias de runtime viven en requirements.txt.
+# Se instalan en CI con:
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8
