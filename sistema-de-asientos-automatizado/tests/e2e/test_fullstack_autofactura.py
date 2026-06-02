@@ -170,3 +170,67 @@ def test_ventas_normal_cliente_resuelve_al_emisor():
     # → puede llegar a auto (sin penalización por cliente nuevo).
     assert cliente["campos"]["nif_cliente"]["valor_final"] == _COMAR_NIF
     assert cliente["cliente_info"]["es_nuevo"] is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Caso Luckia: documento SIN marcador textual, operadora en el registro
+# determinista. El swap por operadora debe propagar igual que el de marcador.
+# ──────────────────────────────────────────────────────────────────────
+
+def _resolver_cabecera_operadoras(operadora_nifs: set[str]) -> CabeceraResolver:
+    return CabeceraResolver(
+        usar_llm=False,
+        umbral_auto=0.90,
+        umbral_warn=0.65,
+        autofactura_marcadores=[],            # sin marcador: solo el registro
+        operadora_nifs=operadora_nifs,
+    )
+
+
+def _raw_sin_marcador() -> dict:
+    """Misma autofactura pero SIN el marcador textual (caso Luckia)."""
+    raw = _raw_docai_autofactura()
+    raw["text"] = "Participación local 111,90\nTOTAL RECIBIDO 135,40\n"
+    return raw
+
+
+def test_operadora_sin_marcador_cliente_resuelve_al_titular():
+    """Caso Luckia: el documento NO trae marcador de autofactura, pero la
+    operadora está en el registro determinista. El swap por operadora debe
+    propagar a fase 4 y resolver al titular del local, no a la operadora.
+    """
+    resultado_identidad = _resolver_cabecera_operadoras({_COMAR_NIF}).resolver(
+        _raw_sin_marcador(), "doc-luckia", libro="21_VENTAS_INGRESOS"
+    )
+
+    cliente = resolver_cliente(
+        campos_identidad=_campos_identidad_from(resultado_identidad),
+        libro="21_VENTAS_INGRESOS",
+        maestro={"clientes": {}},
+        documento_id="doc-luckia",
+    )
+
+    assert cliente["campos"]["nif_cliente"]["valor_final"] == _PAULA_NIF, (
+        "Con la operadora en el registro, el cliente debe resolver al titular "
+        f"({_PAULA_NIF}) aunque el documento no lleve marcador."
+    )
+
+
+def test_operadora_en_compras_no_invierte_y_cliente_es_receptor():
+    """En compras el cliente es el receptor; una operadora como emisor es un
+    proveedor legítimo. El registro NO debe invertir los roles.
+    """
+    resultado_identidad = _resolver_cabecera_operadoras({_COMAR_NIF}).resolver(
+        _raw_sin_marcador(), "doc-compra", libro="20_COMPRAS_GASTOS"
+    )
+
+    cliente = resolver_cliente(
+        campos_identidad=_campos_identidad_from(resultado_identidad),
+        libro="20_COMPRAS_GASTOS",
+        maestro={"clientes": {_PAULA_NIF: {"nombre": _PAULA_NOMBRE, "primer_uso": "2024-01-01"}}},
+        documento_id="doc-compra",
+    )
+
+    assert cliente["campos"]["nif_cliente"]["valor_final"] == _PAULA_NIF
+    # La operadora se mantiene como emisor/proveedor, no como cliente.
+    assert resultado_identidad.nif_entidad["valor_final"] == _COMAR_NIF

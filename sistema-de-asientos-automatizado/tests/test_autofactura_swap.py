@@ -121,3 +121,102 @@ class TestMarcadoresDefaultAmpliados:
         assert not _es_autofactura(
             "Factura ordinaria\nBase 100\nIVA 21\nTOTAL 121\n", marcadores
         )
+
+
+_LUCKIA_NIF = "A15041841"
+_LUCKIA_NOMBRE = "LUCKIA"
+
+
+def _resolver_operadoras(operadora_nifs: set[str]) -> CabeceraResolver:
+    """Resolver con registro de operadoras y SIN marcadores: el único disparador
+    posible del swap es el registro determinista de NIF de operadoras (caso Luckia,
+    cuyos documentos no llevan el marcador textual)."""
+    return CabeceraResolver(
+        usar_llm=False,
+        umbral_auto=0.90,
+        umbral_warn=0.65,
+        autofactura_marcadores=[],
+        operadora_nifs=operadora_nifs,
+    )
+
+
+class TestOperadoraSwap:
+    """Regla determinista: una operadora de máquinas recreativas nunca es el
+    cliente de la gestoría. Si en ventas la operadora aparece como emisor (rol
+    cliente), se invierte emisor/receptor SIN depender de marcador textual.
+    """
+
+    def test_operadora_emisor_en_ventas_invierte_sin_marcador(self):
+        r = _resolver_operadoras({_COMAR_NIF}).resolver(
+            _raw_autofactura(con_marcador=False), "doc-op", libro="21_VENTAS_INGRESOS"
+        )
+        assert r.nif_entidad["valor_final"] == _PAULA_NIF
+        assert r.nif_receptor["valor_final"] == _COMAR_NIF
+        assert r.nombre_entidad["valor_final"] == _PAULA_NOMBRE.upper()
+        assert r.nombre_receptor["valor_final"] == _COMAR_NOMBRE.upper()
+
+    def test_swap_operadora_fuerza_warn_con_motivo(self):
+        r = _resolver_operadoras({_COMAR_NIF}).resolver(
+            _raw_autofactura(con_marcador=False), "doc-op", libro="21_VENTAS_INGRESOS"
+        )
+        for campo in (r.nif_entidad, r.nif_receptor, r.nombre_entidad, r.nombre_receptor):
+            assert campo["decision"] in (DecisionCampo.WARN.value, DecisionCampo.BLOCK.value)
+            assert "OPERADORA" in campo["motivo"].upper()
+
+    def test_operadora_emisor_en_compras_no_invierte(self):
+        # En compras el cliente es el receptor; la operadora-emisor es un
+        # proveedor legítimo → NO debe invertirse.
+        r = _resolver_operadoras({_COMAR_NIF}).resolver(
+            _raw_autofactura(con_marcador=False), "doc-op", libro="20_COMPRAS_GASTOS"
+        )
+        assert r.nif_entidad["valor_final"] == _COMAR_NIF
+        assert r.nif_receptor["valor_final"] == _PAULA_NIF
+        assert r.nif_entidad["decision"] == DecisionCampo.AUTO.value
+
+    def test_operadora_sin_nif_receptor_no_inventa(self):
+        # Gating "ambos NIF presentes": sin receptor no se puede invertir con
+        # seguridad → no swap, no se inventa el titular (regla "nunca fabricar").
+        raw = _raw_autofactura(con_marcador=False)
+        raw["entities"] = [e for e in raw["entities"] if e["type"] != "receiver_tax_id"]
+        r = _resolver_operadoras({_COMAR_NIF}).resolver(
+            raw, "doc-op", libro="21_VENTAS_INGRESOS"
+        )
+        assert r.nif_entidad["valor_final"] == _COMAR_NIF
+
+    def test_nif_no_operadora_no_invierte(self):
+        # Registro sin COMAR → el emisor no está catalogado y no dispara el swap.
+        r = _resolver_operadoras({_LUCKIA_NIF}).resolver(
+            _raw_autofactura(con_marcador=False), "doc-op", libro="21_VENTAS_INGRESOS"
+        )
+        assert r.nif_entidad["valor_final"] == _COMAR_NIF
+        assert r.nif_entidad["decision"] == DecisionCampo.AUTO.value
+
+    def test_libro_none_no_dispara_operadora(self):
+        # Sin libro no se conoce el rol de cliente → trigger por operadora off;
+        # protege llamadas standalone a run_identidad sin libro.
+        r = _resolver_operadoras({_COMAR_NIF}).resolver(
+            _raw_autofactura(con_marcador=False), "doc-op", libro=None
+        )
+        assert r.nif_entidad["valor_final"] == _COMAR_NIF
+
+
+class TestOperadorasDefault:
+    """El default de config debe catalogar las operadoras conocidas (COMAR, Luckia)
+    para que el swap por operadora salte sin tocar el .env por gestoría. Va en config
+    (no en data/maestros, que está bind-monteado) para que llegue a las gestorías ya
+    instaladas vía imagen, igual que los marcadores de autofactura.
+    """
+
+    def _operadoras_default(self) -> set[str]:
+        raw = Settings.model_fields["operadora_nifs_raw"].default
+        return {n.strip().upper() for n in raw.split("|") if n.strip()}
+
+    def test_default_incluye_comar_y_luckia(self):
+        ops = self._operadoras_default()
+        assert "B15614480" in ops, "COMAR CORUÑA S.L. debe estar catalogada"
+        assert "A15041841" in ops, "LUCKIA debe estar catalogada"
+
+    def test_default_normaliza_a_mayusculas(self):
+        # Todos los NIF del default ya en mayúsculas (la comparación es case-insensitive).
+        ops = self._operadoras_default()
+        assert all(n == n.upper() for n in ops)

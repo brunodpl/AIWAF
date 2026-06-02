@@ -25,6 +25,7 @@ logger = logging.getLogger("pipeline.identidad")
 def run_identidad(
     documento_id: str,
     doc_output_dir: str,
+    libro: Optional[str] = None,
     usar_llm: bool = True,
 ) -> bool:
     """
@@ -36,6 +37,8 @@ def run_identidad(
     Args:
         documento_id: ID del documento (basename del archivo original)
         doc_output_dir: Ruta al directorio de salida del documento
+        libro: Libro contable (p.ej. "21_VENTAS_INGRESOS"); habilita la regla
+            determinista de operadoras (operadora en rol cliente → swap).
         usar_llm: Si False, usa solo resolución determinista (útil para tests)
 
     Returns:
@@ -79,6 +82,7 @@ def run_identidad(
 
     try:
         cfg = get_settings()
+        operadora_nifs = cfg.operadora_nifs
         resolver = CabeceraResolver(
             usar_llm=usar_llm,
             project=cfg.google_cloud_project_id,
@@ -88,11 +92,13 @@ def run_identidad(
             gemini_max_retries=cfg.gemini_arbitro_max_retries,
             autofactura_marcadores=cfg.autofactura_marcadores,
             autofactura_swap_enabled=cfg.autofactura_swap_enabled,
+            operadora_nifs=operadora_nifs,
         )
         resultado = resolver.resolver(
             raw_document_ai,
             documento_id=documento_id,
             documento_extraido=documento_extraido,
+            libro=libro,
         )
     except Exception as e:
         logger.error(f"[identidad] Error en CabeceraResolver: {e}", exc_info=True)

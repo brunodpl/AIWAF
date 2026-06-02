@@ -331,7 +331,7 @@ def process_document(
     # cada uno lee documento_extraido.json (o raw_document_ai.json) y
     # escribe su propio artefacto. Se ejecutan en paralelo por diseño.
     fase3_modulos = {
-        "identidad_cabecera": lambda: run_identidad(doc_id, doc_dir, usar_llm=True),
+        "identidad_cabecera": lambda: run_identidad(doc_id, doc_dir, libro, usar_llm=True),
         "fiscal":             lambda: run_fiscal(doc_id, doc_dir),
         "semantica":          lambda: run_semantica(doc_id, doc_dir, libro),
     }

@@ -240,6 +240,19 @@ class Settings(BaseSettings):
         validation_alias="AUTOFACTURA_MARCADORES",
         description="Marcadores de autofactura en el OCR (separados por '|'); se comparan sin acentos ni mayúsculas.",
     )
+    # Registro determinista de operadoras de máquinas recreativas (cuenta 705.01).
+    # Una operadora (LUCKIA, COMAR, ...) NUNCA es el cliente de la gestoría: si su
+    # NIF ocupa el rol de cliente para el libro (en ventas = emisor), la fase 3
+    # invierte emisor<->receptor sin depender del marcador textual (las de Luckia
+    # no lo llevan). Vive en config (NO en data/maestros) a propósito: data/maestros
+    # está bind-monteado desde el host, así que un YAML allí no llegaría a las
+    # gestorías ya instaladas; este default viaja en la imagen y lo distribuye
+    # Watchtower a todas, igual que los marcadores de autofactura.
+    operadora_nifs_raw: str = Field(
+        default="B15614480|A15041841",  # COMAR CORUÑA S.L. | LUCKIA
+        validation_alias="OPERADORA_NIFS",
+        description="NIF de operadoras de máquinas recreativas (separados por '|'); se comparan en mayúsculas.",
+    )
 
     # ── IVA: tipos legales (Fase 3 fiscal) ────────────────────
     # Lista blanca de tipos de IVA legales en España. El corrector de fase 3
@@ -287,6 +300,13 @@ class Settings(BaseSettings):
         if not self.autofactura_marcadores_raw:
             return []
         return [m.strip() for m in self.autofactura_marcadores_raw.split("|") if m.strip()]
+
+    @property
+    def operadora_nifs(self) -> set[str]:
+        """Set de NIF de operadoras de máquinas recreativas (normalizados a mayúsculas)."""
+        if not self.operadora_nifs_raw:
+            return set()
+        return {n.strip().upper() for n in self.operadora_nifs_raw.split("|") if n.strip()}
 
     @property
     def iva_tipos_legales(self) -> List[float]:

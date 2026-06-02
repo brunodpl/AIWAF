@@ -64,6 +64,7 @@ class CabeceraResolver:
         umbral_llm: float = 0.80,
         autofactura_marcadores: Optional[list[str]] = None,
         autofactura_swap_enabled: bool = True,
+        operadora_nifs: Optional[set[str]] = None,
     ):
         """
         Args:
@@ -79,6 +80,9 @@ class CabeceraResolver:
             autofactura_marcadores: Marcadores de "facturación por el destinatario"
                 que disparan la inversión emisor/receptor. Si vacío/None → desactivado.
             autofactura_swap_enabled: Si False, nunca se invierte (válvula de emergencia).
+            operadora_nifs: NIF de operadoras de máquinas recreativas. Si el NIF
+                en rol de cliente para el libro es una operadora, se invierte
+                emisor/receptor de forma determinista (sin depender de marcador).
         """
         self.usar_llm = usar_llm
         self.umbral_auto = umbral_auto
@@ -86,7 +90,12 @@ class CabeceraResolver:
         self.umbral_llm = umbral_llm
 
         self._autofactura_marcadores = autofactura_marcadores or []
-        self._autofactura_enabled = autofactura_swap_enabled and bool(self._autofactura_marcadores)
+        self._operadora_nifs = operadora_nifs or set()
+        # El swap se activa si hay marcadores O registro de operadoras (cualquiera
+        # de los dos disparadores). La válvula maestra sigue siendo el flag.
+        self._autofactura_enabled = autofactura_swap_enabled and (
+            bool(self._autofactura_marcadores) or bool(self._operadora_nifs)
+        )
 
         self._llm: Optional[LLMDisambiguator] = None
         if usar_llm:
@@ -232,6 +241,7 @@ class CabeceraResolver:
         raw_document_ai: dict,
         documento_id: Optional[str] = None,
         documento_extraido: Optional[dict] = None,
+        libro: Optional[str] = None,
     ) -> CabeceraResult:
         """
         Resolver todos los campos de cabecera desde el raw JSON de Document AI.
@@ -309,16 +319,26 @@ class CabeceraResolver:
 
         # ── Autofactura: invertir emisor/receptor si procede ─────────────
         # En "facturación por el destinatario" la operadora se imprime como
-        # emisor, pero el emisor legal es el titular del local. Solo se invierte
-        # si (a) hay marcador y (b) ambos NIF están resueltos (gating de seguridad).
+        # emisor, pero el emisor legal es el titular del local. Hay dos
+        # disparadores: (a) marcador textual en el OCR, o (b) que el NIF en rol
+        # de cliente para el libro sea una operadora conocida (regla determinista
+        # que cubre operadoras como Luckia sin marcador). En ambos casos solo se
+        # invierte si ambos NIF están resueltos (gating: nunca fabricar el titular).
+        trigger_marcador = _es_autofactura(extractor.texto_completo(), self._autofactura_marcadores)
+        trigger_operadora = _operadora_en_rol_cliente(
+            res_nif.valor_final, res_nif_receptor.valor_final, libro, self._operadora_nifs
+        )
         if (self._autofactura_enabled
-                and _es_autofactura(extractor.texto_completo(), self._autofactura_marcadores)
+                and (trigger_marcador or trigger_operadora)
                 and res_nif.valor_final and res_nif_receptor.valor_final):
-            _swap_identidad_valores(res_nif, res_nif_receptor)
-            _swap_identidad_valores(res_nombre, res_nombre_receptor)
+            motivo = _AUTOFACTURA_MOTIVO if trigger_marcador else _OPERADORA_MOTIVO
+            _swap_identidad_valores(res_nif, res_nif_receptor, motivo=motivo)
+            _swap_identidad_valores(res_nombre, res_nombre_receptor, motivo=motivo)
             logger.info(
-                "[cabecera] AUTOFACTURA detectada — emisor/receptor invertidos "
-                f"(nif_entidad={res_nif.valor_final}, nif_receptor={res_nif_receptor.valor_final})"
+                "[cabecera] AUTOFACTURA detectada (%s) — emisor/receptor invertidos "
+                "(nif_entidad=%s, nif_receptor=%s)",
+                "marcador" if trigger_marcador else "operadora",
+                res_nif.valor_final, res_nif_receptor.valor_final,
             )
 
         # ── Recoger motivos de revisión de campos obligatorios ───────────
@@ -359,6 +379,12 @@ _AUTOFACTURA_MOTIVO = (
     "invertidos automáticamente — verificar."
 )
 
+_OPERADORA_MOTIVO = (
+    "AUTOFACTURA (operadora de máquinas recreativas en rol de cliente): "
+    "emisor/receptor invertidos automáticamente — la operadora no puede ser "
+    "el titular; verificar."
+)
+
 
 def _normalizar_marcador(texto: str) -> str:
     """Normalizar para comparación robusta: sin acentos, mayúsculas, espacios colapsados."""
@@ -380,11 +406,53 @@ def _es_autofactura(texto_ocr: str, marcadores: list[str]) -> bool:
     )
 
 
-def _swap_identidad_valores(res_a: FieldResolution, res_b: FieldResolution) -> None:
+# Campo de identidad que representa al CLIENTE de la gestoría según el libro.
+# Espejo de LIBRO_A_ROL_CLIENTE (phase4_customer/resolver.py); se admite forma
+# larga ("21_VENTAS_INGRESOS") y corta ("ventas"/"ingresos") por robustez.
+_LIBRO_A_CAMPO_CLIENTE = {
+    "20_COMPRAS_GASTOS":  "nif_receptor",
+    "21_VENTAS_INGRESOS": "nif_entidad",
+    "22_BIENES_INVERSION": "nif_receptor",
+    "compras":  "nif_receptor",
+    "gastos":   "nif_receptor",
+    "ventas":   "nif_entidad",
+    "ingresos": "nif_entidad",
+    "bienes":   "nif_receptor",
+}
+
+
+def _operadora_en_rol_cliente(
+    nif_entidad: Optional[str],
+    nif_receptor: Optional[str],
+    libro: Optional[str],
+    operadora_nifs: set[str],
+) -> bool:
+    """True si el NIF que ocupa el rol de CLIENTE para este libro es una operadora.
+
+    En ventas el cliente es el emisor (``nif_entidad``); en compras/bienes es el
+    receptor. Si ese NIF es una operadora conocida, los roles están invertidos
+    (la operadora nunca es el titular) y procede el swap. Si ``libro`` es None o
+    desconocido, devuelve False (no se puede determinar el rol con seguridad), de
+    modo que las compras legítimas donde la operadora es el proveedor no se tocan.
+    """
+    if not operadora_nifs or not libro:
+        return False
+    campo = _LIBRO_A_CAMPO_CLIENTE.get(libro)
+    if campo is None:
+        return False
+    valor = nif_entidad if campo == "nif_entidad" else nif_receptor
+    return (valor or "").strip().upper() in operadora_nifs
+
+
+def _swap_identidad_valores(
+    res_a: FieldResolution,
+    res_b: FieldResolution,
+    motivo: str = _AUTOFACTURA_MOTIVO,
+) -> None:
     """
     Intercambiar in-place el "paquete de valor" entre dos resoluciones de identidad,
-    conservando ``campo``. Tras el swap, fuerza decisión >= WARN y antepone el motivo
-    de autofactura para señalar la inversión heurística al revisor humano.
+    conservando ``campo``. Tras el swap, fuerza decisión >= WARN y antepone ``motivo``
+    para señalar la inversión heurística al revisor humano.
     """
     for attr in ("valor_final", "fuente_final", "confianza_final", "decision",
                  "candidatos", "page_ref", "bbox_normalizado", "validaciones"):
@@ -395,7 +463,7 @@ def _swap_identidad_valores(res_a: FieldResolution, res_b: FieldResolution) -> N
     for res in (res_a, res_b):
         if res.decision == DecisionCampo.AUTO:
             res.decision = DecisionCampo.WARN
-        res.motivo = f"{_AUTOFACTURA_MOTIVO} | {res.motivo}"
+        res.motivo = f"{motivo} | {res.motivo}"
 
 
 def _extraer_crop_region(
