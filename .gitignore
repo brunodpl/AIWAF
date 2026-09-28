@@ -58,6 +58,7 @@ compose-build.log
 # Local MCP configuration
 .mcp.json
 **/.mcp.json
+.claude/
 
 # Private customer reference data and generated runtime manifests
 sistema-de-asientos-automatizado/data/maestros/maestro_proveedores.yaml
