@@ -4,7 +4,7 @@ Regresión: CabeceraResult._decision_global debe contemplar PENDIENTE.
 Greptile (PR #5) detectó que `_decision_global` solo miraba BLOCK y WARN. Si un
 campo OBLIGATORIO devolviera `pendiente` (prioridad entre block y warn según
 DECISION_PRIORIDAD), el documento se autocargaba (`auto`) en lugar de escalar a
-revisión humana — exactamente lo que [AI assistant].md prohíbe ("dato ausente no se
+revisión humana — exactamente lo que las reglas de validación prohíben ("dato ausente no se
 fabrica → revisión_humana"). Hoy solo `fecha_operacion` (campo NO obligatorio)
 usa PENDIENTE, pero el guard cierra la trampa para cualquier resolver futuro.
 """

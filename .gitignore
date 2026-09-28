@@ -27,10 +27,8 @@ Desktop.ini
 *.swp
 *~
 
-# Git worktrees / [AI assistant] Code worktrees (cualquier nivel, incl. subproyectos)
+# Git worktrees
 .worktrees/
-.[AI assistant]/worktrees/
-**/.[AI assistant]/worktrees/
 
 # Firecrawl scrape cache (resultados de scraping; no es código fuente)
 .firecrawl/
@@ -57,8 +55,14 @@ MagicMock/
 # docker-compose build / deploy logs
 compose-build.log
 
-# Local [AI assistant] Code settings (user-specific)
-.[AI assistant]/settings.local.json
+# Local MCP configuration
+.mcp.json
+**/.mcp.json
+
+# Private customer reference data and generated runtime manifests
+sistema-de-asientos-automatizado/data/maestros/maestro_proveedores.yaml
+sistema-de-asientos-automatizado/data/output/file_manifest.json
+sistema-de-asientos-automatizado/data/feedback/
 
 # Ficheros temporales para crear PRs (gh pr create --body-file)
 .pr-body.tmp.md

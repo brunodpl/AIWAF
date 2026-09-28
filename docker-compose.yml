@@ -6,10 +6,7 @@ services:
     labels:
       # Watchtower vigila este contenedor y lo reemplaza cuando hay imagen nueva.
       - "com.centurylinklabs.watchtower.enable=true"
-    ports:
-      # Host:Container — puerto del host elegido para no chocar con otros servicios
-      # típicos (3000/8000 los usan muchas apps). El puerto interno sigue siendo 8000.
-      - "8003:8000"
+    # La API solo es accesible desde la red privada de Docker.
     volumes:
       # Ruta al archivo de credenciales definida en .env (CREDENTIALS_PATH)
       # Ejemplo en .env: CREDENTIALS_PATH=/home/usuario/.secrets/sa.json
@@ -43,7 +40,7 @@ services:
       # Logs técnicos también dentro de libros/ — operario tiene TODO en un solo árbol.
       - LOGS_PATH=/app/libros/logs
       # CORS: configurar en .env raíz
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3003,http://interfaz-asientos:3000}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3003,http://127.0.0.1:3003}
       # AIWAF_VERSION ya viene como ENV embebido en la imagen (build-arg de la GH Action).
       # No inyectarlo desde .env aquí — lo sobreescribiría con un valor obsoleto tras docker compose pull.
       # URL del JSON con la última versión publicada (default = Cloudflare Pages oficial)
@@ -76,7 +73,7 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     ports:
-      - "3003:3000"
+      - "127.0.0.1:3003:3000"
     depends_on:
       pipeline-api:
         condition: service_healthy

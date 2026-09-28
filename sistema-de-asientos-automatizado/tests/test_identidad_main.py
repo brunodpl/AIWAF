@@ -6,7 +6,7 @@ llama a CabeceraResolver(usar_llm=False) y escribe
 resultado_identidad_cabecera.json válido.
 
 No requiere credenciales de GCP ni llamadas a Document AI.
-Usa fixtures de raw_document_ai.json reales anonimizados.
+Las pruebas estructurales no requieren documentos reales ni credenciales externas.
 """
 
 import json

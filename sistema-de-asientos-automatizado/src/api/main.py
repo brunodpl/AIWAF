@@ -27,9 +27,9 @@ import urllib.error
 
 import httpx
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from urllib.parse import quote
 
@@ -69,9 +69,19 @@ app = FastAPI(
 
 # CORS para permitir conexiones desde la interfaz Next.js
 # En producción, restringir a origins específicos via variable de entorno
-allowed_origins = os.getenv(
-    "ALLOWED_ORIGINS", "http://localhost:3003"
-).split(",")
+allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3003").split(",")
+    if origin.strip()
+]
+
+
+@app.middleware("http")
+async def reject_untrusted_browser_origins(request: Request, call_next):
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") not in allowed_origins:
+        return JSONResponse(status_code=403, content={"detail": "Origin not allowed"})
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,
